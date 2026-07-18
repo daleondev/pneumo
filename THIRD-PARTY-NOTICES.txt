@@ -1,10 +1,12 @@
-Pneumo uses third-party libraries or other resources that may be
-distributed under licenses different than the pneumo software.
+Pneumo fetches the following third-party dependencies at configure time.
+They are not vendored into the Pneumo source tree.
 
-The attached notices are provided for information only.
+The license texts below are reproduced from the exact versions pinned in
+cmake/deps.cmake.
 
-License notice for googletest 
--------------------------------
+GoogleTest 1.17.0 (test-only dependency)
+License: BSD-3-Clause
+----------------------------------------
 
 https://github.com/google/googletest/blob/v1.17.0/LICENSE
 
@@ -36,9 +38,10 @@ DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
 THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-  
-License notice for glaze
--------------------------------
+
+Glaze 7.0.2 (optional serialization dependency)
+License: MIT
+------------------------------------------------
 
 https://github.com/stephenberry/glaze/blob/v7.0.2/LICENSE
 

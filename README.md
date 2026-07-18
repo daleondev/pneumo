@@ -18,16 +18,15 @@
 
 # Pneumo
 
-[![Multi-Platform CI/CD](https://github.com/daleondev/pneumo/actions/workflows/cmake-multi-platform.yml/badge.svg)](https://github.com/daleondev/pneumo/actions/workflows/cmake-multi-platform.yml)
-
-**pneumo** is a header-only C++26 utility library with four public CMake targets:
+**pneumo** is a header-only C++26 utility library with five module targets and one umbrella target:
 
 *   **`pneumo::common`** for shared result, assertion, memory, queue, and bit helpers.
 *   **`pneumo::meta`** for compile-time reflection and metaprogramming utilities built on C++26 static reflection.
-*   **`pneumo::formatting`** for reflection-aware `std::format` extensions in the `pneumo::fmt` namespace.
-*   **`pneumo::units`** for strongly typed quantities, literals, conversions, and a small set of built-in dimensional operations.
+*   **`pneumo::formatting`** for reflection-aware std::format extensions.
+*   **`pneumo::units`** for strongly typed quantities, literals, conversions, and dimensional operations.
+*   **`pneumo::logging`** for asynchronous structured logging, configurable routing, source metadata, files, and custom sinks.
 
-`pneumo::pneumo` is a convenience target that links all four modules, and `pneumo/pneumo.hpp` is the matching umbrella header that includes them.
+`pneumo::pneumo` links all five modules, and `pneumo/pneumo.hpp` is the matching umbrella header.
 
 ## Module Overview
 
@@ -35,10 +34,12 @@
 
 The common module contains small reusable helpers that support the higher-level libraries:
 
-*   `pneumo::Result<T>` as `std::expected<T, std::error_code>`.
-*   `pneumo::utils::memory` byte-copy helpers for trivially copyable values and contiguous ranges.
-*   `pneumo::utils::queue` push/pop adapters for queue-like types, optionally guarded by a lock.
-*   `pneumo::utils::bit` constexpr unsigned bit masks, masked get/set helpers, and `std::bitset` views.
+*   `pnm::Result<T>` as `std::expected<T, std::error_code>`.
+*   `pnm::utils::memory` byte-copy helpers for trivially copyable values and contiguous ranges.
+*   `pnm::utils::concurrent` thread concepts plus thread start/stop helpers.
+*   `pnm::utils::queue` push/pop adapters for queue-like types, optionally guarded by a lock.
+*   `pnm::utils::bit` constexpr unsigned bit masks and masked get/set helpers.
+*   Debug assertions and portable structure-packing macros.
 
 ### `pneumo::meta`
 
@@ -48,8 +49,8 @@ The meta module provides:
 *   **Variant utilities:** Concepts, tuple conversion, unique type reduction, reference-wrapper adaptation, and index iteration for `std::variant`.
 *   **Type utilities:** Type and namespace name discovery.
 *   **Enum reflection:** Scoped-enum counting, names, enumerators, and underlying values.
-*   **Structural reflection:** Public non-static data member names, field types, and indexed access.
-*   **Source embedding:** Embed the current translation unit and render numbered excerpts at runtime.
+*   **Structural reflection:** Public fields, nested types, methods, getter discovery, indexed invocation, and name-based static dispatch.
+*   **Source access:** Embed translation units, lazily load source files, cache them safely, and render numbered excerpts.
 
 ### `pneumo::formatting`
 
@@ -58,7 +59,7 @@ Pneumo extends `std::format` with automatic reflection-aware formatting while pr
 Key features include:
 
 *   **Automatic reflection:** Format public aggregates without writing boilerplate.
-*   **Non-intrusive adapters:** Format classes with private members or custom layouts through `pneumo::fmt::Adapter`.
+*   **Non-intrusive adapters:** Format classes with private members or custom layouts through `pnm::fmt::Adapter`.
 *   **Enum support:** Format scoped enums by name, with an optional verbose `Type::Enumerator` form.
 *   **Pointer and optional support:** Built-in handling for raw pointers, smart pointers, and `std::optional`.
 *   **Stream and string fallbacks:** Support `operator<<`, `toString()`, `to_string()`, and matching free functions when no adapter is present.
@@ -86,6 +87,7 @@ The current built-in quantity types are:
 *   `DataRate`
 *   `Velocity`
 *   `Acceleration`
+*   `Angle`
 
 The current built-in cross-quantity operations include:
 
@@ -113,7 +115,19 @@ The current built-in cross-quantity operations include:
 *   `ByteSize / DataRate -> Time`
 *   The corresponding inverse multiplications for quotient relations, such as `Time * Velocity`, `Acceleration * Time`, `DataRate * Time`, `Pressure * Area`, and `Time * Power`
 
-Temperature units are currently Kelvin-scale units (`mK`, `K`, `kK`). Celsius and Fahrenheit need affine conversion semantics and are intentionally not modeled as simple scale-only units.
+Temperature uses Celsius as its base unit and provides affine conversions to Kelvin and Fahrenheit. Angles use radians as their base unit and convert to and from degrees.
+
+### `pneumo::logging`
+
+The logging module provides:
+
+*   `Trace`, `Debug`, `Info`, `Warn`, `Error`, and `Critical` levels with compile-time checked format strings.
+*   Asynchronous logging by default and the `pnm::log::immediate` tag for synchronous writes.
+*   Built-in stdout, stderr, and cached file sinks. The default route sends `Trace` through `Warn` to stdout and `Error` through `Critical` to stderr.
+*   Per-level default sinks, removable global sinks, per-call explicit sinks, minimum levels, and flush thresholds.
+*   Optional file name/path, line, column, function, and embedded source excerpts on each sink.
+*   Compile-time-checked per-sink timestamp formats and optional level labels.
+*   User-defined sinks through `pnm::log::ISink` and `pnm::log::SinkBase`.
 
 ### CMake Targets and Headers
 
@@ -123,17 +137,18 @@ Temperature units are currently Kelvin-scale units (`mK`, `K`, `kK`). Celsius an
 | `pneumo::meta` | `pneumo/meta.hpp` | Reflection and metaprogramming utilities |
 | `pneumo::formatting` | `pneumo/formatting.hpp` | Reflection-based formatting and optional serialization |
 | `pneumo::units` | `pneumo/units.hpp` | Strong quantity types, literals, conversions, and derived operations |
-| `pneumo::pneumo` | `pneumo/pneumo.hpp` | Convenience target and umbrella header that bring in `common`, `meta`, `formatting`, and `units` |
+| `pneumo::logging` | `pneumo/logging.hpp` | Asynchronous logging, routing, metadata, files, and custom sinks |
+| `pneumo::pneumo` | `pneumo/pneumo.hpp` | Convenience target and umbrella header for all modules |
 
 ## Requirements
 
 *   **`pneumo::common`** uses standard C++26 library facilities and does not depend on static reflection.
-*   **`pneumo::meta`**, **`pneumo::formatting`**, and **`pneumo::units`** currently require a compiler/toolchain with C++26 static reflection support.
+*   **`pneumo::meta`**, **`pneumo::formatting`**, **`pneumo::units`**, and **`pneumo::logging`** currently require a compiler/toolchain with C++26 static reflection support.
 *   **CMake 4.2.0+**
 
 The checked-in CMake presets in this repository currently target GCC 16 and the Clang P2996 toolchain configured in `CMakePresets.json`.
 
-If you use `pneumo::formatting` or `pneumo::units` on a toolchain where `<format>` or `<print>` live in a separate support library, you may also need to link that library explicitly. The sample targets in this repository do this with `stdc++exp` on non-MSVC toolchains.
+If you use formatting, units, or logging on a toolchain where `<format>` or `<print>` live in a separate support library, you may also need to link that library explicitly. The sample targets use `stdc++exp` with the supported Linux toolchains.
 
 ## Installation
 
@@ -147,7 +162,7 @@ include(FetchContent)
 FetchContent_Declare(
         pneumo
         GIT_REPOSITORY https://github.com/daleondev/pneumo.git
-        GIT_TAG        main
+        GIT_TAG        v0.1.0
 )
 FetchContent_MakeAvailable(pneumo)
 
@@ -159,6 +174,8 @@ target_link_libraries(your_target PRIVATE pneumo::formatting)
 # or
 target_link_libraries(your_target PRIVATE pneumo::units)
 # or
+target_link_libraries(your_target PRIVATE pneumo::logging)
+# or
 target_link_libraries(your_target PRIVATE pneumo::pneumo)
 ```
 
@@ -169,6 +186,145 @@ When you want the full library surface, pair `pneumo::pneumo` with:
 ```
 
 You can still include the specific module headers directly when you only want part of the library.
+
+## Common Examples
+
+```cpp
+#include <pneumo/common.hpp>
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <queue>
+
+auto main() -> int
+{
+    constexpr std::uint32_t source{ 0x1234ABCDU };
+    std::array<std::byte, sizeof(source)> bytes{};
+    std::uint32_t restored{};
+
+    pnm::utils::memory::copy(bytes, source);
+    pnm::utils::memory::copy(restored, bytes);
+
+    auto queue = std::queue<int>{};
+    pnm::utils::queue::push(queue, 42);
+    const auto value = pnm::utils::queue::pop(queue);
+
+    std::uint8_t flags{};
+    pnm::utils::bit::set<0>(flags);
+    pnm::utils::bit::set_masked_checked<2, 3>(flags, std::uint8_t{ 0b101 });
+
+    PNM_ASSERT(value.has_value(), "queue unexpectedly empty");
+    return restored == source && pnm::utils::bit::check<0>(flags) ? 0 : 1;
+}
+```
+
+`PNM_ASSERT` is enabled by the `PNM_ENABLE_ASSERTS` definition, which the CMake targets add in Debug configurations. Failed assertions print the expression and source location before breaking into the debugger. `PNM_PACK_BEGIN`, `PNM_PACK_BEGIN_N(n)`, and `PNM_PACK_END` provide portable structure-packing scopes.
+
+## Logging Examples
+
+### Basic routing and metadata
+
+```cpp
+#include <pneumo/logging.hpp>
+
+PNM_META_SOURCE_EMBED_CURRENT
+
+auto main() -> int
+{
+    pnm::log::initialize(); // Optional eager initialization; logging also initializes lazily.
+
+    pnm::log::std_out
+      ->sourceInfo(pnm::log::SourceField::FileName, pnm::log::SourceField::Line)
+      .timestampFormat("{:%Y-%m-%d %H:%M:%S}");
+
+    pnm::log::std_err
+      ->sourceInfo(pnm::log::SourceField::Function)
+      .showLevel(false);
+
+    pnm::log::info("Server started on port {}", 8080);
+    pnm::log::error("Request {} failed", 17);
+
+    pnm::log::warn(
+      pnm::log::file("pneumo.log")
+        .mode(pnm::log::FileMode::Append)
+        .flushOn(pnm::log::Level::Error)
+        .sourceInfo(pnm::log::SourceField::FileName, pnm::log::SourceField::Line)
+        .sourceExcerpt(1),
+      "Slow response: {} ms",
+      250);
+
+    pnm::log::info(pnm::log::immediate, "Written synchronously");
+}
+```
+
+Normal calls are queued to a background worker. Passing `pnm::log::immediate` performs the write before the call returns. An explicit per-call sink routes only to that sink; otherwise a record is sent to its level’s default sink and every registered global sink. The backend drains queued records and closes cached files during process shutdown.
+
+Default routes can be changed per level or level range:
+
+```cpp
+pnm::log::set_default_sink(
+  pnm::log::Level::Trace, pnm::log::Level::Warn, pnm::log::std_out);
+pnm::log::set_default_sink(
+  pnm::log::Level::Error, pnm::log::Level::Critical, pnm::log::std_err);
+
+const auto handle = pnm::log::add_global_sink(
+  pnm::log::file("all.log").flushOn(pnm::log::Level::Error));
+
+pnm::log::remove_global_sink(handle);
+pnm::log::reset_default_sinks();
+```
+
+Source excerpts require the translation unit to be registered with `PNM_META_SOURCE_EMBED_CURRENT`, `PNM_META_SOURCE_EMBED_BEGIN`/`PNM_META_SOURCE_EMBED_END`, or otherwise available to `pnm::meta::source::excerpt` at runtime.
+
+### Custom sinks
+
+Derive from `pnm::log::SinkBase<YourSink>` and implement the transport operations. The logger handles formatting, filtering, source metadata, partial writes, and exception isolation around the sink.
+
+```cpp
+#include <pneumo/logging.hpp>
+
+#include <atomic>
+#include <cstddef>
+#include <memory>
+#include <span>
+
+class CountingSink : public pnm::log::SinkBase<CountingSink>
+{
+  public:
+    auto isOpen() const -> bool override { return m_open.load(); }
+
+    auto open() -> pnm::Result<> override
+    {
+        m_open.store(true);
+        return {};
+    }
+
+    auto close() -> pnm::Result<> override
+    {
+        m_open.store(false);
+        return {};
+    }
+
+    auto write(std::span<const std::byte> data) -> pnm::Result<std::size_t> override
+    {
+        m_bytes.fetch_add(data.size());
+        return data.size();
+    }
+
+    auto flush() -> pnm::Result<> override { return {}; }
+
+  private:
+    std::atomic_bool m_open{};
+    std::atomic_size_t m_bytes{};
+};
+
+auto main() -> int
+{
+    auto sink = std::make_shared<CountingSink>();
+    pnm::log::info(sink, "Custom transport message");
+}
+```
 
 ## Formatting Examples
 
@@ -231,7 +387,7 @@ int main()
 
 ### 2. Adapters (Encapsulated Classes)
 
-For classes with private members or custom layouts, define a `pneumo::fmt::Adapter` specialization.
+For classes with private members or custom layouts, define a `pnm::fmt::Adapter` specialization.
 
 ```cpp
 class User
@@ -251,10 +407,10 @@ class User
 };
 
 template<>
-struct pneumo::fmt::Adapter<User>
+struct pnm::fmt::Adapter<User>
 {
-    using Fields = std::tuple<pneumo::fmt::Field<"name", &User::getName>,
-                              pneumo::fmt::Field<"role", &User::getRole>>;
+    using Fields = std::tuple<pnm::fmt::Field<"name", &User::getName>,
+                              pnm::fmt::Field<"role", &User::getRole>>;
 };
 
 int main()
@@ -282,10 +438,10 @@ int main()
 {
     Status s = Status::Processing;
 
-    std::println("{}", s); 
+    std::println("{}", s);
     // Output: Processing
 
-    std::println("{:v}", s); 
+    std::println("{:v}", s);
     // Output: Status::Processing
 }
 ```
@@ -304,11 +460,11 @@ struct Point
 int main()
 {
     std::optional<int> opt_val = 123;
-    std::println("{}", opt_val); 
+    std::println("{}", opt_val);
     // Output: [ 123 ]
 
     std::optional<int> empty_opt;
-    std::println("{}", empty_opt); 
+    std::println("{}", empty_opt);
     // Output: [ null ]
 
     auto ptr = std::make_unique<Point>(10, 20);
@@ -365,7 +521,7 @@ For adapter-backed types, Glaze metadata is generated automatically inside `pneu
 
 Custom formatting can be supplied in several ways:
 
-*   `pneumo::fmt::Adapter<T>`
+*   `pnm::fmt::Adapter<T>`
 *   `operator<<`
 *   `toString()` or `to_string()` members
 *   matching `toString(T)` or `to_string(T)` free functions
@@ -396,7 +552,7 @@ struct Config
 
     std::string toString() const
     {
-        return "Config with id: " + std::to_string(id) + 
+        return "Config with id: " + std::to_string(id) +
             " has " + std::to_string(values.size()) + " values";
     }
 };
@@ -424,7 +580,7 @@ For units utilities:
 #include <iostream>
 #include <type_traits>
 
-using namespace pneumo::units::literals;
+using namespace pnm::units::literals;
 ```
 
 ### 1. Literals and Unit Conversion
@@ -435,8 +591,8 @@ int main()
     const auto distance = 3.5_km;
 
     std::cout << distance.get() << " m\n";
-    std::cout << distance.get<pneumo::units::DistanceUnits::km>() << " km\n";
-    std::cout << distance.get<pneumo::units::DistanceUnits::cm>() << " cm\n";
+    std::cout << distance.get<pnm::units::DistanceUnits::km>() << " km\n";
+    std::cout << distance.get<pnm::units::DistanceUnits::cm>() << " cm\n";
 }
 ```
 
@@ -449,9 +605,9 @@ int main()
     const auto trip_time = 35.0_min;
     const auto average_speed = trip_distance / trip_time;
 
-    static_assert(std::same_as<std::remove_cvref_t<decltype(average_speed)>, pneumo::units::Velocity>);
+    static_assert(std::same_as<std::remove_cvref_t<decltype(average_speed)>, pnm::units::Velocity>);
 
-    std::cout << average_speed.get<pneumo::units::VelocityUnits::km_h>() << " km/h\n";
+    std::cout << average_speed.get<pnm::units::VelocityUnits::km_h>() << " km/h\n";
 }
 ```
 
@@ -464,9 +620,9 @@ int main()
     const auto duration = 30.0_s;
     const auto rate = size / duration;
 
-    static_assert(std::same_as<std::remove_cvref_t<decltype(rate)>, pneumo::units::DataRate>);
+    static_assert(std::same_as<std::remove_cvref_t<decltype(rate)>, pnm::units::DataRate>);
 
-    std::cout << rate.get<pneumo::units::DataRateUnits::MB_s>() << " MB/s\n";
+    std::cout << rate.get<pnm::units::DataRateUnits::MB_s>() << " MB/s\n";
 }
 ```
 
@@ -481,12 +637,12 @@ int main()
     const auto speed_after_three_seconds = average_acceleration * 3.0_s;
 
     static_assert(std::same_as<std::remove_cvref_t<decltype(average_acceleration)>,
-                               pneumo::units::Acceleration>);
+                               pnm::units::Acceleration>);
     static_assert(std::same_as<std::remove_cvref_t<decltype(speed_after_three_seconds)>,
-                               pneumo::units::Velocity>);
+                               pnm::units::Velocity>);
 
-    std::cout << average_acceleration.get<pneumo::units::AccelerationUnits::m_s2>() << " m/s^2\n";
-    std::cout << speed_after_three_seconds.get<pneumo::units::VelocityUnits::km_h>() << " km/h\n";
+    std::cout << average_acceleration.get<pnm::units::AccelerationUnits::m_s2>() << " m/s^2\n";
+    std::cout << speed_after_three_seconds.get<pnm::units::VelocityUnits::km_h>() << " km/h\n";
 }
 ```
 
@@ -504,15 +660,15 @@ int main()
     const auto motor_power = work / duration;
     const auto current = motor_power / 12.0_V;
 
-    static_assert(std::same_as<std::remove_cvref_t<decltype(force)>, pneumo::units::Force>);
-    static_assert(std::same_as<std::remove_cvref_t<decltype(work)>, pneumo::units::Energy>);
-    static_assert(std::same_as<std::remove_cvref_t<decltype(motor_power)>, pneumo::units::Power>);
-    static_assert(std::same_as<std::remove_cvref_t<decltype(current)>, pneumo::units::Current>);
+    static_assert(std::same_as<std::remove_cvref_t<decltype(force)>, pnm::units::Force>);
+    static_assert(std::same_as<std::remove_cvref_t<decltype(work)>, pnm::units::Energy>);
+    static_assert(std::same_as<std::remove_cvref_t<decltype(motor_power)>, pnm::units::Power>);
+    static_assert(std::same_as<std::remove_cvref_t<decltype(current)>, pnm::units::Current>);
 
-    std::cout << force.get<pneumo::units::ForceUnits::N>() << " N\n";
-    std::cout << work.get<pneumo::units::EnergyUnits::J>() << " J\n";
-    std::cout << motor_power.get<pneumo::units::PowerUnits::W>() << " W\n";
-    std::cout << current.get<pneumo::units::CurrentUnits::A>() << " A\n";
+    std::cout << force.get<pnm::units::ForceUnits::N>() << " N\n";
+    std::cout << work.get<pnm::units::EnergyUnits::J>() << " J\n";
+    std::cout << motor_power.get<pnm::units::PowerUnits::W>() << " W\n";
+    std::cout << current.get<pnm::units::CurrentUnits::A>() << " A\n";
 }
 ```
 
@@ -523,7 +679,7 @@ The units literal namespace also exposes the standard chrono literals, so both P
 ```cpp
 int main()
 {
-    const pneumo::units::Time timeout = 1500ms; // implicit chrono-to-Time conversion
+    const pnm::units::Time timeout = 1500ms; // implicit chrono-to-Time conversion
     const auto distance = 42.0_km;
     const auto speed = distance / 35min;        // chrono duration in dimensional arithmetic
 
@@ -533,8 +689,8 @@ int main()
 
     std::cout << floating_ms.count() << " ms\n";
     std::cout << whole_ms.count() << " whole ms\n";
-    std::cout << speed.get<pneumo::units::VelocityUnits::km_h>() << " km/h\n";
-    std::cout << frequency.get<pneumo::units::FrequencyUnits::Hz>() << " Hz\n";
+    std::cout << speed.get<pnm::units::VelocityUnits::km_h>() << " km/h\n";
+    std::cout << frequency.get<pnm::units::FrequencyUnits::Hz>() << " Hz\n";
 }
 ```
 
@@ -562,7 +718,7 @@ For meta utilities:
 ### 1. Fixed Strings
 
 ```cpp
-constexpr auto NAME = pneumo::meta::string::FixedString{ "sample" };
+constexpr auto NAME = pnm::meta::string::FixedString{ "sample" };
 
 static_assert(NAME.size() == 6UZ);
 static_assert(static_cast<std::string_view>(NAME) == "sample");
@@ -574,27 +730,27 @@ static_assert(static_cast<std::string_view>(NAME) == "sample");
 using TupleA = std::tuple<int, double>;
 using TupleB = std::tuple<double, float, int>;
 
-static_assert(pneumo::meta::tuple::Tuple<TupleA>);
-static_assert(!pneumo::meta::tuple::Tuple<int>);
+static_assert(pnm::meta::tuple::Tuple<TupleA>);
+static_assert(!pnm::meta::tuple::Tuple<int>);
 
-static_assert(pneumo::meta::tuple::ContainsType<TupleA, int>);
-static_assert(!pneumo::meta::tuple::ContainsType<TupleA, float>);
+static_assert(pnm::meta::tuple::ContainsType<TupleA, int>);
+static_assert(!pnm::meta::tuple::ContainsType<TupleA, float>);
 
-using Concatenated = pneumo::meta::tuple::concat_types_t<TupleA, TupleB>;
+using Concatenated = pnm::meta::tuple::concat_types_t<TupleA, TupleB>;
 static_assert(std::same_as<Concatenated, std::tuple<int, double, double, float, int>>);
 
-using Unique = pneumo::meta::tuple::unique_types_t<Concatenated>;
+using Unique = pnm::meta::tuple::unique_types_t<Concatenated>;
 static_assert(std::same_as<Unique, std::tuple<int, double, float>>);
 
-static_assert(pneumo::meta::tuple::count<TupleA>() == 2UZ);
-static_assert(std::same_as<pneumo::meta::tuple::at_t<0, TupleA>, int>);
-static_assert(std::same_as<pneumo::meta::tuple::at_t<1, TupleA>, double>);
+static_assert(pnm::meta::tuple::count<TupleA>() == 2UZ);
+static_assert(std::same_as<pnm::meta::tuple::at_t<0, TupleA>, int>);
+static_assert(std::same_as<pnm::meta::tuple::at_t<1, TupleA>, double>);
 
-using TupleAsVariant = pneumo::meta::tuple::to_variant_t<TupleA>;
+using TupleAsVariant = pnm::meta::tuple::to_variant_t<TupleA>;
 static_assert(std::same_as<TupleAsVariant, std::variant<int, double>>);
 
 using CvrefTuple = std::tuple<const int&, volatile double&&, const std::string>;
-using CvrefRemoved = pneumo::meta::tuple::remove_cvref_types_t<CvrefTuple>;
+using CvrefRemoved = pnm::meta::tuple::remove_cvref_types_t<CvrefTuple>;
 static_assert(std::same_as<CvrefRemoved, std::tuple<int, double, std::string>>);
 
 constexpr auto EXPECTED_SUM{ 6 };
@@ -602,7 +758,7 @@ constexpr auto EXPECTED_SUM{ 6 };
 constexpr auto FOR_EACH_SUM_VALID = [] -> bool {
     auto values = std::tuple{ 1, 2, 3 };
     auto sum{ 0 };
-    pneumo::meta::tuple::for_each_element([&sum](int value) { sum += value; }, values);
+    pnm::meta::tuple::for_each_element([&sum](int value) { sum += value; }, values);
     return sum == EXPECTED_SUM;
 };
 
@@ -610,13 +766,13 @@ static_assert(FOR_EACH_SUM_VALID());
 
 constexpr auto REVERSE_FOR_EACH_CAN_BREAK = [] -> bool {
     auto visited{ 0 };
-    pneumo::meta::tuple::for_each<TupleB, pneumo::meta::Iteration::Reverse>([&visited](auto index) {
+    pnm::meta::tuple::for_each<TupleB, pnm::meta::Iteration::Reverse>([&visited](auto index) {
         ++visited;
         if constexpr (index == 1) {
-            return pneumo::meta::Loop::Break;
+            return pnm::meta::Loop::Break;
         }
         else {
-            return pneumo::meta::Loop::Continue;
+            return pnm::meta::Loop::Continue;
         }
     });
     return visited == 2;
@@ -630,29 +786,29 @@ static_assert(REVERSE_FOR_EACH_CAN_BREAK());
 ```cpp
 using VariantInput = std::variant<int, double, int, float>;
 
-static_assert(pneumo::meta::variant::Variant<VariantInput>);
-static_assert(!pneumo::meta::variant::Variant<int>);
+static_assert(pnm::meta::variant::Variant<VariantInput>);
+static_assert(!pnm::meta::variant::Variant<int>);
 
-using VariantTuple = pneumo::meta::variant::to_tuple_t<VariantInput>;
+using VariantTuple = pnm::meta::variant::to_tuple_t<VariantInput>;
 static_assert(std::same_as<VariantTuple, std::tuple<int, double, int, float>>);
 
-using VariantUnique = pneumo::meta::variant::unique_types_t<VariantInput>;
+using VariantUnique = pnm::meta::variant::unique_types_t<VariantInput>;
 static_assert(std::same_as<VariantUnique, std::variant<int, double, float>>);
 
-using VariantRef = pneumo::meta::variant::to_reference_wrapper_t<std::variant<int, const double>>;
+using VariantRef = pnm::meta::variant::to_reference_wrapper_t<std::variant<int, const double>>;
 static_assert(
   std::same_as<VariantRef,
                std::variant<std::reference_wrapper<int>, std::reference_wrapper<const double>>>);
 
 constexpr auto VARIANT_REVERSE_FOR_EACH_CAN_BREAK = [] -> bool {
     auto visited{ 0 };
-    pneumo::meta::variant::for_each<VariantInput, pneumo::meta::Iteration::Reverse>([&visited](auto index) {
+    pnm::meta::variant::for_each<VariantInput, pnm::meta::Iteration::Reverse>([&visited](auto index) {
         ++visited;
         if constexpr (index == 2) {
-            return pneumo::meta::Loop::Break;
+            return pnm::meta::Loop::Break;
         }
         else {
-            return pneumo::meta::Loop::Continue;
+            return pnm::meta::Loop::Continue;
         }
     });
     return visited == 2;
@@ -661,9 +817,9 @@ constexpr auto VARIANT_REVERSE_FOR_EACH_CAN_BREAK = [] -> bool {
 static_assert(VARIANT_REVERSE_FOR_EACH_CAN_BREAK());
 
 using MyVariant = std::variant<int, double, int, float>;
-pneumo::meta::variant::for_each<MyVariant>([](auto index) {
+pnm::meta::variant::for_each<MyVariant>([](auto index) {
     using Type = std::variant_alternative_t<index, MyVariant>;
-    constexpr auto type_name{ pneumo::meta::type::name<Type>() };
+    constexpr auto type_name{ pnm::meta::type::name<Type>() };
     std::cout << "Variant alternative at index " << index << ": " << type_name << '\n';
 });
 
@@ -684,12 +840,12 @@ namespace sample::detail
     };
 }
 
-static_assert(pneumo::meta::type::name<sample::detail::Widget>() == "Widget");
-static_assert(pneumo::meta::type::namespace_name<sample::detail::Widget>() == "sample::detail");
-static_assert(pneumo::meta::type::namespaces<sample::detail::Widget>()[0] == "sample");
-static_assert(pneumo::meta::type::namespaces<sample::detail::Widget>()[1] == "detail");
-static_assert(pneumo::meta::type::StdType<std::string>);
-static_assert(!pneumo::meta::type::StdType<sample::detail::Widget>);
+static_assert(pnm::meta::type::name<sample::detail::Widget>() == "Widget");
+static_assert(pnm::meta::type::namespace_name<sample::detail::Widget>() == "sample::detail");
+static_assert(pnm::meta::type::namespaces<sample::detail::Widget>()[0] == "sample");
+static_assert(pnm::meta::type::namespaces<sample::detail::Widget>()[1] == "detail");
+static_assert(pnm::meta::type::StdType<std::string>);
+static_assert(!pnm::meta::type::StdType<sample::detail::Widget>);
 ```
 
 ### 5. Enum Reflection
@@ -702,29 +858,29 @@ enum class SampleState : std::uint8_t
     Done = 4
 };
 
-static_assert(pneumo::meta::enumeration::ScopedEnum<SampleState>);
-static_assert(!pneumo::meta::enumeration::ScopedEnum<int>);
+static_assert(pnm::meta::enumeration::ScopedEnum<SampleState>);
+static_assert(!pnm::meta::enumeration::ScopedEnum<int>);
 
-static_assert(pneumo::meta::enumeration::count<SampleState>() == 3UZ);
+static_assert(pnm::meta::enumeration::count<SampleState>() == 3UZ);
 
-constexpr auto SAMPLE_ENUMERATORS = pneumo::meta::enumeration::enumerators<SampleState>();
+constexpr auto SAMPLE_ENUMERATORS = pnm::meta::enumeration::enumerators<SampleState>();
 static_assert(SAMPLE_ENUMERATORS[0] == SampleState::Idle);
 static_assert(SAMPLE_ENUMERATORS[1] == SampleState::Running);
 static_assert(SAMPLE_ENUMERATORS[2] == SampleState::Done);
 
-constexpr auto SAMPLE_UNDERLYING = pneumo::meta::enumeration::underlying_enumerators<SampleState>();
+constexpr auto SAMPLE_UNDERLYING = pnm::meta::enumeration::underlying_enumerators<SampleState>();
 static_assert(std::same_as<decltype(SAMPLE_UNDERLYING), const std::array<std::uint8_t, 3>>);
 static_assert(SAMPLE_UNDERLYING[0] == 0);
 static_assert(SAMPLE_UNDERLYING[1] == 2);
 static_assert(SAMPLE_UNDERLYING[2] == 4);
 
-constexpr auto SAMPLE_ENUMERATOR_NAMES = pneumo::meta::enumeration::enumerator_names<SampleState>();
+constexpr auto SAMPLE_ENUMERATOR_NAMES = pnm::meta::enumeration::enumerator_names<SampleState>();
 static_assert(SAMPLE_ENUMERATOR_NAMES[0] == "Idle");
 static_assert(SAMPLE_ENUMERATOR_NAMES[1] == "Running");
 static_assert(SAMPLE_ENUMERATOR_NAMES[2] == "Done");
 
-static_assert(pneumo::meta::enumeration::name<SampleState>() == "SampleState");
-static_assert(pneumo::meta::enumeration::enumerator_name(SampleState::Running) == "Running");
+static_assert(pnm::meta::enumeration::name<SampleState>() == "SampleState");
+static_assert(pnm::meta::enumeration::enumerator_name(SampleState::Running) == "Running");
 ```
 
 ### 6. Structural Reflection
@@ -756,14 +912,14 @@ struct SampleDispatcher
     static constexpr auto triple(int value) -> int { return value * 3; }
 };
 
-static_assert(pneumo::meta::structural::count<SampleAggregate>() == 2UZ);
-constexpr auto SAMPLE_FIELD_NAMES = pneumo::meta::structural::field_names<SampleAggregate>();
+static_assert(pnm::meta::structural::field_count<SampleAggregate>() == 2UZ);
+constexpr auto SAMPLE_FIELD_NAMES = pnm::meta::structural::field_names<SampleAggregate>();
 static_assert(SAMPLE_FIELD_NAMES[0] == "id");
 static_assert(SAMPLE_FIELD_NAMES[1] == "weight");
 
-static_assert(std::same_as<pneumo::meta::structural::field_type_t<0, SampleAggregate>, int>);
-static_assert(std::same_as<pneumo::meta::structural::field_type_t<1, SampleAggregate>, double>);
-static_assert(std::same_as<pneumo::meta::structural::field_types_t<SampleAggregate>,
+static_assert(std::same_as<pnm::meta::structural::field_type_t<0, SampleAggregate>, int>);
+static_assert(std::same_as<pnm::meta::structural::field_type_t<1, SampleAggregate>, double>);
+static_assert(std::same_as<pnm::meta::structural::field_types_t<SampleAggregate>,
                            std::tuple<int, double>>);
 
 constexpr auto SAMPLE_ID_VALUE = 7;
@@ -771,34 +927,34 @@ constexpr auto SAMPLE_WEIGHT_VALUE = 1.5;
 
 constexpr auto SAMPLE_FIELD_GET_VALID = [] -> bool {
     auto value = SampleAggregate{ .id = SAMPLE_ID_VALUE, .weight = SAMPLE_WEIGHT_VALUE };
-    return pneumo::meta::structural::get<0>(value) == SAMPLE_ID_VALUE &&
-           pneumo::meta::structural::get<1>(value) == SAMPLE_WEIGHT_VALUE;
+    return pnm::meta::structural::get<0>(value) == SAMPLE_ID_VALUE &&
+           pnm::meta::structural::get<1>(value) == SAMPLE_WEIGHT_VALUE;
 };
 
 static_assert(SAMPLE_FIELD_GET_VALID());
 
-using NestedTypes = pneumo::meta::structural::nested_types_t<SampleNestedTypes>;
+using NestedTypes = pnm::meta::structural::nested_types_t<SampleNestedTypes>;
 static_assert(std::same_as<NestedTypes,
                            std::tuple<int,
                                       std::ratio<2>,
                                       SampleNestedTemplate<double, std::ratio<3>>>>);
 
-static_assert(std::same_as<pneumo::meta::structural::nested_type_t<0, SampleNestedTypes>, int>);
-static_assert(pneumo::meta::structural::nested_type_name<0, SampleNestedTypes>() == "Index");
+static_assert(std::same_as<pnm::meta::structural::nested_type_t<0, SampleNestedTypes>, int>);
+static_assert(pnm::meta::structural::nested_type_name<0, SampleNestedTypes>() == "Index");
 
-constexpr auto SAMPLE_NESTED_TYPE_NAMES = pneumo::meta::structural::nested_type_names<SampleNestedTypes>();
+constexpr auto SAMPLE_NESTED_TYPE_NAMES = pnm::meta::structural::nested_type_names<SampleNestedTypes>();
 static_assert(SAMPLE_NESTED_TYPE_NAMES[1] == "Ratio");
 static_assert(SAMPLE_NESTED_TYPE_NAMES[2] == "TemplateAlias");
 
-using AggregateInfo = pneumo::meta::structural::Info<SampleAggregate>;
-using NestedInfo = pneumo::meta::structural::Info<SampleNestedTypes>;
+using AggregateInfo = pnm::meta::structural::Info<SampleAggregate>;
+using NestedInfo = pnm::meta::structural::Info<SampleNestedTypes>;
 static_assert(AggregateInfo::NAME == "SampleAggregate");
 static_assert(AggregateInfo::numMembers() == 2UZ);
 static_assert(AggregateInfo::MEMBER_NAMES[0] == "id");
 static_assert(NestedInfo::numNestedTypes() == 3UZ);
 static_assert(NestedInfo::NESTED_TYPE_NAMES[0] == "Index");
 
-static_assert(pneumo::meta::structural::dispatch<SampleDispatcher, "triple">(7) == 21);
+static_assert(pnm::meta::structural::dispatch<SampleDispatcher, "triple">(7) == 21);
 ```
 
 ### 7. Source Embedding and Excerpts
@@ -808,12 +964,12 @@ PNM_META_SOURCE_EMBED_CURRENT
 
 auto main() -> int
 {
-    std::cout << *pneumo::meta::source::excerpt(__FILE__, __LINE__, 1) << std::endl;
+    std::cout << *pnm::meta::source::excerpt(__FILE__, __LINE__, 1) << std::endl;
     return 0;
 }
 ```
 
-`PNM_META_SOURCE_EMBED_CURRENT` embeds the current translation unit once, and `pneumo::meta::source::excerpt(file, line, context_size)` returns a `pneumo::Result<std::string>` containing a numbered excerpt when the source is available.
+`PNM_META_SOURCE_EMBED_CURRENT` embeds the current translation unit once, and `pnm::meta::source::excerpt(file, line, context_size)` returns a `pnm::Result<std::string>` containing a numbered excerpt when the source is available.
 
 ### Available CMake Configuration Options
 
@@ -822,8 +978,8 @@ auto main() -> int
 | `PFMT_ENABLE_JSON` | Enable JSON support via Glaze | `OFF` |
 | `PFMT_ENABLE_TOML` | Enable TOML support via Glaze | `OFF` |
 | `PFMT_ENABLE_YAML` | Enable YAML support via Glaze | `OFF` |
-| `BUILD_SAMPLES` | Build sample executables | `ON` |
-| `BUILD_TESTS` | Build unit tests | `ON` |
+| `PNM_BUILD_SAMPLES` | Build sample executables | `ON` for top-level builds, otherwise `OFF` |
+| `PNM_BUILD_TESTS` | Build unit tests | `ON` for top-level builds, otherwise `OFF` |
 | `ENABLE_CLANG_TIDY` | Run Clang-Tidy during the build when a Clang-Tidy executable is configured | `OFF` |
 
 ## Build Instructions
@@ -849,6 +1005,9 @@ cmake --build --preset clang-release
 
 # Units sample
 ./build/clang-release/samples/units_sample
+
+# Logging sample
+./build/clang-release/samples/logging_sample
 ```
 
 ### Run the tests:
@@ -864,7 +1023,7 @@ cmake --preset clang-tidy
 cmake --build --preset clang-tidy --clean-first
 ```
 
-The `clang-tidy` preset enables `ENABLE_CLANG_TIDY`, keeps sample builds on, and turns `BUILD_TESTS` off.
+The `clang-tidy` preset enables `ENABLE_CLANG_TIDY`, keeps sample builds on, and turns `PNM_BUILD_TESTS` off.
 
 ### Available CMake Presets
 
@@ -876,18 +1035,26 @@ The `clang-tidy` preset enables `ENABLE_CLANG_TIDY`, keeps sample builds on, and
 
 ## Compiler Support
 
-This library is header-only, but `pneumo/meta.hpp`, `pneumo/formatting.hpp`, and `pneumo/units.hpp` require a compiler/toolchain with C++26 static reflection support.
+This library is header-only, but `pneumo/meta.hpp`, `pneumo/formatting.hpp`, `pneumo/units.hpp`, and `pneumo/logging.hpp` require a compiler/toolchain with C++26 static reflection support.
 
 The checked-in CMake presets in this repository currently target:
 
 - **Linux**: GCC 16 via `gcc-debug` and `gcc-release`
 - **Linux**: the Clang P2996 toolchain configured in `CMakePresets.json` via `clang-debug`, `clang-release`, and `clang-tidy`
 
+Windows and MSVC are not supported by the current release or CI configuration.
+
+## License
+
+Pneumo is distributed under the [MIT License](LICENSE). Optional serialization support fetches Glaze 7.0.2, and the test build fetches GoogleTest 1.17.0. Their exact license texts are reproduced in [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt); neither dependency is vendored into this repository.
+
+Changes included in each release are recorded in [CHANGELOG.md](CHANGELOG.md).
+
 ## Acknowledgements
 
 **pneumo** is made possible by these incredible open-source projects:
 
-- **[Glaze](https://github.com/stephenberry/glaze)**: Extremely fast C++ library for JSON, YAML, and TOML serialization.
-- **[Googletest](https://github.com/google/googletest)**: Industrial-strength testing framework.
+- **[Glaze 7.0.2](https://github.com/stephenberry/glaze/tree/v7.0.2)**: Extremely fast C++ library for JSON, YAML, and TOML serialization.
+- **[GoogleTest 1.17.0](https://github.com/google/googletest/tree/v1.17.0)**: Industrial-strength testing framework.
 
 For third-party license information, please see [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt).

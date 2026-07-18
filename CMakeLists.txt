@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 4.2.0)
 project(
     pneumo
     VERSION 0.1.0
-    DESCRIPTION "Pneumo C++ 26 utilities"
+    DESCRIPTION "Pneumo C++26 utilities"
     LANGUAGES CXX
 )
 
@@ -10,8 +10,8 @@ project(
 # options
 #---------------------------------------------------------
 
-option(BUILD_SAMPLES "Build the sample executables." ON)
-option(BUILD_TESTS "Build the tests." ON)
+option(PNM_BUILD_SAMPLES "Build the Pneumo sample executables." ${PROJECT_IS_TOP_LEVEL})
+option(PNM_BUILD_TESTS "Build the Pneumo tests." ${PROJECT_IS_TOP_LEVEL})
 
 option(PFMT_ENABLE_JSON "Enable JSON formatting support." OFF)
 option(PFMT_ENABLE_YAML "Enable YAML formatting support." OFF)
@@ -201,6 +201,7 @@ target_link_libraries(
     pneumo::meta
     pneumo::formatting
     pneumo::units
+    pneumo::logging
 )
 
 #---------------------------------------------------------
@@ -242,7 +243,7 @@ endif()
 # samples
 #---------------------------------------------------------
 
-if(BUILD_SAMPLES)
+if(PNM_BUILD_SAMPLES)
     add_subdirectory(samples)
 endif()
 
@@ -250,7 +251,7 @@ endif()
 # tests
 #---------------------------------------------------------
 
-if(BUILD_TESTS)
+if(PNM_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
 endif()

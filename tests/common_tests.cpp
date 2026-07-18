@@ -43,6 +43,13 @@ TEST(CommonResultTests, ResultAliasSupportsValuesAndErrors)
     EXPECT_EQ(err_result.error(), std::make_error_code(std::errc::invalid_argument));
 }
 
+TEST(CommonAssertionTests, TrueConditionsDoNotTrap)
+{
+    PNM_ASSERT(true, "plain assertion");
+    PNM_ASSERT(true, "formatted assertion value: %d", 42);
+    SUCCEED();
+}
+
 TEST(CommonMemoryTests, CopyBetweenSerializableValues)
 {
     constexpr std::uint32_t source{ 0xDEADBEEFU };

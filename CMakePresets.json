@@ -81,8 +81,8 @@
             "inherits": "clang-debug",
             "cacheVariables": {
                 "ENABLE_CLANG_TIDY": "ON",
-                "BUILD_SAMPLES": "ON",
-                "BUILD_TESTS": "OFF",
+                "PNM_BUILD_SAMPLES": "ON",
+                "PNM_BUILD_TESTS": "OFF",
                 "CMAKE_CXX_CLANG_TIDY": "/opt/clang-p2996/bin/clang-tidy"
             }
         }
