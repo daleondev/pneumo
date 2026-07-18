@@ -1,0 +1,44 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build",
+            "type": "shell",
+            "command": "cmake --preset ${input:compiler}-debug && cmake --build --preset ${input:compiler}-debug",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": "$gcc"
+        },
+        {
+            "label": "Test",
+            "type": "shell",
+            "command": "ctest --preset ${input:compiler}-debug --output-on-failure",
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            },
+            "problemMatcher": "$gcc"
+        },
+        {
+            "label": "Lint",
+            "type": "shell",
+            "command": "cmake --preset clang-tidy && cmake --build --preset clang-tidy --clean-first",
+            "group": {
+                "kind": "build",
+                "isDefault": false
+            },
+            "problemMatcher": "$gcc"
+        }
+    ],
+    "inputs": [
+        {
+            "id": "compiler",
+            "type": "pickString",
+            "description": "Choose compiler toolchain",
+            "options": ["gcc", "clang"],
+            "default": "clang"
+        }
+    ]
+}

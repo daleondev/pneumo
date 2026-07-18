@@ -1,0 +1,130 @@
+{
+    "version": 3,
+    "cmakeMinimumRequired": {
+        "major": 4,
+        "minor": 2,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "base",
+            "hidden": true,
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/${presetName}",
+            "cacheVariables": {
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+            }
+        },
+        {
+            "name": "gcc",
+            "hidden": true,
+            "displayName": "GCC",
+            "description": "Build with GCC",
+            "inherits": "base",
+            "cacheVariables": {
+                "CMAKE_CXX_COMPILER": "g++"
+            }
+        },
+        {
+            "name": "clang",
+            "hidden": true,
+            "displayName": "Clang",
+            "description": "Build with Clang",
+            "inherits": "base",
+            "cacheVariables": {
+                "CMAKE_CXX_COMPILER": "/opt/clang-p2996/bin/clang++",
+                "CMAKE_BUILD_RPATH": "/opt/clang-p2996/lib/x86_64-unknown-linux-gnu;/opt/clang-p2996/lib",
+                "CMAKE_INSTALL_RPATH": "/opt/clang-p2996/lib/x86_64-unknown-linux-gnu;/opt/clang-p2996/lib",
+                "CMAKE_CXX_FLAGS": "-stdlib=libc++"
+            }
+        },
+        {
+            "name": "gcc-debug",
+            "displayName": "GCC-Debug",
+            "description": "Build with debug symbols",
+            "inherits": "gcc",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "gcc-release",
+            "displayName": "GCC-Release",
+            "description": "Build for release",
+            "inherits": "gcc",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "clang-debug",
+            "displayName": "Clang-Debug",
+            "description": "Build with debug symbols",
+            "inherits": "clang",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "clang-release",
+            "displayName": "Clang-Release",
+            "description": "Build for release",
+            "inherits": "clang",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "clang-tidy",
+            "displayName": "Clang Tidy",
+            "description": "Build with debug symbols and Clang-Tidy enabled",
+            "inherits": "clang-debug",
+            "cacheVariables": {
+                "ENABLE_CLANG_TIDY": "ON",
+                "BUILD_SAMPLES": "ON",
+                "BUILD_TESTS": "OFF",
+                "CMAKE_CXX_CLANG_TIDY": "/opt/clang-p2996/bin/clang-tidy"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "gcc-debug",
+            "configurePreset": "gcc-debug"
+        },
+        {
+            "name": "gcc-release",
+            "configurePreset": "gcc-release"
+        },
+        {
+            "name": "clang-debug",
+            "configurePreset": "clang-debug"
+        },
+        {
+            "name": "clang-release",
+            "configurePreset": "clang-release"
+        },
+        {
+            "name": "clang-tidy",
+            "configurePreset": "clang-tidy"
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "gcc-debug",
+            "configurePreset": "gcc-debug"
+        },
+        {
+            "name": "gcc-release",
+            "configurePreset": "gcc-release"
+        },
+        {
+            "name": "clang-debug",
+            "configurePreset": "clang-debug"
+        },
+        {
+            "name": "clang-release",
+            "configurePreset": "clang-release"
+        }
+    ]
+}

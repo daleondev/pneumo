@@ -1,0 +1,30 @@
+name: Enforce Release Flow
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, edited]
+    branches:
+      - "main"
+
+jobs:
+  check-source-branch:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check Branch Naming Rule
+        env:
+          SOURCE_BRANCH: ${{ github.head_ref }}
+          TARGET_BRANCH: ${{ github.base_ref }}
+        run: |
+          echo "Target: $TARGET_BRANCH"
+          echo "Source: $SOURCE_BRANCH"
+
+          # Logic: If target is main, source MUST start with 'release/' (or 'hotfix/')
+          if [[ "$TARGET_BRANCH" == "main" ]]; then
+            if [[ ! "$SOURCE_BRANCH" =~ ^release/ ]] && [[ ! "$SOURCE_BRANCH" =~ ^hotfix/ ]]; then
+              echo "::error::⛔ VIOLATION: Merges to 'main' are ONLY allowed from 'release/*' or 'hotfix/*' branches."
+              echo "::error::Current source branch is: '$SOURCE_BRANCH'"
+              exit 1
+            fi
+          fi
+
+          echo "✅ Branch pattern matches Release Flow rules."

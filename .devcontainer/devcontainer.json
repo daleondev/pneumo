@@ -1,0 +1,38 @@
+{
+  "name": "pneumo-devcontainer",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "..",
+    "target": "devcontainer"
+  },
+  "workspaceFolder": "/workspaces/pneumo",
+  "overrideCommand": true,
+  "remoteUser": "vscode",
+  "runArgs": [
+    "--init",
+    "--add-host=host.docker.internal:host-gateway",
+    "--cap-add=SYS_ADMIN",
+    "--security-opt=seccomp=unconfined",
+    "--security-opt=apparmor=unconfined"
+  ],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-azuretools.vscode-docker",
+        "redhat.vscode-yaml",
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-vscode.cpptools",
+        "ms-vscode.cmake-tools",
+        "ms-vscode.makefile-tools"
+      ],
+      "settings": {
+        "files.eol": "\n",
+        "terminal.integrated.defaultProfile.linux": "zsh",
+        "editor.formatOnSave": true,
+        "cmake.configureOnOpen": false,
+        "python.defaultInterpreterPath": "/usr/bin/python3"
+      }
+    }
+  }
+}
