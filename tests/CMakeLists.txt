@@ -87,7 +87,7 @@ target_link_libraries(
     logging_tests
     PRIVATE
     GTest::gtest_main
-    pneumo::logging
+    pneumo::pneumo
     pneumo::compiler_warnings
 )
 

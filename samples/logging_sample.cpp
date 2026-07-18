@@ -60,7 +60,7 @@ int main()
                      .flushOn(pnm::log::Level::Error)
                      .sourceInfo(pnm::log::SourceField::FileName, pnm::log::SourceField::Line)
                      .sourceExcerpt(1)
-                     .mode(pnm::log::detail::FileMode::Overwrite),
+                     .mode(pnm::log::FileMode::Overwrite),
                    "Hello {}",
                    6);
 

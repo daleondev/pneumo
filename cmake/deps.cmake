@@ -23,7 +23,7 @@ if(PFMT_ENABLE_JSON OR PFMT_ENABLE_YAML OR PFMT_ENABLE_TOML)
     endif()
 endif()
 
-if(BUILD_TESTS)
+if(PNM_BUILD_TESTS)
     FetchContent_Declare(
         GTest
         GIT_REPOSITORY  https://github.com/google/googletest.git

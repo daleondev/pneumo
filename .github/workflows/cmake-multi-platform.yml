@@ -30,7 +30,7 @@ jobs:
     outputs:
       should_build: ${{ steps.filter.outputs.should_build }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dorny/paths-filter@v3
         id: filter
         with:
@@ -38,6 +38,7 @@ jobs:
             should_build:
               - '**'
               - '!README.md'
+              - '!CHANGELOG.md'
               - '!LICENSE'
               - '!THIRD-PARTY-NOTICES.txt'
               - '!.gitignore'
@@ -76,7 +77,7 @@ jobs:
             preset: clang-tidy
             run_tests: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Show toolchain versions
         run: |

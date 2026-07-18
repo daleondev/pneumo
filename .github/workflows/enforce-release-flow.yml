@@ -12,19 +12,23 @@ jobs:
     steps:
       - name: Check Branch Naming Rule
         env:
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           SOURCE_BRANCH: ${{ github.head_ref }}
           TARGET_BRANCH: ${{ github.base_ref }}
         run: |
           echo "Target: $TARGET_BRANCH"
           echo "Source: $SOURCE_BRANCH"
+          echo "Author: $PR_AUTHOR"
 
-          # Logic: If target is main, source MUST start with 'release/' (or 'hotfix/')
+          # Normal changes reach main through release/hotfix branches. Dependabot
+          # security updates always target the default branch and are admitted by
+          # their authenticated PR author rather than by a spoofable branch name.
           if [[ "$TARGET_BRANCH" == "main" ]]; then
-            if [[ ! "$SOURCE_BRANCH" =~ ^release/ ]] && [[ ! "$SOURCE_BRANCH" =~ ^hotfix/ ]]; then
-              echo "::error::⛔ VIOLATION: Merges to 'main' are ONLY allowed from 'release/*' or 'hotfix/*' branches."
+            if [[ "$PR_AUTHOR" != "dependabot[bot]" && ! "$SOURCE_BRANCH" =~ ^release/ && ! "$SOURCE_BRANCH" =~ ^hotfix/ ]]; then
+              echo "::error::Merges to 'main' are only allowed from 'release/*', 'hotfix/*', or Dependabot security-update branches."
               echo "::error::Current source branch is: '$SOURCE_BRANCH'"
               exit 1
             fi
           fi
 
-          echo "✅ Branch pattern matches Release Flow rules."
+          echo "Branch matches the release-flow rules."

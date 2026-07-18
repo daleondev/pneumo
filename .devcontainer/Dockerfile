@@ -1,6 +1,7 @@
 FROM mcr.microsoft.com/devcontainers/base:ubuntu-24.04 AS base
 
 ARG DEBIAN_FRONTEND=noninteractive
+ARG CLANG_P2996_COMMIT=7220baffd57ea5b0f8cf59bee494dd5b7cc2b748
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -20,11 +21,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ninja-build \
     python3 \
     git \
-    lld \ 
+    lld \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /llvm-project
-RUN git clone --depth=1 --branch=p2996 https://github.com/bloomberg/clang-p2996.git .
+RUN git init . \
+    && git remote add origin https://github.com/bloomberg/clang-p2996.git \
+    && git fetch --depth 1 origin "${CLANG_P2996_COMMIT}" \
+    && git checkout --detach FETCH_HEAD
 
 RUN cmake -S llvm -B build -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
@@ -69,7 +73,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=clang-builder /opt/clang-p2996 /opt/clang-p2996
 
 ENV PATH="/opt/clang-p2996/bin:${PATH}"
-ENV LD_LIBRARY_PATH="/opt/clang-p2996/lib:${LD_LIBRARY_PATH}"
+ENV LD_LIBRARY_PATH="/opt/clang-p2996/lib/x86_64-unknown-linux-gnu:/opt/clang-p2996/lib"
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 
 WORKDIR /workspaces/pneumo

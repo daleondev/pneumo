@@ -5,6 +5,7 @@
 #include <bitset>
 #include <concepts>
 #include <cstddef>
+#include <cstdio>
 #include <cstdlib>
 #include <expected>
 #include <limits>
@@ -357,7 +358,11 @@ namespace pnm
 #define PNM_ASSERT(x, msg, ...)                                                                              \
     do {                                                                                                     \
         if (!(x)) {                                                                                          \
-            PNM_FATAL_NOW("Assertion failed: " msg, ##__VA_ARGS__);                                          \
+            std::fprintf(stderr,                                                                             \
+                         "Assertion failed (%s) at %s:%d: " msg "\n",                                       \
+                         #x,                                                                                 \
+                         __FILE__,                                                                           \
+                         __LINE__ __VA_OPT__(, ) __VA_ARGS__);                                               \
             PNM_DEBUG_BREAK();                                                                               \
         }                                                                                                    \
     } while (false)
