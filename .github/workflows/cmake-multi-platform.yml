@@ -89,6 +89,7 @@ jobs:
       - name: Configure
         run: |
           cmake --preset "${{ matrix.preset }}" \
+            -DCMAKE_CXX_SCAN_FOR_MODULES=OFF \
             -DPFMT_ENABLE_JSON=ON \
             -DPFMT_ENABLE_YAML=ON \
             -DPFMT_ENABLE_TOML=ON
