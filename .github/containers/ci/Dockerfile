@@ -3,7 +3,7 @@
 ARG UBUNTU_VERSION=26.04
 ARG CLANG_P2996_COMMIT=7220baffd57ea5b0f8cf59bee494dd5b7cc2b748
 
-FROM ubuntu:${UBUNTU_VERSION} AS clang-builder
+FROM ubuntu:${UBUNTU_VERSION} AS clang-source
 
 ARG CLANG_P2996_COMMIT
 ARG BUILD_JOBS=2
@@ -26,6 +26,8 @@ RUN git init /tmp/clang-p2996 \
     && git -C /tmp/clang-p2996 remote add origin https://github.com/bloomberg/clang-p2996.git \
     && git -C /tmp/clang-p2996 fetch --depth 1 origin "${CLANG_P2996_COMMIT}" \
     && git -C /tmp/clang-p2996 checkout --detach FETCH_HEAD
+
+FROM clang-source AS clang-configured
 
 RUN cmake \
       -S /tmp/clang-p2996/llvm \
@@ -61,7 +63,6 @@ RUN cmake \
       -DLLVM_ENABLE_LIBXML2=OFF \
       -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra;lld" \
       -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi;libunwind" \
-      -DLLVM_ENABLE_TERMINFO=OFF \
       -DLLVM_ENABLE_ZLIB=OFF \
       -DLLVM_ENABLE_ZSTD=OFF \
       -DLLVM_INCLUDE_BENCHMARKS=OFF \
@@ -69,10 +70,13 @@ RUN cmake \
       -DLLVM_INCLUDE_TESTS=OFF \
       -DLLVM_INSTALL_TOOLCHAIN_ONLY=ON \
       -DLLVM_PARALLEL_LINK_JOBS=1 \
-      -DLLVM_RUNTIME_DISTRIBUTION_COMPONENTS="cxx;cxxabi;unwind" \
       -DLLVM_TARGETS_TO_BUILD=X86 \
-      -DLLVM_USE_LINKER=lld \
-    && cmake --build /tmp/clang-build --target install-distribution --parallel "${BUILD_JOBS}"
+      -DLLVM_USE_LINKER=lld
+
+FROM clang-configured AS clang-builder
+
+RUN cmake --build /tmp/clang-build --target install-distribution --parallel "${BUILD_JOBS}" \
+    && cmake --build /tmp/clang-build --target install-runtimes --parallel "${BUILD_JOBS}"
 
 FROM ubuntu:${UBUNTU_VERSION}
 
