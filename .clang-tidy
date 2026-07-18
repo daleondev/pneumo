@@ -1,0 +1,74 @@
+---
+Checks: >
+  readability-*,
+  bugprone-*,
+  modernize-*,
+  performance-*,
+  clang-analyzer-*,
+  cppcoreguidelines-*,
+  -readability-identifier-length,
+  -readability-braces-around-statements,
+  -readability-implicit-bool-conversion,
+  -modernize-use-trailing-return-type,
+  -modernize-use-nodiscard,
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  -cppcoreguidelines-pro-bounds-constant-array-index
+
+WarningsAsErrors: "*"
+HeaderFilterRegex: 'include/pneumo/.*\.hpp'
+CheckOptions:
+  - key: readability-identifier-naming.MacroDefinitionCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.GlobalConstexprVariableCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.GlobalConstantCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.LocalConstantCase
+    value: lower_case
+
+  - key: readability-identifier-naming.EnumConstantCase
+    value: CamelCase
+
+  - key: readability-identifier-naming.FunctionCase
+    value: lower_case
+  - key: readability-identifier-naming.VariableCase
+    value: lower_case
+  - key: readability-identifier-naming.ParameterCase
+    value: lower_case
+  - key: readability-identifier-naming.MethodCase
+    value: camelBack
+
+  - key: readability-identifier-naming.ClassCase
+    value: CamelCase
+  - key: readability-identifier-naming.ClassMemberCase
+    value: CamelCase
+  - key: readability-identifier-naming.ClassMemberPrefix
+    value: ""
+  # clang-tidy classifies non-const static data members as ClassMember.
+  - key: readability-identifier-naming.ClassMemberIgnoredRegexp
+    value: '^s_[a-z][a-zA-Z0-9]*$'
+  - key: readability-identifier-naming.ProtectedMemberCase
+    value: camelBack
+  - key: readability-identifier-naming.ProtectedMemberPrefix
+    value: m_
+  - key: readability-identifier-naming.PrivateMemberCase
+    value: camelBack
+  - key: readability-identifier-naming.PrivateMemberPrefix
+    value: m_
+  - key: readability-identifier-naming.ClassConstantCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.ClassConstantPrefix
+    value: ""
+
+  - key: readability-identifier-naming.StructCase
+    value: CamelCase
+  - key: readability-identifier-naming.StructMemberCase
+    value: lower_case
+  - key: readability-identifier-naming.StructMemberPrefix
+    value: ""
+
+  - key: readability-identifier-naming.TemplateParameterCase
+    value: CamelCase
+  - key: readability-identifier-naming.ConceptCase
+    value: CamelCase
+...

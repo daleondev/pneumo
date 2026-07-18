@@ -1,0 +1,5 @@
+build/
+*.pdf
+clang-p2996/
+gcc-p2996/
+*.log

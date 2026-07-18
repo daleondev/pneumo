@@ -1,0 +1,34 @@
+name: Enforce Release Flow
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, edited]
+    branches:
+      - "main"
+
+jobs:
+  check-source-branch:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check Branch Naming Rule
+        env:
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          SOURCE_BRANCH: ${{ github.head_ref }}
+          TARGET_BRANCH: ${{ github.base_ref }}
+        run: |
+          echo "Target: $TARGET_BRANCH"
+          echo "Source: $SOURCE_BRANCH"
+          echo "Author: $PR_AUTHOR"
+
+          # Normal changes reach main through release/hotfix branches. Dependabot
+          # security updates always target the default branch and are admitted by
+          # their authenticated PR author rather than by a spoofable branch name.
+          if [[ "$TARGET_BRANCH" == "main" ]]; then
+            if [[ "$PR_AUTHOR" != "dependabot[bot]" && ! "$SOURCE_BRANCH" =~ ^release/ && ! "$SOURCE_BRANCH" =~ ^hotfix/ ]]; then
+              echo "::error::Merges to 'main' are only allowed from 'release/*', 'hotfix/*', or Dependabot security-update branches."
+              echo "::error::Current source branch is: '$SOURCE_BRANCH'"
+              exit 1
+            fi
+          fi
+
+          echo "Branch matches the release-flow rules."

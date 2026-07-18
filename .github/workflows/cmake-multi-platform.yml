@@ -1,0 +1,142 @@
+name: Multi-Platform CI/CD
+
+on:
+  push:
+    branches:
+      - "main"
+      - "develop"
+      - "release/*"
+      - "hotfix/*"
+    tags:
+      - "v*.*.*"
+  pull_request:
+    branches:
+      - "main"
+      - "develop"
+      - "release/*"
+      - "hotfix/*"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      should_build: ${{ steps.filter.outputs.should_build }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            should_build:
+              - '**'
+              - '!README.md'
+              - '!CHANGELOG.md'
+              - '!LICENSE'
+              - '!THIRD-PARTY-NOTICES.txt'
+              - '!.gitignore'
+
+  build-lint-and-test:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    needs: changes
+    if: >-
+      needs.changes.outputs.should_build == 'true' ||
+      github.ref_type == 'tag' ||
+      github.event_name == 'workflow_dispatch'
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    defaults:
+      run:
+        shell: bash
+    container:
+      image: ghcr.io/daleondev/pneumo-ci:clang-p2996-7220baff-gcc16
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: GCC 16 Release
+            preset: gcc-release
+            run_tests: true
+          - name: Clang P2996 Release
+            preset: clang-release
+            run_tests: true
+          - name: Clang P2996 Tidy
+            preset: clang-tidy
+            run_tests: false
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Show toolchain versions
+        run: |
+          cmake --version
+          ninja --version
+          g++ --version
+          /opt/clang-p2996/bin/clang++ --version
+          /opt/clang-p2996/bin/clang-tidy --version
+
+      - name: Configure
+        run: |
+          cmake --preset "${{ matrix.preset }}" \
+            -DCMAKE_CXX_SCAN_FOR_MODULES=OFF \
+            -DPFMT_ENABLE_JSON=ON \
+            -DPFMT_ENABLE_YAML=ON \
+            -DPFMT_ENABLE_TOML=ON
+
+      - name: Build
+        run: cmake --build --preset "${{ matrix.preset }}" --parallel 2
+
+      - name: Test
+        if: matrix.run_tests
+        run: ctest --preset "${{ matrix.preset }}" --output-on-failure
+
+  publish-release:
+    runs-on: ubuntu-24.04
+    needs: build-lint-and-test
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Create draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: ${{ contains(github.ref, 'rc') }}
+          generate_release_notes: true
+          draft: true
+
+  required-check:
+    runs-on: ubuntu-24.04
+    needs:
+      - changes
+      - build-lint-and-test
+    if: always()
+    steps:
+      - name: Check CI status
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          BUILD_RESULT: ${{ needs.build-lint-and-test.result }}
+        run: |
+          echo "Change detection: ${CHANGES_RESULT}"
+          echo "Build matrix: ${BUILD_RESULT}"
+
+          if [[ "${CHANGES_RESULT}" != "success" ]]; then
+            echo "Change detection failed or was cancelled."
+            exit 1
+          fi
+
+          if [[ "${BUILD_RESULT}" != "success" && "${BUILD_RESULT}" != "skipped" ]]; then
+            echo "The build matrix failed or was cancelled."
+            exit 1
+          fi
