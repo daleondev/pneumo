@@ -583,7 +583,7 @@ namespace pnm::units
 
         constexpr auto determinePrintUnitIndex() const -> size_t
         {
-            auto abs_value{ std::abs(m_value) };
+            auto abs_value{ std::abs(value) };
             if (abs_value == 0.0 || !std::isfinite(abs_value)) {
                 return BASE_UNIT_INDEX;
             }
@@ -612,12 +612,10 @@ namespace pnm::units
         QuantityBase(const QuantityBase&) = default;
         QuantityBase(QuantityBase&&) = default;
 
-        constexpr QuantityBase(double value)
-          : m_value{ value }
+        constexpr QuantityBase(double val)
+          : value{ val }
         {
         }
-
-        double m_value{};
 
         friend Quantity;
 
@@ -630,34 +628,34 @@ namespace pnm::units
 
         constexpr auto operator<=>(const QuantityBase&) const = default;
 
-        constexpr auto operator+() const -> Quantity { return Quantity{ m_value }; }
-        constexpr auto operator-() const -> Quantity { return Quantity{ -m_value }; }
+        constexpr auto operator+() const -> Quantity { return Quantity{ value }; }
+        constexpr auto operator-() const -> Quantity { return Quantity{ -value }; }
 
         constexpr auto operator+(const Quantity& rhs) const -> Quantity
         {
-            return Quantity{ m_value + rhs.m_value };
+            return Quantity{ value + rhs.value };
         }
 
         constexpr auto operator+=(const Quantity& rhs) -> Quantity&
         {
-            m_value += rhs.m_value;
+            value += rhs.value;
             return static_cast<Quantity&>(*this);
         }
 
         constexpr auto operator-(const Quantity& rhs) const -> Quantity
         {
-            return Quantity{ m_value - rhs.m_value };
+            return Quantity{ value - rhs.value };
         }
 
         constexpr auto operator-=(const Quantity& rhs) -> Quantity&
         {
-            m_value -= rhs.m_value;
+            value -= rhs.value;
             return static_cast<Quantity&>(*this);
         }
 
         constexpr auto operator*(std::convertible_to<double> auto rhs) const -> Quantity
         {
-            return Quantity{ m_value * static_cast<double>(rhs) };
+            return Quantity{ value * static_cast<double>(rhs) };
         }
 
         template<typename Scalar>
@@ -669,20 +667,20 @@ namespace pnm::units
 
         constexpr auto operator*=(std::convertible_to<double> auto rhs) -> Quantity&
         {
-            m_value = m_value * static_cast<double>(rhs);
+            value = value * static_cast<double>(rhs);
             return static_cast<Quantity&>(*this);
         }
 
-        constexpr auto operator/(const Quantity& rhs) const -> double { return m_value / rhs.m_value; }
+        constexpr auto operator/(const Quantity& rhs) const -> double { return value / rhs.value; }
 
         constexpr auto operator/(std::convertible_to<double> auto rhs) const -> Quantity
         {
-            return Quantity{ m_value / static_cast<double>(rhs) };
+            return Quantity{ value / static_cast<double>(rhs) };
         }
 
         constexpr auto operator/=(std::convertible_to<double> auto rhs) -> Quantity&
         {
-            m_value = m_value / static_cast<double>(rhs);
+            value = value / static_cast<double>(rhs);
             return static_cast<Quantity&>(*this);
         }
 
@@ -690,7 +688,7 @@ namespace pnm::units
         {
             auto index{ quantity.determinePrintUnitIndex() };
             auto suffix{ UnitsMeta::NESTED_TYPE_NAMES[index] };
-            os << (quantity.m_value / UNIT_FACTORS[index]);
+            os << (quantity.value / UNIT_FACTORS[index]);
             for (auto ch : suffix) {
                 os << (ch == '_' ? '/' : ch);
             }
@@ -708,10 +706,12 @@ namespace pnm::units
         template<detail::IsUnit Unit>
         constexpr auto get() const -> double
         {
-            return static_cast<double>((m_value / Unit::FACTOR) - Unit::OFFSET);
+            return static_cast<double>((value / Unit::FACTOR) - Unit::OFFSET);
         }
 
-        constexpr auto get() const -> double { return m_value; }
+        constexpr auto get() const -> double { return value; }
+
+        double value{};
     };
 
     struct TimeUnits
