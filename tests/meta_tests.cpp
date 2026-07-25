@@ -297,12 +297,10 @@ TEST(TupleMetaTests, ForEachElementCanIterateReverseAndBreak)
     auto values = std::tuple{ 1, 2, 3, 4 };
     auto visited_values = std::vector<int>{};
 
-    pnm::meta::tuple::for_each_element<pnm::meta::Iteration::Reverse>(
-      [&visited_values](int value) {
-          visited_values.push_back(value);
-          return value == 2 ? pnm::meta::Loop::Break : pnm::meta::Loop::Continue;
-      },
-      values);
+    pnm::meta::tuple::for_each_element<pnm::meta::Iteration::Reverse>([&visited_values](int value) {
+        visited_values.push_back(value);
+        return value == 2 ? pnm::meta::Loop::Break : pnm::meta::Loop::Continue;
+    }, values);
 
     ASSERT_EQ(visited_values.size(), 3UZ);
     EXPECT_EQ(visited_values[0], 4);
@@ -577,7 +575,8 @@ TEST(StructMetaTests, InfoIncludesFieldsAndNestedTypes)
     static_assert(FieldInfo::MEMBER_NAMES[1] == "ratio");
 
     static_assert(NestedInfo::numNestedTypes() == 3UZ);
-    static_assert(std::same_as<NestedInfo::NestedTypes, pnm::meta::structural::nested_types_t<NestedTypesProbe>>);
+    static_assert(
+      std::same_as<NestedInfo::NestedTypes, pnm::meta::structural::nested_types_t<NestedTypesProbe>>);
     static_assert(NestedInfo::NESTED_TYPE_NAMES[0] == "Plain");
     static_assert(NestedInfo::NESTED_TYPE_NAMES[1] == "TemplateAlias");
     static_assert(NestedInfo::NESTED_TYPE_NAMES[2] == "BaseAlias");
@@ -661,8 +660,9 @@ TEST(StructMetaTests, InfoIncludesMethodCandidates)
     using Info = pnm::meta::structural::Info<MethodProbe>;
 
     static_assert(Info::numMethods() == 6UZ);
-    static_assert(std::same_as<Info::MethodTypes,
-                               std::tuple<int() const, double() const, int(), int(int) const, void() const, int()>>);
+    static_assert(
+      std::same_as<Info::MethodTypes,
+                   std::tuple<int() const, double() const, int(), int(int) const, void() const, int()>>);
     static_assert(Info::METHOD_NAMES[0] == "id");
     static_assert(Info::METHOD_NAMES[1] == "ratio");
     static_assert(Info::METHOD_NAMES[2] == "nonConst");
@@ -680,7 +680,7 @@ TEST(StructMetaTests, DispatchInvokesStaticMemberByName)
 
 TEST(StaticRangeMetaTests, CreatesInclusiveRangeWithReflectedMembers)
 {
-    using Range = pnm::meta::structural::StaticRange<9, 11>;
+    using Range = pnm::meta::structural::Range<9, 11>;
     using Type = Range::type;
     constexpr auto value = Range::create();
 
@@ -696,7 +696,7 @@ TEST(StaticRangeMetaTests, CreatesInclusiveRangeWithReflectedMembers)
 
 TEST(StaticRangeMetaTests, SingleArgumentCreatesZeroBasedRange)
 {
-    using Range = pnm::meta::structural::StaticRange<3>;
+    using Range = pnm::meta::structural::Range<3>;
     using Type = Range::type;
     constexpr auto value = Range::create();
 
@@ -710,7 +710,7 @@ TEST(StaticRangeMetaTests, SingleArgumentCreatesZeroBasedRange)
 
 TEST(StaticRangeMetaTests, PreservesRequestedIntegralType)
 {
-    using Range = pnm::meta::structural::StaticRange<4, 6, std::uint16_t>;
+    using Range = pnm::meta::structural::Range<4, 6, std::uint16_t>;
     using Type = Range::type;
     constexpr auto value = Range::create();
 
@@ -726,7 +726,7 @@ TEST(StaticRangeMetaTests, PreservesRequestedIntegralType)
 
 TEST(StaticRangeMetaTests, SupportsSingleValueInclusiveRange)
 {
-    using Range = pnm::meta::structural::StaticRange<7, 7>;
+    using Range = pnm::meta::structural::Range<7, 7>;
     using Type = Range::type;
     constexpr auto value = Range::create();
 
