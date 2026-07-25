@@ -1076,38 +1076,18 @@ namespace pnm::meta
                 std::string_view source_code;
             };
 
-            struct EmbeddedSourceDescriptor
-            {
-                std::string_view file_name;
-                const void* source_data;
-                size_t source_size;
-            };
+            static_assert(std::is_trivially_copyable_v<EmbeddedSource>);
+            static_assert(std::is_trivially_destructible_v<EmbeddedSource>);
 
-            static_assert(std::is_trivially_copyable_v<EmbeddedSourceDescriptor>);
-            static_assert(std::is_trivially_destructible_v<EmbeddedSourceDescriptor>);
-
-#if defined(__ELF__)
             extern "C" {
-            extern const EmbeddedSourceDescriptor __start_pnm_embedded_sources[] __attribute__((weak));
-            extern const EmbeddedSourceDescriptor __stop_pnm_embedded_sources[] __attribute__((weak));
-            }
-#endif
-
-            static auto descriptor_source(const EmbeddedSourceDescriptor& descriptor) noexcept
-              -> EmbeddedSource
-            {
-                return {
-                    .file_name = descriptor.file_name,
-                    .source_code = std::string_view{ static_cast<const char*>(descriptor.source_data),
-                                                     descriptor.source_size },
-                };
+            extern const EmbeddedSource __start_pnm_embedded_sources[] __attribute__((weak));
+            extern const EmbeddedSource __stop_pnm_embedded_sources[] __attribute__((weak));
             }
 
             static auto find_embedded_source(std::string_view file_name) noexcept
               -> std::optional<EmbeddedSource>
             {
-#if defined(__ELF__)
-                if (__start_pnm_embedded_sources == nullptr || __stop_pnm_embedded_sources == nullptr) {
+                if (!__start_pnm_embedded_sources || !__stop_pnm_embedded_sources) {
                     return std::nullopt;
                 }
 
@@ -1115,12 +1095,10 @@ namespace pnm::meta
                      descriptor != __stop_pnm_embedded_sources;
                      ++descriptor) {
                     if (descriptor->file_name == file_name) {
-                        return descriptor_source(*descriptor);
+                        return *descriptor;
                     }
                 }
-#else
-                static_cast<void>(file_name);
-#endif
+
                 return std::nullopt;
             }
 
@@ -1193,12 +1171,15 @@ namespace pnm::meta
 
             static auto load_source(std::string_view source_path) -> Result<std::string_view>
             {
-                if (auto embedded{ find_embedded_source(source_path) }) {
-                    return embedded->source_code;
-                }
-
                 if (auto cached{ Registry::instance()[source_path] }) {
                     return cached->source_code;
+                }
+
+                if (auto embedded{ find_embedded_source(source_path) }) {
+                    Registry::instance().embed(*embedded);
+                    if (auto cached{ Registry::instance()[source_path] }) {
+                        return cached->source_code;
+                    }
                 }
 
                 if (std::filesystem::exists(source_path) && std::filesystem::is_regular_file(source_path)) {
@@ -1216,30 +1197,13 @@ namespace pnm::meta
             }
         }
 
-        static auto embed(std::string_view source_code,
-                          std::source_location location = std::source_location::current()) -> bool
+        static consteval auto embed_current() -> detail::EmbeddedSource
         {
-            return detail::Registry::instance().embed(
-              detail::EmbeddedSource{ .file_name = location.file_name(), .source_code = source_code });
-        }
-
-        static consteval auto embedded_current_descriptor() -> detail::EmbeddedSourceDescriptor
-        {
-            static constexpr auto source{ std::to_array<unsigned char>({
+            static constexpr auto source_code{ std::to_array<char>({
 #embed __BASE_FILE__
               , 0U }) };
-            return {
-                .file_name = __BASE_FILE__,
-                .source_data = source.data(),
-                .source_size = source.size() - 1,
-            };
-        }
-
-        static auto embed_current() -> bool
-        {
-            constexpr auto descriptor{ embedded_current_descriptor() };
-            const auto source{ detail::descriptor_source(descriptor) };
-            return detail::Registry::instance().embed(source);
+            return { .file_name = __BASE_FILE__,
+                     .source_code = std::string_view(source_code.data(), source_code.size() - 1) };
         }
 
         static auto excerpt(std::string_view file_name, uint32_t line, size_t context_size = 0)
@@ -1289,52 +1253,30 @@ namespace pnm::meta
 }
 
 // clang-format off
-#if defined(__ELF__)
-#define PNM_META_SOURCE_EMBED_CURRENT                                                             \
-    namespace                                                                                     \
-    {                                                                                             \
-        [[maybe_unused, gnu::used, gnu::section("pnm_embedded_sources")]]                         \
-        static constinit const auto IS_PNM_META_SOURCE_EMBEDDED{                                  \
-            pnm::meta::source::embedded_current_descriptor()                                      \
-        };                                                                                        \
+#define PNM_META_SOURCE_EMBED_CURRENT                                                               \
+    namespace                                                                                       \
+    {                                                                                               \
+        [[maybe_unused, gnu::used, gnu::retain, gnu::section("pnm_embedded_sources")]]              \
+        static constinit const auto PNM_META_EMBEDDED_SOURCE{                                       \
+            pnm::meta::source::embed_current()                                                      \
+        };                                                                                          \
     }
 
-#define PNM_META_SOURCE_EMBED_BEGIN                                                               \
-    namespace                                                                                     \
-    {                                                                                             \
+#define PNM_META_SOURCE_EMBED_BEGIN(file_name)                                                      \
+    namespace                                                                                       \
+    {                                                                                               \
+        static constexpr auto FILE_NAME{ file_name };                                               \
         static constexpr auto PNM_META_EMBEDDED_SOURCE_DATA{ std::to_array<char>({
 
-#define PNM_META_SOURCE_EMBED_END                                                                 \
-            , '\0' }) };                                                                          \
-        [[maybe_unused, gnu::used, gnu::section("pnm_embedded_sources")]]                         \
-        static constinit const pnm::meta::source::detail::EmbeddedSourceDescriptor                \
-          IS_PNM_META_SOURCE_EMBEDDED{                                                            \
-              .file_name = __FILE__,                                                              \
-              .source_data = PNM_META_EMBEDDED_SOURCE_DATA.data(),                                \
-              .source_size = PNM_META_EMBEDDED_SOURCE_DATA.size() - 1,                            \
-          };                                                                                      \
+#define PNM_META_SOURCE_EMBED_END                                                                   \
+            , '\0' }) };                                                                            \
+        [[maybe_unused, gnu::used, gnu::retain, gnu::section("pnm_embedded_sources")]]              \
+        static constinit const pnm::meta::source::detail::EmbeddedSource PNM_META_EMBEDDED_SOURCE{  \
+            .file_name = FILE_NAME,                                                                 \
+            .source_code = std::string_view(PNM_META_EMBEDDED_SOURCE_DATA.data(),                   \
+            PNM_META_EMBEDDED_SOURCE_DATA.size() - 1)                                               \
+        };                                                                                          \
     }
-#else 
-#define PNM_META_SOURCE_EMBED_CURRENT                                                             \
-    namespace                                                                                     \
-    {                                                                                             \
-        [[maybe_unused]] static const auto IS_PNM_META_SOURCE_EMBEDDED{                           \
-            pnm::meta::source::embed_current()                                                    \
-        };                                                                                        \
-    }
-
-#define PNM_META_SOURCE_EMBED_BEGIN                                                               \
-    namespace                                                                                     \
-    {                                                                                             \
-        [[maybe_unused]] static const auto IS_PNM_META_SOURCE_EMBEDDED{ [] {                      \
-            static constexpr auto source{ std::to_array<char>({
-
-#define PNM_META_SOURCE_EMBED_END                                                                 \
-            , '\0' }) };                                                                          \
-            return pnm::meta::source::embed(std::string_view(source.data(), source.size() - 1));  \
-        }() };                                                                                    \
-    }
-#endif
 // clang-format on
 
 #if defined(__GNUC__) || defined(__clang__)

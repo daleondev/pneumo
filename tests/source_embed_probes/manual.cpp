@@ -4,7 +4,7 @@
 #include <string_view>
 
 // clang-format off
-PNM_META_SOURCE_EMBED_BEGIN
+PNM_META_SOURCE_EMBED_BEGIN(__FILE__)
     'm', 'a', 'n', 'u', 'a', 'l', '-', 's', 'o', 'u', 'r', 'c', 'e'
 PNM_META_SOURCE_EMBED_END;
 // clang-format on

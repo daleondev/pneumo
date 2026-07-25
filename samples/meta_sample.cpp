@@ -3,10 +3,10 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <ratio>
 #include <string>
 #include <tuple>
 #include <variant>
-#include <ratio>
 
 #include <iostream>
 
@@ -179,7 +179,8 @@ namespace
 
     static_assert(std::same_as<pnm::meta::structural::field_type_t<0, SampleAggregate>, int>);
     static_assert(std::same_as<pnm::meta::structural::field_type_t<1, SampleAggregate>, double>);
-    static_assert(std::same_as<pnm::meta::structural::field_types_t<SampleAggregate>, std::tuple<int, double>>);
+    static_assert(
+      std::same_as<pnm::meta::structural::field_types_t<SampleAggregate>, std::tuple<int, double>>);
 
     constexpr auto SAMPLE_ID_VALUE = 7;
     constexpr auto SAMPLE_WEIGHT_VALUE = 1.5;
@@ -193,8 +194,7 @@ namespace
 
     using NestedTypes = pnm::meta::structural::nested_types_t<SampleNestedTypes>;
     static_assert(
-      std::same_as<NestedTypes,
-                   std::tuple<int, std::ratio<2>, SampleNestedTemplate<double, std::ratio<3>>>>);
+      std::same_as<NestedTypes, std::tuple<int, std::ratio<2>, SampleNestedTemplate<double, std::ratio<3>>>>);
     static_assert(std::same_as<pnm::meta::structural::nested_type_t<0, SampleNestedTypes>, int>);
     static_assert(pnm::meta::structural::nested_type_name<0, SampleNestedTypes>() == "Index");
     constexpr auto SAMPLE_NESTED_TYPE_NAMES = pnm::meta::structural::nested_type_names<SampleNestedTypes>();
@@ -216,8 +216,6 @@ PNM_META_SOURCE_EMBED_CURRENT
 
 auto main() -> int
 {
-    std::cout << *pnm::meta::source::excerpt(__FILE__, __LINE__, 1) << std::endl;
-
     using MyVariant = std::variant<int, double, int, float>;
     pnm::meta::variant::for_each<MyVariant>([](auto index) {
         using Type = std::variant_alternative_t<index, MyVariant>;
@@ -272,6 +270,9 @@ auto main() -> int
     for (auto name : nested_names) {
         std::cout << "  " << name << '\n';
     }
+
+    std::cout << "Embedded source code: \n"
+              << *pnm::meta::source::excerpt(__FILE__, __LINE__, 3) << std::endl;
 
     return 0;
 }
