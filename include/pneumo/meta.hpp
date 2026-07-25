@@ -890,7 +890,7 @@ namespace pnm::meta
                         if (ec != std::errc{}) {
                             throw std::logic_error("to_chars failed");
                         }
-                        data.resize(1 + (ptr - data.data()));
+                        data.resize(static_cast<size_t>(ptr - data.data()));
                         return std::define_static_array(data);
                     }() };
                     return string::FixedString<buff.size()>(buff.data());
