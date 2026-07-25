@@ -297,12 +297,10 @@ TEST(TupleMetaTests, ForEachElementCanIterateReverseAndBreak)
     auto values = std::tuple{ 1, 2, 3, 4 };
     auto visited_values = std::vector<int>{};
 
-    pnm::meta::tuple::for_each_element<pnm::meta::Iteration::Reverse>(
-      [&visited_values](int value) {
-          visited_values.push_back(value);
-          return value == 2 ? pnm::meta::Loop::Break : pnm::meta::Loop::Continue;
-      },
-      values);
+    pnm::meta::tuple::for_each_element<pnm::meta::Iteration::Reverse>([&visited_values](int value) {
+        visited_values.push_back(value);
+        return value == 2 ? pnm::meta::Loop::Break : pnm::meta::Loop::Continue;
+    }, values);
 
     ASSERT_EQ(visited_values.size(), 3UZ);
     EXPECT_EQ(visited_values[0], 4);
@@ -577,7 +575,8 @@ TEST(StructMetaTests, InfoIncludesFieldsAndNestedTypes)
     static_assert(FieldInfo::MEMBER_NAMES[1] == "ratio");
 
     static_assert(NestedInfo::numNestedTypes() == 3UZ);
-    static_assert(std::same_as<NestedInfo::NestedTypes, pnm::meta::structural::nested_types_t<NestedTypesProbe>>);
+    static_assert(
+      std::same_as<NestedInfo::NestedTypes, pnm::meta::structural::nested_types_t<NestedTypesProbe>>);
     static_assert(NestedInfo::NESTED_TYPE_NAMES[0] == "Plain");
     static_assert(NestedInfo::NESTED_TYPE_NAMES[1] == "TemplateAlias");
     static_assert(NestedInfo::NESTED_TYPE_NAMES[2] == "BaseAlias");
@@ -661,8 +660,9 @@ TEST(StructMetaTests, InfoIncludesMethodCandidates)
     using Info = pnm::meta::structural::Info<MethodProbe>;
 
     static_assert(Info::numMethods() == 6UZ);
-    static_assert(std::same_as<Info::MethodTypes,
-                               std::tuple<int() const, double() const, int(), int(int) const, void() const, int()>>);
+    static_assert(
+      std::same_as<Info::MethodTypes,
+                   std::tuple<int() const, double() const, int(), int(int) const, void() const, int()>>);
     static_assert(Info::METHOD_NAMES[0] == "id");
     static_assert(Info::METHOD_NAMES[1] == "ratio");
     static_assert(Info::METHOD_NAMES[2] == "nonConst");
@@ -676,6 +676,64 @@ TEST(StructMetaTests, DispatchInvokesStaticMemberByName)
 {
     static_assert(pnm::meta::structural::dispatch<DispatchProbe, "triple">(7) == 21);
     EXPECT_EQ((pnm::meta::structural::dispatch<DispatchProbe, "triple">(5)), 15);
+}
+
+TEST(StaticRangeMetaTests, CreatesInclusiveRangeWithReflectedMembers)
+{
+    using Range = pnm::meta::structural::Range<9, 11>;
+    using Type = Range::type;
+    constexpr auto value = Range::create();
+
+    static_assert(pnm::meta::structural::field_count<Type>() == 3UZ);
+    static_assert(pnm::meta::structural::field_names<Type>() ==
+                  std::array<std::string_view, 3>{ "_9", "_10", "_11" });
+    static_assert(std::same_as<pnm::meta::structural::field_types_t<Type>, std::tuple<int, int, int>>);
+    static_assert(pnm::meta::structural::get<0>(value) == 9);
+    static_assert(pnm::meta::structural::get<1>(value) == 10);
+    static_assert(pnm::meta::structural::get<2>(value) == 11);
+    SUCCEED();
+}
+
+TEST(StaticRangeMetaTests, SingleArgumentCreatesZeroBasedRange)
+{
+    using Range = pnm::meta::structural::Range<3>;
+    using Type = Range::type;
+    constexpr auto value = Range::create();
+
+    static_assert(pnm::meta::structural::field_names<Type>() ==
+                  std::array<std::string_view, 3>{ "_0", "_1", "_2" });
+    static_assert(pnm::meta::structural::get<0>(value) == 0);
+    static_assert(pnm::meta::structural::get<1>(value) == 1);
+    static_assert(pnm::meta::structural::get<2>(value) == 2);
+    SUCCEED();
+}
+
+TEST(StaticRangeMetaTests, PreservesRequestedIntegralType)
+{
+    using Range = pnm::meta::structural::Range<4, 6, std::uint16_t>;
+    using Type = Range::type;
+    constexpr auto value = Range::create();
+
+    static_assert(std::same_as<pnm::meta::structural::field_types_t<Type>,
+                               std::tuple<std::uint16_t, std::uint16_t, std::uint16_t>>);
+    static_assert(
+      std::same_as<std::remove_cvref_t<decltype(pnm::meta::structural::get<0>(value))>, std::uint16_t>);
+    static_assert(pnm::meta::structural::get<0>(value) == 4);
+    static_assert(pnm::meta::structural::get<1>(value) == 5);
+    static_assert(pnm::meta::structural::get<2>(value) == 6);
+    SUCCEED();
+}
+
+TEST(StaticRangeMetaTests, SupportsSingleValueInclusiveRange)
+{
+    using Range = pnm::meta::structural::Range<7, 7>;
+    using Type = Range::type;
+    constexpr auto value = Range::create();
+
+    static_assert(pnm::meta::structural::field_count<Type>() == 1UZ);
+    static_assert(pnm::meta::structural::field_name<0, Type>() == "_7");
+    static_assert(pnm::meta::structural::get<0>(value) == 7);
+    SUCCEED();
 }
 
 PNM_META_SOURCE_EMBED_CURRENT
