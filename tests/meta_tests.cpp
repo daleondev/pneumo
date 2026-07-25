@@ -678,6 +678,64 @@ TEST(StructMetaTests, DispatchInvokesStaticMemberByName)
     EXPECT_EQ((pnm::meta::structural::dispatch<DispatchProbe, "triple">(5)), 15);
 }
 
+TEST(StaticRangeMetaTests, CreatesInclusiveRangeWithReflectedMembers)
+{
+    using Range = pnm::meta::structural::StaticRange<9, 11>;
+    using Type = Range::type;
+    constexpr auto value = Range::create();
+
+    static_assert(pnm::meta::structural::field_count<Type>() == 3UZ);
+    static_assert(pnm::meta::structural::field_names<Type>() ==
+                  std::array<std::string_view, 3>{ "_9", "_10", "_11" });
+    static_assert(std::same_as<pnm::meta::structural::field_types_t<Type>, std::tuple<int, int, int>>);
+    static_assert(pnm::meta::structural::get<0>(value) == 9);
+    static_assert(pnm::meta::structural::get<1>(value) == 10);
+    static_assert(pnm::meta::structural::get<2>(value) == 11);
+    SUCCEED();
+}
+
+TEST(StaticRangeMetaTests, SingleArgumentCreatesZeroBasedRange)
+{
+    using Range = pnm::meta::structural::StaticRange<3>;
+    using Type = Range::type;
+    constexpr auto value = Range::create();
+
+    static_assert(pnm::meta::structural::field_names<Type>() ==
+                  std::array<std::string_view, 3>{ "_0", "_1", "_2" });
+    static_assert(pnm::meta::structural::get<0>(value) == 0);
+    static_assert(pnm::meta::structural::get<1>(value) == 1);
+    static_assert(pnm::meta::structural::get<2>(value) == 2);
+    SUCCEED();
+}
+
+TEST(StaticRangeMetaTests, PreservesRequestedIntegralType)
+{
+    using Range = pnm::meta::structural::StaticRange<4, 6, std::uint16_t>;
+    using Type = Range::type;
+    constexpr auto value = Range::create();
+
+    static_assert(std::same_as<pnm::meta::structural::field_types_t<Type>,
+                               std::tuple<std::uint16_t, std::uint16_t, std::uint16_t>>);
+    static_assert(
+      std::same_as<std::remove_cvref_t<decltype(pnm::meta::structural::get<0>(value))>, std::uint16_t>);
+    static_assert(pnm::meta::structural::get<0>(value) == 4);
+    static_assert(pnm::meta::structural::get<1>(value) == 5);
+    static_assert(pnm::meta::structural::get<2>(value) == 6);
+    SUCCEED();
+}
+
+TEST(StaticRangeMetaTests, SupportsSingleValueInclusiveRange)
+{
+    using Range = pnm::meta::structural::StaticRange<7, 7>;
+    using Type = Range::type;
+    constexpr auto value = Range::create();
+
+    static_assert(pnm::meta::structural::field_count<Type>() == 1UZ);
+    static_assert(pnm::meta::structural::field_name<0, Type>() == "_7");
+    static_assert(pnm::meta::structural::get<0>(value) == 7);
+    SUCCEED();
+}
+
 PNM_META_SOURCE_EMBED_CURRENT
 
 TEST(SourceMetaTests, SelfEmbedHelperRegistersSourceFile)
