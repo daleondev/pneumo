@@ -969,7 +969,12 @@ auto main() -> int
 }
 ```
 
-`PNM_META_SOURCE_EMBED_CURRENT` embeds the current translation unit once, and `pnm::meta::source::excerpt(file, line, context_size)` returns a `pnm::Result<std::string>` containing a numbered excerpt when the source is available.
+`PNM_META_SOURCE_EMBED_CURRENT` embeds the current translation unit once, and
+`pnm::meta::source::excerpt(file, line, context_size)` returns a
+`pnm::Result<std::string>` containing a numbered excerpt when the source is
+available. On ELF targets, embedded sources are immutable, allocation-free
+linker descriptors: the macro does not run a global constructor or touch the
+runtime source-registry mutex before `main()`.
 
 ### Available CMake Configuration Options
 

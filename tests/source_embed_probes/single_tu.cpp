@@ -12,7 +12,7 @@ namespace
 
 auto main() -> int
 {
-    const auto embedded = pnm::meta::source::detail::Registry::instance()[__FILE__];
+    const auto embedded = pnm::meta::source::detail::find_embedded_source(__FILE__);
     if (!embedded.has_value()) {
         return EXIT_FAILURE;
     }

@@ -29,3 +29,23 @@ execute_process(
 if(NOT run_result EQUAL 0)
     message(FATAL_ERROR "Probe target failed at runtime: ${PROBE_TARGET}")
 endif()
+
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
+    if(NOT DEFINED PROBE_NM OR NOT EXISTS "${PROBE_NM}")
+        message(FATAL_ERROR "PROBE_NM must name a valid nm executable on ELF hosts")
+    endif()
+
+    execute_process(
+        COMMAND "${PROBE_NM}" --defined-only "${PROBE_BINARY}"
+        RESULT_VARIABLE nm_result
+        OUTPUT_VARIABLE symbols
+    )
+
+    if(NOT nm_result EQUAL 0)
+        message(FATAL_ERROR "Failed to inspect probe symbols: ${PROBE_TARGET}")
+    endif()
+
+    if(symbols MATCHES "_GLOBAL__sub_I")
+        message(FATAL_ERROR "Source embedding introduced a global initializer: ${PROBE_TARGET}")
+    endif()
+endif()
