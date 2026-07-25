@@ -873,28 +873,29 @@ namespace pnm::meta
                 }(std::make_index_sequence<method_reflections<std::remove_cvref_t<T>>().size()>{});
             }
 
+            template<auto Number>
+            static consteval auto number_to_string()
+            {
+                constexpr auto buff{ [] constexpr {
+                    constexpr auto reserved_size{ 16UZ };
+                    std::vector<char> data(reserved_size);
+                    data[0] = '_';
+                    auto [ptr, ec] = std::to_chars(data.data() + 1, data.data() + data.size(), Number);
+                    if (ec != std::errc{}) {
+                        throw std::logic_error("to_chars failed");
+                    }
+                    data.resize(static_cast<size_t>(ptr - data.data()));
+                    return std::define_static_array(data);
+                }() };
+                return string::FixedString<buff.size()>(buff.data());
+            }
+
             template<size_t First, size_t Last, std::integral T>
             struct Range
             {
                 static_assert(First <= Last);
 
                 struct type;
-
-                template<auto Number>
-                static consteval auto number_to_string()
-                {
-                    constexpr auto buff{ [] constexpr {
-                        std::vector<char> data(16);
-                        data[0] = '_';
-                        auto [ptr, ec] = std::to_chars(data.data() + 1, data.data() + data.size(), Number);
-                        if (ec != std::errc{}) {
-                            throw std::logic_error("to_chars failed");
-                        }
-                        data.resize(static_cast<size_t>(ptr - data.data()));
-                        return std::define_static_array(data);
-                    }() };
-                    return string::FixedString<buff.size()>(buff.data());
-                }
 
                 consteval
                 {
@@ -920,6 +921,7 @@ namespace pnm::meta
 
                     type instance{};
                     auto i{ 0UZ };
+                    // NOLINTNEXTLINE(bugprone-reserved-identifier,readability-identifier-naming)
                     template for (constexpr auto member : members)
                     {
                         if constexpr (std::meta::is_nonstatic_data_member(member)) {
