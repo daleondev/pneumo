@@ -680,9 +680,8 @@ TEST(StructMetaTests, DispatchInvokesStaticMemberByName)
 
 TEST(StaticRangeMetaTests, CreatesInclusiveRangeWithReflectedMembers)
 {
-    using Range = pnm::meta::structural::Range<9, 11>;
-    using Type = Range::type;
-    constexpr auto value = Range::create();
+    constexpr auto value = pnm::meta::structural::range<9, 11>();
+    using Type = decltype(value);
 
     static_assert(pnm::meta::structural::field_count<Type>() == 3UZ);
     static_assert(pnm::meta::structural::field_names<Type>() ==
@@ -696,9 +695,8 @@ TEST(StaticRangeMetaTests, CreatesInclusiveRangeWithReflectedMembers)
 
 TEST(StaticRangeMetaTests, SingleArgumentCreatesZeroBasedRange)
 {
-    using Range = pnm::meta::structural::Range<3>;
-    using Type = Range::type;
-    constexpr auto value = Range::create();
+    constexpr auto value = pnm::meta::structural::range<3>();
+    using Type = decltype(value);
 
     static_assert(pnm::meta::structural::field_names<Type>() ==
                   std::array<std::string_view, 3>{ "_0", "_1", "_2" });
@@ -710,9 +708,8 @@ TEST(StaticRangeMetaTests, SingleArgumentCreatesZeroBasedRange)
 
 TEST(StaticRangeMetaTests, PreservesRequestedIntegralType)
 {
-    using Range = pnm::meta::structural::Range<4, 6, std::uint16_t>;
-    using Type = Range::type;
-    constexpr auto value = Range::create();
+    constexpr auto value = pnm::meta::structural::range<4, 6, std::uint16_t>();
+    using Type = decltype(value);
 
     static_assert(std::same_as<pnm::meta::structural::field_types_t<Type>,
                                std::tuple<std::uint16_t, std::uint16_t, std::uint16_t>>);
@@ -726,9 +723,8 @@ TEST(StaticRangeMetaTests, PreservesRequestedIntegralType)
 
 TEST(StaticRangeMetaTests, SupportsSingleValueInclusiveRange)
 {
-    using Range = pnm::meta::structural::Range<7, 7>;
-    using Type = Range::type;
-    constexpr auto value = Range::create();
+    constexpr auto value = pnm::meta::structural::range<7, 7>();
+    using Type = decltype(value);
 
     static_assert(pnm::meta::structural::field_count<Type>() == 1UZ);
     static_assert(pnm::meta::structural::field_name<0, Type>() == "_7");
