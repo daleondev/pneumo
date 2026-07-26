@@ -1182,13 +1182,21 @@ namespace pnm::meta
                 std::string_view source_code;
             };
 
+            struct EmbeddedSourceRecord
+            {
+                const char* file_name;
+                const char* source_code;
+            };
+
             static_assert(std::is_trivially_copyable_v<EmbeddedSource>);
             static_assert(std::is_trivially_destructible_v<EmbeddedSource>);
+            static_assert(std::is_trivially_copyable_v<EmbeddedSourceRecord>);
+            static_assert(std::is_trivially_destructible_v<EmbeddedSourceRecord>);
 
             // NOLINTBEGIN(bugprone-reserved-identifier,readability-identifier-naming)
             extern "C" {
-            extern const EmbeddedSource __start_pnm_embedded_sources[] __attribute__((weak));
-            extern const EmbeddedSource __stop_pnm_embedded_sources[] __attribute__((weak));
+            extern const EmbeddedSourceRecord __start_pnm_embedded_sources[] __attribute__((weak));
+            extern const EmbeddedSourceRecord __stop_pnm_embedded_sources[] __attribute__((weak));
             }
             // NOLINTEND(bugprone-reserved-identifier,readability-identifier-naming)
 
@@ -1201,10 +1209,15 @@ namespace pnm::meta
                 }
 
                 std::span sources{ &__start_pnm_embedded_sources[0], &__stop_pnm_embedded_sources[0] };
-                auto it{ std::ranges::find(sources, file_name, &EmbeddedSource::file_name) };
+                const auto it{ std::ranges::find_if(sources, [file_name](const EmbeddedSourceRecord& source) {
+                    return source.file_name != nullptr && file_name == source.file_name;
+                }) };
 
-                if (it != sources.end()) {
-                    return *it;
+                if (it != sources.end() && it->source_code != nullptr) {
+                    return EmbeddedSource{
+                        .file_name = it->file_name,
+                        .source_code = it->source_code,
+                    };
                 }
                 return std::nullopt;
             }
@@ -1304,14 +1317,6 @@ namespace pnm::meta
 
                 return std::unexpected(std::make_error_code(std::errc::no_such_file_or_directory));
             }
-
-            static consteval auto current_source_code()
-            {
-#line 1 __BASE_FILE__
-                return string::FixedString{ std::to_array<char>({
-#embed __BASE_FILE__ // NOLINT(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
-                  , 0U }) };
-            }
         }
 
         static auto excerpt(std::string_view file_name, uint32_t line, size_t context_size = 0)
@@ -1364,13 +1369,19 @@ namespace pnm::meta
 #define PNM_META_SOURCE_EMBED_CURRENT                                                               \
     namespace                                                                                       \
     {                                                                                               \
-        static constexpr auto PNM_META_EMBEDDED_SOURCE_CODE{                                        \
-            pnm::meta::source::detail::current_source_code()                                              \
-        };                                                                                          \
+        asm(".pushsection .rodata.pnm_embedded_source_data\n"                                       \
+            ".balign 1\n"                                                                           \
+            ".local pnm_meta_embedded_source_data\n"                                                \
+            "pnm_meta_embedded_source_data:\n"                                                      \
+            ".incbin \"" __BASE_FILE__ "\"\n"                                                       \
+            ".byte 0\n"                                                                             \
+            ".popsection\n");                                                                       \
+        extern const char PNM_META_EMBEDDED_SOURCE_DATA[] asm("pnm_meta_embedded_source_data");     \
         [[maybe_unused, gnu::used, gnu::retain, gnu::section("pnm_embedded_sources")]]              \
-        static constinit const pnm::meta::source::detail::EmbeddedSource PNM_META_EMBEDDED_SOURCE{  \
+        static constinit const pnm::meta::source::detail::EmbeddedSourceRecord                      \
+          PNM_META_EMBEDDED_SOURCE{                                                                 \
             .file_name = __BASE_FILE__,                                                             \
-            .source_code = PNM_META_EMBEDDED_SOURCE_CODE                                            \
+            .source_code = PNM_META_EMBEDDED_SOURCE_DATA                                            \
         };                                                                                          \
     }
 
@@ -1378,16 +1389,16 @@ namespace pnm::meta
 #define PNM_META_SOURCE_EMBED_BEGIN(file_name)                                                      \
     namespace                                                                                       \
     {                                                                                               \
-        static constexpr auto FILE_NAME{ file_name };                                               \
+        static constexpr std::string_view FILE_NAME{ file_name };                                   \
         static constexpr auto PNM_META_EMBEDDED_SOURCE_DATA{ std::to_array<char>({
 
 #define PNM_META_SOURCE_EMBED_END                                                                   \
             , '\0' }) };                                                                            \
         [[maybe_unused, gnu::used, gnu::retain, gnu::section("pnm_embedded_sources")]]              \
-        static constinit const pnm::meta::source::detail::EmbeddedSource PNM_META_EMBEDDED_SOURCE{  \
-            .file_name = FILE_NAME,                                                                 \
-            .source_code = std::string_view(PNM_META_EMBEDDED_SOURCE_DATA.data(),                   \
-            PNM_META_EMBEDDED_SOURCE_DATA.size() - 1)                                               \
+        static constinit const pnm::meta::source::detail::EmbeddedSourceRecord                      \
+          PNM_META_EMBEDDED_SOURCE{                                                                 \
+            .file_name = FILE_NAME.data(),                                                          \
+            .source_code = PNM_META_EMBEDDED_SOURCE_DATA.data()                                     \
         };                                                                                          \
     }
 // clang-format on

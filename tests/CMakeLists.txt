@@ -31,6 +31,12 @@ add_executable(
 )
 
 add_executable(
+    meta_source_opt_in_only_probe
+    EXCLUDE_FROM_ALL
+    source_embed_probes/opt_in_only.cpp
+)
+
+add_executable(
     meta_source_multi_tu_probe
     EXCLUDE_FROM_ALL
     source_embed_probes/multi_tu_main.cpp
@@ -46,6 +52,13 @@ add_executable(
 
 target_link_libraries(
     meta_source_single_tu_probe
+    PRIVATE
+    pneumo::meta
+    pneumo::compiler_warnings
+)
+
+target_link_libraries(
+    meta_source_opt_in_only_probe
     PRIVATE
     pneumo::meta
     pneumo::compiler_warnings
@@ -124,6 +137,18 @@ add_test(
 )
 
 add_test(
+    NAME SourceEmbedProbes.OptInOnly
+    COMMAND
+    "${CMAKE_COMMAND}"
+    -DPROBE_TARGET=meta_source_opt_in_only_probe
+    -DPROBE_BINARY_DIR=${CMAKE_BINARY_DIR}
+    -DPROBE_BINARY=$<TARGET_FILE:meta_source_opt_in_only_probe>
+    -DPROBE_NM=${CMAKE_NM}
+    -P
+    "${CMAKE_CURRENT_SOURCE_DIR}/source_embed_probes/run_probe.cmake"
+)
+
+add_test(
     NAME SourceEmbedProbes.MultiTU
     COMMAND
     "${CMAKE_COMMAND}"
@@ -149,6 +174,7 @@ add_test(
 
 set_tests_properties(
     SourceEmbedProbes.SingleTU
+    SourceEmbedProbes.OptInOnly
     SourceEmbedProbes.MultiTU
     SourceEmbedProbes.Manual
     PROPERTIES

@@ -7,7 +7,7 @@ PNM_META_SOURCE_EMBED_CURRENT
 
 namespace
 {
-    constexpr auto MARKER = std::string_view{ "single-tu-source-embed-marker" };
+    constexpr auto MARKER = std::string_view{ "single-tu-source-embed-marker-─█" };
 }
 
 auto main() -> int
