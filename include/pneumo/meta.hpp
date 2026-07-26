@@ -1128,10 +1128,17 @@ namespace pnm::meta
             return [:target_method:](value);
         }
 
-        template<size_t First, size_t Last = std::dynamic_extent, std::integral T = int>
-        using Range = detail::Range<Last == std::dynamic_extent ? 0UZ : First,
-                                    Last == std::dynamic_extent ? First - 1UZ : Last,
-                                    T>;
+        template<size_t First, size_t Last, std::integral T = int>
+        constexpr auto range()
+        {
+            return detail::Range<First, Last, T>::create();
+        }
+
+        template<size_t N, std::integral T = int>
+        constexpr auto range()
+        {
+            return detail::Range<0UZ, N - 1UZ, T>::create();
+        }
     }
 
     namespace source
