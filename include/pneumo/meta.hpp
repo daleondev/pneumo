@@ -78,6 +78,7 @@ namespace pnm::meta
             constexpr auto operator<=>(const FixedString&) const = default;
             constexpr operator std::basic_string_view<Char>() const { return { data.data(), Size }; }
             constexpr auto size() const { return Size; }
+            constexpr auto empty() const { return Size == 0UZ; }
 
             template<typename Self>
                 requires std::is_lvalue_reference_v<Self>
@@ -117,6 +118,27 @@ namespace pnm::meta
                 return Str;
             }
         }
+
+        namespace detail
+        {
+            // NOLINTBEGIN(readability-identifier-naming)
+            template<typename T>
+            struct is_fixed_string : std::false_type
+            {
+            };
+
+            template<std::size_t Size, Character Char>
+            struct is_fixed_string<pnm::meta::string::FixedString<Size, Char>> : std::true_type
+            {
+            };
+
+            template<typename T>
+            inline constexpr bool is_fixed_string_v = is_fixed_string<std::remove_cvref_t<T>>::value;
+            // NOLINTEND(readability-identifier-naming)
+        }
+
+        template<typename T>
+        concept FixedStringLike = detail::is_fixed_string_v<T>;
     }
 
     namespace tuple
