@@ -108,6 +108,15 @@ namespace pnm::meta
             using Char = typename std::remove_cvref_t<decltype(SV)>::value_type;
             return FixedString<SV.size(), Char>(SV.data());
         }
+
+        namespace literals
+        {
+            template<FixedString Str>
+            consteval auto operator""_fs()
+            {
+                return Str;
+            }
+        }
     }
 
     namespace tuple
