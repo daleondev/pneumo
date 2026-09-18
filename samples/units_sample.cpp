@@ -57,6 +57,22 @@ namespace
         std::cout << zero_to_hundred << std::endl;
     }
 
+    auto print_rotation_example() -> void
+    {
+        using namespace pnm::units::literals;
+
+        const auto setting = 50_percent;
+        const auto speed = 2000_rpm * setting;
+        const auto rotation = speed * 500ms;
+        const auto turn_time = 1_rev / speed;
+
+        std::cout << "Motor rotation\n";
+        std::cout << "  setting: " << setting.get<pnm::units::RatioUnits::percent>() << "%\n";
+        std::cout << "  speed: " << speed.get<pnm::units::AngularVelocityUnits::rpm>() << " rpm\n";
+        std::cout << "  rotation in 500 ms: " << rotation.get<pnm::units::AngleUnits::rev>() << " rev\n";
+        std::cout << "  time per revolution: " << turn_time.get<pnm::units::TimeUnits::ms>() << " ms\n\n";
+    }
+
     auto print_mechanics_example() -> void
     {
         using namespace pnm::units::literals;
@@ -87,6 +103,7 @@ auto main() -> int
     print_trip_example();
     print_acceleration_example();
     print_mechanics_example();
+    print_rotation_example();
 
     return 0;
 }
