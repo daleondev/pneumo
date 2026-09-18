@@ -11,6 +11,8 @@ using pnm::units::Acceleration;
 using pnm::units::AccelerationUnits;
 using pnm::units::Angle;
 using pnm::units::AngleUnits;
+using pnm::units::AngularVelocity;
+using pnm::units::AngularVelocityUnits;
 using pnm::units::Area;
 using pnm::units::AreaUnits;
 using pnm::units::ByteSize;
@@ -33,6 +35,8 @@ using pnm::units::Power;
 using pnm::units::PowerUnits;
 using pnm::units::Pressure;
 using pnm::units::PressureUnits;
+using pnm::units::Ratio;
+using pnm::units::RatioUnits;
 using pnm::units::Temperature;
 using pnm::units::TemperatureUnits;
 using pnm::units::Time;
@@ -62,6 +66,22 @@ static_assert(std::is_same_v<decltype(22.4_C), Temperature>);
 static_assert(std::is_same_v<decltype(2.0_h), Time>);
 static_assert(std::is_same_v<decltype(36.0_km_h), Velocity>);
 static_assert(std::is_same_v<decltype(12.0_V), Voltage>);
+static_assert(std::is_same_v<decltype(50_percent), Ratio>);
+static_assert(std::is_same_v<decltype(0.5_percent), Ratio>);
+static_assert(std::is_same_v<decltype(1_one), Ratio>);
+static_assert(std::is_same_v<decltype(1_rev), Angle>);
+static_assert(std::is_same_v<decltype(60_rpm), AngularVelocity>);
+static_assert(std::is_same_v<decltype(1.0_rad_s), AngularVelocity>);
+static_assert(!std::is_convertible_v<Ratio, double>);
+static_assert(!std::is_constructible_v<Ratio, double>);
+static_assert(!std::is_convertible_v<Frequency, AngularVelocity>);
+static_assert(!std::is_convertible_v<AngularVelocity, Frequency>);
+static_assert(std::is_same_v<decltype(50_percent * 50_percent), Ratio>);
+static_assert(std::is_same_v<decltype(50_percent / 25_percent), double>);
+static_assert(std::is_same_v<decltype(60_rpm / 30_rpm), double>);
+static_assert((50_percent * 50_percent).get() == 0.25);
+static_assert((2000_rpm * 50_percent).get() == (1000_rpm).get());
+static_assert((1_rev / 2_s).get() == std::numbers::pi);
 static_assert(std::is_default_constructible_v<Distance>);
 static_assert(!std::is_constructible_v<Distance, double>);
 static_assert(
@@ -879,4 +899,120 @@ TEST(UnitsTests, AngleLiterals)
 
     EXPECT_DOUBLE_EQ((angle1 + angle2).get<AngleUnits::deg>(), 100.0);
     EXPECT_DOUBLE_EQ(angle1.get(), std::numbers::pi / 2.0);
+}
+
+TEST(UnitsTests, PercentConversionsUseNormalizedRatioAsBase)
+{
+    EXPECT_DOUBLE_EQ((50_percent).get(), 0.5);
+    EXPECT_DOUBLE_EQ((50_percent).get<RatioUnits::one>(), 0.5);
+    EXPECT_DOUBLE_EQ((1_one).get<RatioUnits::percent>(), 100.0);
+    EXPECT_DOUBLE_EQ(Ratio::create(0.25).get<RatioUnits::percent>(), 25.0);
+    EXPECT_DOUBLE_EQ(Ratio::create<RatioUnits::percent>(75.0).get(), 0.75);
+    EXPECT_DOUBLE_EQ((-25_percent).get(), -0.25);
+    EXPECT_DOUBLE_EQ((150_percent).get(), 1.5);
+    EXPECT_DOUBLE_EQ((0_percent).get(), 0.0);
+    EXPECT_EQ(25_percent + 25_percent, 50_percent);
+    EXPECT_EQ(100_percent - 25_percent, 75_percent);
+}
+
+TEST(UnitsTests, RatiosScaleQuantitiesInBothMultiplicationOrders)
+{
+    static_assert(std::is_same_v<decltype(2000_rpm * 50_percent), AngularVelocity>);
+    static_assert(std::is_same_v<decltype(50_percent * 2000_rpm), AngularVelocity>);
+    static_assert(std::is_same_v<decltype(2000_rpm / 50_percent), AngularVelocity>);
+    EXPECT_DOUBLE_EQ((2000_rpm * 50_percent).get<AngularVelocityUnits::rpm>(), 1000.0);
+    EXPECT_DOUBLE_EQ((50_percent * 2000_rpm).get<AngularVelocityUnits::rpm>(), 1000.0);
+    EXPECT_DOUBLE_EQ((2000_rpm / 50_percent).get<AngularVelocityUnits::rpm>(), 4000.0);
+    EXPECT_EQ(50_percent * 4_m, 2_m);
+    EXPECT_EQ(4_m / 50_percent, 8_m);
+    EXPECT_EQ(4_s * 50_percent, 2_s);
+    EXPECT_EQ(4_m * 0_percent, 0_m);
+    EXPECT_EQ(4_m * -25_percent, -1_m);
+}
+
+TEST(UnitsTests, RatiosSupportProductsScalarArithmeticAndExplicitQuotientConstruction)
+{
+    EXPECT_EQ(50_percent * 50_percent, 25_percent);
+    EXPECT_DOUBLE_EQ(50_percent / 25_percent, 2.0);
+    EXPECT_EQ(50_percent * 2.0, 1_one);
+    EXPECT_EQ(2.0 * 50_percent, 1_one);
+    EXPECT_EQ(50_percent / 2.0, 25_percent);
+    EXPECT_EQ(Ratio::create(1_m / 4_m), 25_percent);
+}
+
+TEST(UnitsTests, RatioCompoundScalingReturnsQuantityReference)
+{
+    auto speed = 2000_rpm;
+    EXPECT_EQ(&(speed *= 50_percent), &speed);
+    EXPECT_DOUBLE_EQ(speed.get<AngularVelocityUnits::rpm>(), 1000.0);
+    EXPECT_EQ(&(speed /= 25_percent), &speed);
+    EXPECT_DOUBLE_EQ(speed.get<AngularVelocityUnits::rpm>(), 4000.0);
+
+    auto ratio = 50_percent;
+    EXPECT_EQ(&(ratio *= ratio), &ratio);
+    EXPECT_EQ(ratio, 25_percent);
+    EXPECT_EQ(&(ratio /= ratio), &ratio);
+    EXPECT_EQ(ratio, 1_one);
+}
+
+TEST(UnitsTests, RevolutionsConvertToRadiansAndDegrees)
+{
+    EXPECT_DOUBLE_EQ((1_rev).get(), 2.0 * std::numbers::pi);
+    EXPECT_DOUBLE_EQ((1_rev).get<AngleUnits::deg>(), 360.0);
+    EXPECT_DOUBLE_EQ((180_deg).get<AngleUnits::rev>(), 0.5);
+    EXPECT_DOUBLE_EQ(Angle::create<AngleUnits::rev>(0.25).get<AngleUnits::deg>(), 90.0);
+}
+
+TEST(UnitsTests, RpmConversionsUseRadiansPerSecondAsBase)
+{
+    EXPECT_DOUBLE_EQ((60_rpm).get(), 2.0 * std::numbers::pi);
+    EXPECT_DOUBLE_EQ((60_rpm).get<AngularVelocityUnits::rad_s>(), 2.0 * std::numbers::pi);
+    EXPECT_DOUBLE_EQ((1_rad_s).get<AngularVelocityUnits::rpm>(), 60.0 / (2.0 * std::numbers::pi));
+    EXPECT_DOUBLE_EQ(AngularVelocity::create<AngularVelocityUnits::rpm>(30.0).get(), std::numbers::pi);
+    EXPECT_DOUBLE_EQ((-60_rpm).get(), -2.0 * std::numbers::pi);
+    EXPECT_DOUBLE_EQ((0_rpm).get(), 0.0);
+    EXPECT_DOUBLE_EQ(60_rpm / 30_rpm, 2.0);
+}
+
+TEST(UnitsTests, AngleDividedByTimeProducesAngularVelocity)
+{
+    static_assert(std::is_same_v<decltype(1_rev / 2_s), AngularVelocity>);
+    EXPECT_DOUBLE_EQ((1_rev / 2_s).get<AngularVelocityUnits::rpm>(), 30.0);
+    EXPECT_DOUBLE_EQ((180_deg / 2_s).get<AngularVelocityUnits::rad_s>(), std::numbers::pi / 2.0);
+}
+
+TEST(UnitsTests, AngularVelocityTimesTimeProducesAngleInBothOrders)
+{
+    static_assert(std::is_same_v<decltype(60_rpm * 2_s), Angle>);
+    static_assert(std::is_same_v<decltype(2_s * 60_rpm), Angle>);
+    EXPECT_DOUBLE_EQ((60_rpm * 2_s).get<AngleUnits::rev>(), 2.0);
+    EXPECT_DOUBLE_EQ((2_s * 60_rpm).get<AngleUnits::deg>(), 720.0);
+}
+
+TEST(UnitsTests, AngleDividedByAngularVelocityProducesTime)
+{
+    static_assert(std::is_same_v<decltype(1_rev / 60_rpm), Time>);
+    EXPECT_DOUBLE_EQ((1_rev / 60_rpm).get<TimeUnits::s>(), 1.0);
+    EXPECT_DOUBLE_EQ((180_deg / 30_rpm).get<TimeUnits::s>(), 1.0);
+}
+
+TEST(UnitsTests, AngularRelationsSupportChronoDurations)
+{
+    static_assert(std::is_same_v<decltype(1_rev / 500ms), AngularVelocity>);
+    static_assert(std::is_same_v<decltype(60_rpm * 500ms), Angle>);
+    static_assert(std::is_same_v<decltype(500ms * 60_rpm), Angle>);
+    EXPECT_DOUBLE_EQ((1_rev / 500ms).get<AngularVelocityUnits::rpm>(), 120.0);
+    EXPECT_DOUBLE_EQ((60_rpm * 500ms).get<AngleUnits::deg>(), 180.0);
+    EXPECT_DOUBLE_EQ((500ms * 60_rpm).get<AngleUnits::rev>(), 0.5);
+}
+
+TEST(UnitsTests, RatioAndRotationalUnitsUseAutomaticStreamUnitSelection)
+{
+    EXPECT_EQ(stream_to_string(50_percent), "50percent");
+    EXPECT_EQ(stream_to_string(100_percent), "1one");
+    EXPECT_EQ(stream_to_string(0_percent), "0one");
+    EXPECT_EQ(stream_to_string(360_deg), "1rev");
+    EXPECT_EQ(stream_to_string(1_rpm), "1rpm");
+    EXPECT_EQ(stream_to_string(1_rad_s), "1rad/s");
+    EXPECT_EQ(stream_to_string(0_rpm), "0rad/s");
 }

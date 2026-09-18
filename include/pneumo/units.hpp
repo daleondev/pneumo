@@ -151,7 +151,20 @@
 
 #define PNM_ANGLE_UNITS(X, XX, ctx)                                                                          \
     XX(ctx, rad)                                                                                             \
-    X(ctx, deg, detail::factor<std::numbers::pi / 180.0>)
+    X(ctx, deg, detail::factor<std::numbers::pi / 180.0>)                                                    \
+    X(ctx, rev, detail::factor<2.0 * std::numbers::pi>)
+
+// ---------- Angular Velocity ----------
+
+#define PNM_ANGULAR_VELOCITY_UNITS(X, XX, ctx)                                                               \
+    XX(ctx, rad_s)                                                                                           \
+    X(ctx, rpm, detail::factor<2.0 * std::numbers::pi / 60.0>)
+
+// ---------- Ratio ----------
+
+#define PNM_RATIO_UNITS(X, XX, ctx)                                                                          \
+    XX(ctx, one)                                                                                             \
+    X(ctx, percent, std::centi)
 
 // ---------- Helper Macros ----------
 
@@ -772,17 +785,52 @@ namespace pnm::units
     PNM_DEFINE_QUANTITY(Velocity, PNM_VELOCITY_UNITS)
     PNM_DEFINE_QUANTITY(Acceleration, PNM_ACCELERATION_UNITS)
     PNM_DEFINE_QUANTITY(Angle, PNM_ANGLE_UNITS)
+    PNM_DEFINE_QUANTITY(AngularVelocity, PNM_ANGULAR_VELOCITY_UNITS)
+    PNM_DEFINE_QUANTITY(Ratio, PNM_RATIO_UNITS)
 
     PNM_DEFINE_QUANTITY_SQUARE_RELATION(Distance, m, Area, m2)
     PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(ByteSize, bytes, Time, s, DataRate, bytes_s)
     PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(Distance, m, Time, s, Velocity, m_s)
     PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(Velocity, m_s, Time, s, Acceleration, m_s2)
+    PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(Angle, rad, Time, s, AngularVelocity, rad_s)
     PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(Force, N, Mass, kg, Acceleration, m_s2)
     PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(Energy, J, Force, N, Distance, m)
     PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(Energy, J, Time, s, Power, W)
     PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(Force, N, Area, m2, Pressure, Pa)
     PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(Power, W, Voltage, V, Current, A)
     PNM_DEFINE_QUANTITY_RECIPROCAL_RELATION(Time, s, Frequency, Hz)
+
+    template<detail::IsQuantity Quantity, std::same_as<Ratio> Scale>
+    constexpr auto operator*(const Quantity& quantity, const Scale& ratio) -> Quantity
+    {
+        return quantity * ratio.get();
+    }
+
+    template<detail::IsQuantity Quantity, std::same_as<Ratio> Scale>
+        requires(!std::same_as<Quantity, Ratio>)
+    constexpr auto operator*(const Scale& ratio, const Quantity& quantity) -> Quantity
+    {
+        return quantity * ratio.get();
+    }
+
+    template<detail::IsQuantity Quantity, std::same_as<Ratio> Scale>
+        requires(!std::same_as<Quantity, Ratio>)
+    constexpr auto operator/(const Quantity& quantity, const Scale& ratio) -> Quantity
+    {
+        return quantity / ratio.get();
+    }
+
+    template<detail::IsQuantity Quantity, std::same_as<Ratio> Scale>
+    constexpr auto operator*=(Quantity& quantity, const Scale& ratio) -> Quantity&
+    {
+        return quantity *= ratio.get();
+    }
+
+    template<detail::IsQuantity Quantity, std::same_as<Ratio> Scale>
+    constexpr auto operator/=(Quantity& quantity, const Scale& ratio) -> Quantity&
+    {
+        return quantity /= ratio.get();
+    }
 
     // ---------- Chrono interoperability ----------
 
@@ -909,3 +957,5 @@ namespace pnm::units
 #undef PNM_VELOCITY_UNITS
 #undef PNM_ACCELERATION_UNITS
 #undef PNM_ANGLE_UNITS
+#undef PNM_ANGULAR_VELOCITY_UNITS
+#undef PNM_RATIO_UNITS
