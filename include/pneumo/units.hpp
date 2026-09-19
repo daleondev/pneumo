@@ -835,6 +835,30 @@ namespace pnm::units
     // ---------- Chrono interoperability ----------
 
     template<detail::ChronoDuration Duration>
+    constexpr auto operator*(Duration lhs, const Ratio& rhs) -> Time
+    {
+        return Time{ lhs } * rhs.get();
+    }
+
+    template<detail::ChronoDuration Duration>
+    constexpr auto operator*(const Ratio& lhs, Duration rhs) -> Time
+    {
+        return lhs.get() * Time{ rhs };
+    }
+
+    template<detail::ChronoDuration Duration>
+    constexpr auto operator/(Duration lhs, const Ratio& rhs) -> Time
+    {
+        return Time{ lhs } / rhs.get();
+    }
+
+    template<detail::ChronoDuration Duration>
+    constexpr auto operator/(const Ratio& lhs, Duration rhs) -> Frequency
+    {
+        return lhs.get() / Time{ rhs };
+    }
+
+    template<detail::ChronoDuration Duration>
     constexpr auto operator+(const Time& lhs, Duration rhs) -> Time
     {
         return lhs + Time{ rhs };
