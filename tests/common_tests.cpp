@@ -4,17 +4,45 @@
 
 #include <array>
 #include <bitset>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <future>
+#include <latch>
 #include <mutex>
+#include <optional>
 #include <queue>
+#include <stop_token>
 #include <system_error>
+#include <thread>
 #include <type_traits>
 #include <vector>
 
 namespace
 {
+    using namespace std::chrono_literals;
+    using Clock = std::chrono::steady_clock;
+
+    void expect_sleep_cancellation(auto sleep)
+    {
+        std::promise<bool> completion;
+        auto result = completion.get_future();
+        std::latch started{ 1 };
+        std::jthread sleeper{ [&](std::stop_token stop) {
+            started.count_down();
+            completion.set_value(sleep(stop));
+        } };
+
+        started.wait();
+        // An unrequested stop token must not make the sleep return immediately.
+        EXPECT_EQ(result.wait_for(20ms), std::future_status::timeout);
+        sleeper.request_stop();
+        // Allow scheduler delays, while still detecting a wait for the full five seconds.
+        ASSERT_EQ(result.wait_for(2s), std::future_status::ready);
+        EXPECT_FALSE(result.get());
+    }
+
     static_assert(std::same_as<pnm::Result<int>, std::expected<int, std::error_code>>);
     static_assert(pnm::utils::bit::size<std::uint8_t>() == 8);
     static_assert(pnm::utils::bit::bit_mask<5, std::uint8_t>() == std::uint8_t{ 0b00100000 });
@@ -177,4 +205,89 @@ TEST(CommonBitTests, BitsetViewPreservesBitPositions)
     EXPECT_FALSE(view.test(1));
     EXPECT_TRUE(view.test(5));
     EXPECT_TRUE(view.test(7));
+}
+
+TEST(CommonSleepTests, SleepForCompletesWithoutStopToken)
+{
+    const auto start = Clock::now();
+    EXPECT_TRUE(pnm::utils::concurrent::sleep_for(2ms));
+    EXPECT_GE(Clock::now() - start, 2ms);
+}
+
+TEST(CommonSleepTests, SleepUntilCompletesWithoutStopToken)
+{
+    const auto deadline = Clock::now() + 2ms;
+    EXPECT_TRUE(pnm::utils::concurrent::sleep_until(deadline));
+    EXPECT_GE(Clock::now(), deadline);
+}
+
+TEST(CommonSleepTests, SleepForCompletesWithUnrequestedAndUnstoppableTokens)
+{
+    std::stop_source source;
+    for (const auto& stop : { source.get_token(), std::stop_token{} }) {
+        SCOPED_TRACE(stop.stop_possible());
+        const auto start = Clock::now();
+        EXPECT_TRUE(pnm::utils::concurrent::sleep_for(2ms, stop));
+        EXPECT_GE(Clock::now() - start, 2ms);
+    }
+}
+
+TEST(CommonSleepTests, SleepUntilCompletesWithUnrequestedAndUnstoppableTokens)
+{
+    std::stop_source source;
+    for (const auto& stop : { source.get_token(), std::stop_token{} }) {
+        SCOPED_TRACE(stop.stop_possible());
+        const auto deadline = Clock::now() + 2ms;
+        EXPECT_TRUE(pnm::utils::concurrent::sleep_until(deadline, stop));
+        EXPECT_GE(Clock::now(), deadline);
+    }
+}
+
+TEST(CommonSleepTests, SleepForAcceptsZeroAndNegativeDurations)
+{
+    std::stop_source source;
+    for (const auto duration : { 0ms, -1ms }) {
+        EXPECT_TRUE(pnm::utils::concurrent::sleep_for(duration));
+        EXPECT_TRUE(pnm::utils::concurrent::sleep_for(duration, source.get_token()));
+    }
+}
+
+TEST(CommonSleepTests, SleepUntilAcceptsCurrentAndPastDeadlines)
+{
+    std::stop_source source;
+    const auto now = Clock::now();
+    for (const auto deadline : { now, now - 1ms }) {
+        EXPECT_TRUE(pnm::utils::concurrent::sleep_until(deadline));
+        EXPECT_TRUE(pnm::utils::concurrent::sleep_until(deadline, source.get_token()));
+    }
+}
+
+TEST(CommonSleepTests, SleepForReturnsEarlyWhenStopWasAlreadyRequested)
+{
+    std::stop_source source;
+    source.request_stop();
+    const auto start = Clock::now();
+    EXPECT_FALSE(pnm::utils::concurrent::sleep_for(5s, source.get_token()));
+    EXPECT_LT(Clock::now() - start, 2s);
+}
+
+TEST(CommonSleepTests, SleepUntilReturnsEarlyWhenStopWasAlreadyRequested)
+{
+    std::stop_source source;
+    source.request_stop();
+    const auto start = Clock::now();
+    EXPECT_FALSE(pnm::utils::concurrent::sleep_until(start + 5s, source.get_token()));
+    EXPECT_LT(Clock::now() - start, 2s);
+}
+
+TEST(CommonSleepTests, SleepForIsInterruptedByStopRequest)
+{
+    expect_sleep_cancellation(
+      [](std::stop_token stop) { return pnm::utils::concurrent::sleep_for(5s, stop); });
+}
+
+TEST(CommonSleepTests, SleepUntilIsInterruptedByStopRequest)
+{
+    expect_sleep_cancellation(
+      [](std::stop_token stop) { return pnm::utils::concurrent::sleep_until(Clock::now() + 5s, stop); });
 }

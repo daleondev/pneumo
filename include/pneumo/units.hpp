@@ -163,7 +163,7 @@
 // ---------- Ratio ----------
 
 #define PNM_RATIO_UNITS(X, XX, ctx)                                                                          \
-    XX(ctx, one)                                                                                             \
+    XX(ctx, fraction)                                                                                        \
     X(ctx, percent, std::centi)
 
 // ---------- Helper Macros ----------
@@ -765,6 +765,15 @@ namespace pnm::units
         {
             return toChrono<std::chrono::duration<Rep, Period>>();
         }
+
+        template<typename Clock = std::chrono::steady_clock>
+            requires requires {
+                { Clock::now().time_since_epoch() } -> std::convertible_to<Time>;
+            }
+        static Time now()
+        {
+            return Clock::now().time_since_epoch();
+        }
     };
 
     PNM_TIME_UNITS(PNM_DEFINE_LITERAL, PNM_DEFINE_LITERAL, Time)
@@ -799,6 +808,7 @@ namespace pnm::units
     PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(Force, N, Area, m2, Pressure, Pa)
     PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(Power, W, Voltage, V, Current, A)
     PNM_DEFINE_QUANTITY_RECIPROCAL_RELATION(Time, s, Frequency, Hz)
+    PNM_DEFINE_QUANTITY_DIVIDE_RESULT_WITH_UNITS(Ratio, fraction, Time, s, Frequency, Hz)
 
     template<detail::IsQuantity Quantity, std::same_as<Ratio> Scale>
     constexpr auto operator*(const Quantity& quantity, const Scale& ratio) -> Quantity
@@ -850,12 +860,6 @@ namespace pnm::units
     constexpr auto operator/(Duration lhs, const Ratio& rhs) -> Time
     {
         return Time{ lhs } / rhs.get();
-    }
-
-    template<detail::ChronoDuration Duration>
-    constexpr auto operator/(const Ratio& lhs, Duration rhs) -> Frequency
-    {
-        return lhs.get() / Time{ rhs };
     }
 
     template<detail::ChronoDuration Duration>
