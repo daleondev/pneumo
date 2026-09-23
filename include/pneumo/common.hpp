@@ -118,8 +118,8 @@ namespace pnm
                 if (stop) {
                     std::mutex mutex;
                     std::unique_lock lock{ mutex };
-                    return std::condition_variable_any{}.wait_for(
-                      lock, *stop, duration, [] { return false; });
+                    std::condition_variable_any{}.wait_for(lock, *stop, duration, [] { return false; });
+                    return !stop->stop_requested();
                 }
 
                 std::this_thread::sleep_for(duration);
@@ -133,7 +133,8 @@ namespace pnm
                 if (stop) {
                     std::mutex mutex;
                     std::unique_lock lock{ mutex };
-                    return std::condition_variable_any{}.wait_until(lock, *stop, time, [] { return false; });
+                    std::condition_variable_any{}.wait_until(lock, *stop, time, [] { return false; });
+                    return !stop->stop_requested();
                 }
 
                 std::this_thread::sleep_until(time);
