@@ -765,6 +765,13 @@ namespace pnm::units
         {
             return toChrono<std::chrono::duration<Rep, Period>>();
         }
+
+        template<typename Clock = std::chrono::steady_clock>
+            requires std::chrono::is_clock_v<Clock>
+        static Time now()
+        {
+            return Clock::now().time_since_epoch();
+        }
     };
 
     PNM_TIME_UNITS(PNM_DEFINE_LITERAL, PNM_DEFINE_LITERAL, Time)

@@ -4,6 +4,7 @@
 #include <array>
 #include <bitset>
 #include <concepts>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -108,6 +109,35 @@ namespace pnm
                     thread.request_stop();
                     thread.join();
                 }
+            }
+
+            template<typename Rep, typename Period>
+            auto sleep_for(const std::chrono::duration<Rep, Period>& duration,
+                           std::optional<std::stop_token> stop) -> bool
+            {
+                if (stop) {
+                    std::mutex mutex;
+                    std::unique_lock lock{ mutex };
+                    return std::condition_variable_any{}.wait_for(
+                      lock, *stop, duration, [] { return false; });
+                }
+
+                std::this_thread::sleep_for(duration);
+                return true;
+            }
+
+            template<typename Clock, typename Duration>
+            auto sleep_until(const std::chrono::time_point<Clock, Duration>& time,
+                             std::optional<std::stop_token> stop) -> bool
+            {
+                if (stop) {
+                    std::mutex mutex;
+                    std::unique_lock lock{ mutex };
+                    return std::condition_variable_any{}.wait_until(lock, *stop, time, [] { return false; });
+                }
+
+                std::this_thread::sleep_until(time);
+                return true;
             }
         }
 
@@ -359,7 +389,7 @@ namespace pnm
     do {                                                                                                     \
         if (!(x)) {                                                                                          \
             std::fprintf(stderr,                                                                             \
-                         "Assertion failed (%s) at %s:%d: " msg "\n",                                       \
+                         "Assertion failed (%s) at %s:%d: " msg "\n",                                        \
                          #x,                                                                                 \
                          __FILE__,                                                                           \
                          __LINE__ __VA_OPT__(, ) __VA_ARGS__);                                               \
