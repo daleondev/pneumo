@@ -210,14 +210,14 @@ TEST(CommonBitTests, BitsetViewPreservesBitPositions)
 TEST(CommonSleepTests, SleepForCompletesWithoutStopToken)
 {
     const auto start = Clock::now();
-    EXPECT_TRUE(pnm::utils::concurrent::sleep_for(2ms, std::nullopt));
+    EXPECT_TRUE(pnm::utils::concurrent::sleep_for(2ms));
     EXPECT_GE(Clock::now() - start, 2ms);
 }
 
 TEST(CommonSleepTests, SleepUntilCompletesWithoutStopToken)
 {
     const auto deadline = Clock::now() + 2ms;
-    EXPECT_TRUE(pnm::utils::concurrent::sleep_until(deadline, std::nullopt));
+    EXPECT_TRUE(pnm::utils::concurrent::sleep_until(deadline));
     EXPECT_GE(Clock::now(), deadline);
 }
 
@@ -247,7 +247,7 @@ TEST(CommonSleepTests, SleepForAcceptsZeroAndNegativeDurations)
 {
     std::stop_source source;
     for (const auto duration : { 0ms, -1ms }) {
-        EXPECT_TRUE(pnm::utils::concurrent::sleep_for(duration, std::nullopt));
+        EXPECT_TRUE(pnm::utils::concurrent::sleep_for(duration));
         EXPECT_TRUE(pnm::utils::concurrent::sleep_for(duration, source.get_token()));
     }
 }
@@ -257,7 +257,7 @@ TEST(CommonSleepTests, SleepUntilAcceptsCurrentAndPastDeadlines)
     std::stop_source source;
     const auto now = Clock::now();
     for (const auto deadline : { now, now - 1ms }) {
-        EXPECT_TRUE(pnm::utils::concurrent::sleep_until(deadline, std::nullopt));
+        EXPECT_TRUE(pnm::utils::concurrent::sleep_until(deadline));
         EXPECT_TRUE(pnm::utils::concurrent::sleep_until(deadline, source.get_token()));
     }
 }
