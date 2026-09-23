@@ -68,7 +68,7 @@ static_assert(std::is_same_v<decltype(36.0_km_h), Velocity>);
 static_assert(std::is_same_v<decltype(12.0_V), Voltage>);
 static_assert(std::is_same_v<decltype(50_percent), Ratio>);
 static_assert(std::is_same_v<decltype(0.5_percent), Ratio>);
-static_assert(std::is_same_v<decltype(1_one), Ratio>);
+static_assert(std::is_same_v<decltype(1_fraction), Ratio>);
 static_assert(std::is_same_v<decltype(1_rev), Angle>);
 static_assert(std::is_same_v<decltype(60_rpm), AngularVelocity>);
 static_assert(std::is_same_v<decltype(1.0_rad_s), AngularVelocity>);
@@ -795,6 +795,27 @@ TEST(UnitsTests, ScalarDividedByFrequencyProducesTime)
     EXPECT_DOUBLE_EQ(duration.get<TimeUnits::s>(), 0.5);
 }
 
+TEST(UnitsTests, RatioDividedByTimeProducesFrequency)
+{
+    static_assert(std::is_same_v<decltype(50_percent / 2_s), Frequency>);
+    static_assert(50_percent / 2_s == 0.25_Hz);
+    EXPECT_DOUBLE_EQ((50_percent / 2_s).get<FrequencyUnits::Hz>(), 0.25);
+    EXPECT_DOUBLE_EQ((1_fraction / 500_ms).get<FrequencyUnits::Hz>(), 2.0);
+    EXPECT_DOUBLE_EQ((150_percent / 1_min).get<FrequencyUnits::mHz>(), 25.0);
+    EXPECT_DOUBLE_EQ((0_percent / 2_s).get(), 0.0);
+    EXPECT_DOUBLE_EQ((-50_percent / 2_s).get(), -0.25);
+}
+
+TEST(UnitsTests, RatioDividedByChronoDurationUsesTimeRelation)
+{
+    static_assert(std::is_same_v<decltype(50_percent / 2s), Frequency>);
+    static_assert(50_percent / 2s == 0.25_Hz);
+    EXPECT_EQ(50_percent / 2s, 50_percent / 2_s);
+    EXPECT_EQ(1_fraction / 500ms, 1_fraction / 500_ms);
+    EXPECT_EQ(150_percent / 1min, 150_percent / 1_min);
+    EXPECT_EQ(50_percent / 0.5s, 1_Hz);
+}
+
 TEST(UnitsTests, TimeTimesFrequencyProducesScalar)
 {
     const auto cycles = 2.0_s * 0.5_Hz;
@@ -904,8 +925,8 @@ TEST(UnitsTests, AngleLiterals)
 TEST(UnitsTests, PercentConversionsUseNormalizedRatioAsBase)
 {
     EXPECT_DOUBLE_EQ((50_percent).get(), 0.5);
-    EXPECT_DOUBLE_EQ((50_percent).get<RatioUnits::one>(), 0.5);
-    EXPECT_DOUBLE_EQ((1_one).get<RatioUnits::percent>(), 100.0);
+    EXPECT_DOUBLE_EQ((50_percent).get<RatioUnits::fraction>(), 0.5);
+    EXPECT_DOUBLE_EQ((1_fraction).get<RatioUnits::percent>(), 100.0);
     EXPECT_DOUBLE_EQ(Ratio::create(0.25).get<RatioUnits::percent>(), 25.0);
     EXPECT_DOUBLE_EQ(Ratio::create<RatioUnits::percent>(75.0).get(), 0.75);
     EXPECT_DOUBLE_EQ((-25_percent).get(), -0.25);
@@ -934,8 +955,8 @@ TEST(UnitsTests, RatiosSupportProductsScalarArithmeticAndExplicitQuotientConstru
 {
     EXPECT_EQ(50_percent * 50_percent, 25_percent);
     EXPECT_DOUBLE_EQ(50_percent / 25_percent, 2.0);
-    EXPECT_EQ(50_percent * 2.0, 1_one);
-    EXPECT_EQ(2.0 * 50_percent, 1_one);
+    EXPECT_EQ(50_percent * 2.0, 1_fraction);
+    EXPECT_EQ(2.0 * 50_percent, 1_fraction);
     EXPECT_EQ(50_percent / 2.0, 25_percent);
     EXPECT_EQ(Ratio::create(1_m / 4_m), 25_percent);
 }
@@ -952,7 +973,7 @@ TEST(UnitsTests, RatioCompoundScalingReturnsQuantityReference)
     EXPECT_EQ(&(ratio *= ratio), &ratio);
     EXPECT_EQ(ratio, 25_percent);
     EXPECT_EQ(&(ratio /= ratio), &ratio);
-    EXPECT_EQ(ratio, 1_one);
+    EXPECT_EQ(ratio, 1_fraction);
 }
 
 TEST(UnitsTests, RevolutionsConvertToRadiansAndDegrees)
@@ -1009,8 +1030,8 @@ TEST(UnitsTests, AngularRelationsSupportChronoDurations)
 TEST(UnitsTests, RatioAndRotationalUnitsUseAutomaticStreamUnitSelection)
 {
     EXPECT_EQ(stream_to_string(50_percent), "50percent");
-    EXPECT_EQ(stream_to_string(100_percent), "1one");
-    EXPECT_EQ(stream_to_string(0_percent), "0one");
+    EXPECT_EQ(stream_to_string(100_percent), "1fraction");
+    EXPECT_EQ(stream_to_string(0_percent), "0fraction");
     EXPECT_EQ(stream_to_string(360_deg), "1rev");
     EXPECT_EQ(stream_to_string(1_rpm), "1rpm");
     EXPECT_EQ(stream_to_string(1_rad_s), "1rad/s");

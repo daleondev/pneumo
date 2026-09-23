@@ -116,6 +116,7 @@ The current built-in cross-quantity operations include:
 *   `Power / Voltage -> Current`
 *   `Power / Current -> Voltage`
 *   `1 / Time -> Frequency`
+*   `Ratio / Time -> Frequency` (also accepts chrono durations)
 *   `1 / Frequency -> Time`
 *   `Time * Frequency -> double`
 *   `ByteSize / Time -> DataRate`
