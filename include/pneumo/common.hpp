@@ -115,7 +115,7 @@ namespace pnm
             auto sleep_for(const std::chrono::duration<Rep, Period>& duration,
                            std::optional<std::stop_token> stop) -> bool
             {
-                if (stop) {
+                if (stop && stop->stop_possible()) {
                     std::mutex mutex;
                     std::unique_lock lock{ mutex };
                     std::condition_variable_any{}.wait_for(lock, *stop, duration, [] { return false; });
@@ -130,7 +130,7 @@ namespace pnm
             auto sleep_until(const std::chrono::time_point<Clock, Duration>& time,
                              std::optional<std::stop_token> stop) -> bool
             {
-                if (stop) {
+                if (stop && stop->stop_possible()) {
                     std::mutex mutex;
                     std::unique_lock lock{ mutex };
                     std::condition_variable_any{}.wait_until(lock, *stop, time, [] { return false; });
