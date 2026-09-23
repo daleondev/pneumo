@@ -767,7 +767,9 @@ namespace pnm::units
         }
 
         template<typename Clock = std::chrono::steady_clock>
-            requires std::chrono::is_clock_v<Clock>
+            requires requires {
+                { Clock::now().time_since_epoch() } -> std::convertible_to<Time>;
+            }
         static Time now()
         {
             return Clock::now().time_since_epoch();

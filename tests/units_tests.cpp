@@ -102,6 +102,34 @@ static_assert(!std::is_convertible_v<Time, std::chrono::milliseconds>);
 
 namespace
 {
+    struct FixedClock
+    {
+        using rep = std::chrono::milliseconds::rep;
+        using period = std::chrono::milliseconds::period;
+        using duration = std::chrono::milliseconds;
+        using time_point = std::chrono::time_point<FixedClock>;
+        [[maybe_unused]] static constexpr bool is_steady = true;
+
+        static constexpr auto now() -> time_point { return time_point{ duration{ 1234 } }; }
+    };
+
+    struct InvalidClock
+    {
+        static auto now() -> int;
+    };
+
+    template<typename Clock>
+    concept HasTimeNow = requires {
+        { Time::now<Clock>() } -> std::same_as<Time>;
+    };
+
+    static_assert(HasTimeNow<std::chrono::steady_clock>);
+    static_assert(HasTimeNow<std::chrono::system_clock>);
+    static_assert(HasTimeNow<std::chrono::high_resolution_clock>);
+    static_assert(HasTimeNow<FixedClock>);
+    static_assert(!HasTimeNow<int>);
+    static_assert(!HasTimeNow<InvalidClock>);
+
     auto stream_to_string(const auto& quantity) -> std::string
     {
         std::ostringstream stream;
@@ -148,6 +176,22 @@ TEST(UnitsTests, TimeLiteralsRoundTripThroughSeconds)
     EXPECT_DOUBLE_EQ(duration.get<TimeUnits::min>(), 120.0);
     EXPECT_DOUBLE_EQ(duration.get<TimeUnits::ms>(), 7200000.0);
     EXPECT_DOUBLE_EQ(duration.get<TimeUnits::h>(), 2.0);
+}
+
+TEST(UnitsTests, TimeNowConvertsCustomClockDurationToSeconds)
+{
+    const auto time = Time::now<FixedClock>();
+    EXPECT_DOUBLE_EQ(time.get<TimeUnits::s>(), 1.234);
+    EXPECT_DOUBLE_EQ(time.get<TimeUnits::ms>(), 1234.0);
+}
+
+TEST(UnitsTests, TimeNowDefaultsToSteadyClock)
+{
+    const Time before = std::chrono::steady_clock::now().time_since_epoch();
+    const auto time = Time::now();
+    const Time after = std::chrono::steady_clock::now().time_since_epoch();
+    EXPECT_GE(time, before);
+    EXPECT_LE(time, after);
 }
 
 TEST(UnitsTests, ChronoDurationsConvertImplicitlyToTime)

@@ -112,8 +112,8 @@ namespace pnm
             }
 
             template<typename Rep, typename Period>
-            auto sleep_for(const std::chrono::duration<Rep, Period>& duration, std::stop_token stop = {})
-              -> bool
+            auto sleep_for(const std::chrono::duration<Rep, Period>& duration,
+                           const std::stop_token& stop = {}) -> bool
             {
                 if (stop.stop_possible()) {
                     std::mutex mutex;
@@ -127,8 +127,8 @@ namespace pnm
             }
 
             template<typename Clock, typename Duration>
-            auto sleep_until(const std::chrono::time_point<Clock, Duration>& time, std::stop_token stop = {})
-              -> bool
+            auto sleep_until(const std::chrono::time_point<Clock, Duration>& time,
+                             const std::stop_token& stop = {}) -> bool
             {
                 if (stop.stop_possible()) {
                     std::mutex mutex;
