@@ -48,6 +48,23 @@ namespace
         std::cout << '\n';
     }
 
+    auto sleep_example() -> void
+    {
+        using namespace std::chrono_literals;
+
+        std::stop_source stop_source;
+        auto start{ std::chrono::steady_clock::now() };
+        auto t{ pnm::utils::concurrent::spawn_thread<std::thread>([&] {
+            std::this_thread::sleep_for(1s);
+            stop_source.request_stop();
+        }) };
+        pnm::utils::concurrent::sleep_for(5s, stop_source.get_token());
+        auto time_diff{ std::chrono::steady_clock::now() - start };
+        t.join();
+
+        std::cout << "Slept for: " << std::chrono::duration<double>(time_diff).count() << " s" << "\n\n";
+    }
+
     auto print_bit_example() -> void
     {
         std::uint8_t flags{ 0 };
@@ -65,6 +82,7 @@ auto main() -> int
 {
     print_memory_example();
     print_queue_example();
+    sleep_example();
     print_bit_example();
 
     return 0;

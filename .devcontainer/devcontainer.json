@@ -1,14 +1,12 @@
 {
   "name": "pneumo-devcontainer",
-  "build": {
-    "dockerfile": "Dockerfile",
-    "context": "..",
-    "target": "devcontainer"
-  },
+  "image": "ghcr.io/daleondev/pneumo-devcontainer:latest",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/pneumo,type=bind",
   "workspaceFolder": "/workspaces/pneumo",
   "overrideCommand": true,
   "remoteUser": "vscode",
   "runArgs": [
+    "--platform=linux/amd64",
     "--init",
     "--add-host=host.docker.internal:host-gateway",
     "--cap-add=SYS_ADMIN",

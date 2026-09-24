@@ -88,6 +88,8 @@ The current built-in quantity types are:
 *   `Velocity`
 *   `Acceleration`
 *   `Angle`
+*   `AngularVelocity`
+*   `Ratio`
 
 The current built-in cross-quantity operations include:
 
@@ -97,6 +99,11 @@ The current built-in cross-quantity operations include:
 *   `Distance / Velocity -> Time`
 *   `Velocity / Time -> Acceleration`
 *   `Velocity / Acceleration -> Time`
+*   `Angle / Time -> AngularVelocity`
+*   `Angle / AngularVelocity -> Time`
+*   `AngularVelocity * Time -> Angle` (also in reverse order)
+*   `Quantity * Ratio -> Quantity` (also in reverse order, including `Ratio * Ratio`)
+*   `Quantity / Ratio -> Quantity` (same-type division, including `Ratio / Ratio`, returns `double`)
 *   `Mass * Acceleration -> Force`
 *   `Force / Mass -> Acceleration`
 *   `Force * Distance -> Energy`
@@ -109,13 +116,16 @@ The current built-in cross-quantity operations include:
 *   `Power / Voltage -> Current`
 *   `Power / Current -> Voltage`
 *   `1 / Time -> Frequency`
+*   `Ratio / Time -> Frequency` (also accepts chrono durations)
 *   `1 / Frequency -> Time`
 *   `Time * Frequency -> double`
 *   `ByteSize / Time -> DataRate`
 *   `ByteSize / DataRate -> Time`
 *   The corresponding inverse multiplications for quotient relations, such as `Time * Velocity`, `Acceleration * Time`, `DataRate * Time`, `Pressure * Area`, and `Time * Power`
 
-Temperature uses Celsius as its base unit and provides affine conversions to Kelvin and Fahrenheit. Angles use radians as their base unit and convert to and from degrees.
+Temperature uses Celsius as its base unit and provides affine conversions to Kelvin and Fahrenheit. Angles use radians as their base unit and convert to and from degrees and revolutions (`rev`). Angular velocity uses radians per second (`rad_s`) as its base unit, with `60_rpm` equal to `2π rad/s`. It is distinct from `Frequency`.
+
+Ratios use `one` as their base unit: `100_percent == 1_one`, and `(50_percent).get()` is `0.5`. Ratios support quantity scaling with `*`, `/`, `*=`, and `/=` without implicit conversion to `double`. Use `Ratio::create(value)` to construct a ratio from a normalized scalar, including the result of same-type quantity division. Percentages can be negative or exceed 100.
 
 ### `pneumo::logging`
 
@@ -162,7 +172,7 @@ include(FetchContent)
 FetchContent_Declare(
         pneumo
         GIT_REPOSITORY https://github.com/daleondev/pneumo.git
-        GIT_TAG        v0.1.0
+        GIT_TAG        v0.2.0
 )
 FetchContent_MakeAvailable(pneumo)
 
@@ -698,6 +708,25 @@ Chrono durations convert implicitly to `Time`. `Time` converts implicitly to chr
 
 Quantities also support stream insertion with unit suffixes. The rendered unit is chosen from the largest registered unit that keeps the absolute converted value at least `1`; zero and non-finite values render with the base unit. Compound suffixes use `/` for display, so `m_s` renders as `m/s`. Use `get<Unit>()` when you need a specific presentation unit.
 
+### 7. Percentages and Rotation
+
+```cpp
+using namespace pnm::units::literals;
+
+const auto setting = 50_percent;
+const auto speed = 2000_rpm * setting;    // 1000 rpm
+const auto rotation = speed * 500ms;      // Angle; chrono durations also work
+const auto turn_time = 1_rev / speed;     // Time for one revolution
+const auto measured_speed = 180_deg / 1_s; // 30 rpm
+const auto relative_speed = pnm::units::Ratio::create(speed / 2000_rpm);
+
+std::cout << setting.get<pnm::units::RatioUnits::percent>() << "%\n";
+std::cout << speed.get<pnm::units::AngularVelocityUnits::rpm>() << " rpm\n";
+std::cout << rotation.get<pnm::units::AngleUnits::rev>() << " rev\n";
+```
+
+Automatic stream output follows the usual magnitude-based unit selection: `50_percent` prints as `50percent`, `100_percent` as `1one`, and angular velocities may print in `rad/s`. Use explicit `get<Unit>()` calls as above for `%` or a fixed rpm display. The period of a rotation is `1_rev / angular_velocity`; `1 / frequency` remains the separate frequency/period relation.
+
 ## Meta Examples
 
 For meta utilities:
@@ -988,6 +1017,12 @@ runtime source-registry mutex before `main()`.
 | `ENABLE_CLANG_TIDY` | Run Clang-Tidy during the build when a Clang-Tidy executable is configured | `OFF` |
 
 ## Build Instructions
+
+For a ready-to-use GCC 16 and Clang/P2996 environment, open the repository in its
+VS Code devcontainer. VS Code uses the published `pneumo-devcontainer:latest`
+image, and GitHub CI uses `pneumo-ci:latest`, which provides its compiler toolchain.
+No local toolchain image build is needed. See [container setup and image
+updates](.containers/README.md) for details.
 
 ### Build the library, samples, and tests
 

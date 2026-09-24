@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <concepts>
 #include <deque>
 #include <filesystem>
@@ -77,6 +78,7 @@ namespace pnm::meta
             constexpr auto operator<=>(const FixedString&) const = default;
             constexpr operator std::basic_string_view<Char>() const { return { data.data(), Size }; }
             constexpr auto size() const { return Size; }
+            constexpr auto empty() const { return Size == 0UZ; }
 
             template<typename Self>
                 requires std::is_lvalue_reference_v<Self>
@@ -107,6 +109,36 @@ namespace pnm::meta
             using Char = typename std::remove_cvref_t<decltype(SV)>::value_type;
             return FixedString<SV.size(), Char>(SV.data());
         }
+
+        namespace literals
+        {
+            template<FixedString Str>
+            consteval auto operator""_fs()
+            {
+                return Str;
+            }
+        }
+
+        namespace detail
+        {
+            // NOLINTBEGIN(readability-identifier-naming)
+            template<typename T>
+            struct is_fixed_string : std::false_type
+            {
+            };
+
+            template<std::size_t Size, Character Char>
+            struct is_fixed_string<pnm::meta::string::FixedString<Size, Char>> : std::true_type
+            {
+            };
+
+            template<typename T>
+            inline constexpr bool is_fixed_string_v = is_fixed_string<std::remove_cvref_t<T>>::value;
+            // NOLINTEND(readability-identifier-naming)
+        }
+
+        template<typename T>
+        concept FixedStringLike = detail::is_fixed_string_v<T>;
     }
 
     namespace tuple
@@ -871,6 +903,67 @@ namespace pnm::meta
                       std::tuple<typename decltype(detail::method_type<Is, T>())::type...>>{};
                 }(std::make_index_sequence<method_reflections<std::remove_cvref_t<T>>().size()>{});
             }
+
+            template<auto Number>
+            static consteval auto number_to_string()
+            {
+                constexpr auto buff{ [] constexpr {
+                    constexpr auto reserved_size{ 16UZ };
+                    std::vector<char> data(reserved_size);
+                    data[0] = '_';
+                    auto [ptr, ec] = std::to_chars(data.data() + 1, data.data() + data.size(), Number);
+                    if (ec != std::errc{}) {
+                        throw std::logic_error("to_chars failed");
+                    }
+                    data.resize(static_cast<size_t>(ptr - data.data()));
+                    return std::define_static_array(data);
+                }() };
+                return string::FixedString<buff.size()>(buff.data());
+            }
+
+            template<size_t First, size_t Last, std::integral T>
+            struct Range
+            {
+                static_assert(First <= Last);
+
+                struct type;
+
+                consteval
+                {
+                    std::vector<std::meta::info> members;
+
+                    constexpr auto size{ Last - First + 1UZ };
+                    [&members]<size_t... Is>(std::index_sequence<Is...>) constexpr {
+                        ([&members](auto i) constexpr {
+                            members.push_back(
+                              std::meta::data_member_spec(^^T,
+                                                          std::meta::data_member_options{
+                                                            .name = number_to_string<First + i>() }));
+                        }(std::integral_constant<size_t, Is>{}), ...);
+                    }(std::make_index_sequence<size>{});
+
+                    std::meta::define_aggregate(^^type, members);
+                }
+
+                static consteval type create()
+                {
+                    static constexpr auto members{ std::define_static_array(
+                      std::meta::members_of(^^type, std::meta::access_context::current())) };
+
+                    type instance{};
+                    auto i{ 0UZ };
+                    // NOLINTNEXTLINE(bugprone-reserved-identifier,readability-identifier-naming)
+                    template for (constexpr auto member : members)
+                    {
+                        if constexpr (std::meta::is_nonstatic_data_member(member)) {
+                            instance.[:member:] = static_cast<typename[:std::meta::type_of(member):]>(First +
+                                                                                                      i);
+                            ++i;
+                        }
+                    }
+                    return instance;
+                }
+            };
         }
 
         template<typename T>
@@ -1064,6 +1157,18 @@ namespace pnm::meta
                 throw std::logic_error("Method not found");
             }() };
             return [:target_method:](value);
+        }
+
+        template<size_t First, size_t Last, std::integral T = int>
+        constexpr auto range()
+        {
+            return detail::Range<First, Last, T>::create();
+        }
+
+        template<size_t N, std::integral T = int>
+        constexpr auto range()
+        {
+            return detail::Range<0UZ, N - 1UZ, T>::create();
         }
     }
 

@@ -14,25 +14,12 @@ updates:
           - patch
 
   - package-ecosystem: docker
-    directory: /.github/containers/ci
+    directory: /.containers
     target-branch: develop
     schedule:
       interval: monthly
     groups:
       docker-minor-and-patch:
-        patterns:
-          - "*"
-        update-types:
-          - minor
-          - patch
-
-  - package-ecosystem: docker
-    directory: /.devcontainer
-    target-branch: develop
-    schedule:
-      interval: monthly
-    groups:
-      devcontainer-minor-and-patch:
         patterns:
           - "*"
         update-types:

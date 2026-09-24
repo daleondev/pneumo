@@ -151,7 +151,20 @@
 
 #define PNM_ANGLE_UNITS(X, XX, ctx)                                                                          \
     XX(ctx, rad)                                                                                             \
-    X(ctx, deg, detail::factor<std::numbers::pi / 180.0>)
+    X(ctx, deg, detail::factor<std::numbers::pi / 180.0>)                                                    \
+    X(ctx, rev, detail::factor<2.0 * std::numbers::pi>)
+
+// ---------- Angular Velocity ----------
+
+#define PNM_ANGULAR_VELOCITY_UNITS(X, XX, ctx)                                                               \
+    XX(ctx, rad_s)                                                                                           \
+    X(ctx, rpm, detail::factor<2.0 * std::numbers::pi / 60.0>)
+
+// ---------- Ratio ----------
+
+#define PNM_RATIO_UNITS(X, XX, ctx)                                                                          \
+    XX(ctx, fraction)                                                                                        \
+    X(ctx, percent, std::centi)
 
 // ---------- Helper Macros ----------
 
@@ -583,7 +596,7 @@ namespace pnm::units
 
         constexpr auto determinePrintUnitIndex() const -> size_t
         {
-            auto abs_value{ std::abs(m_value) };
+            auto abs_value{ std::abs(value) };
             if (abs_value == 0.0 || !std::isfinite(abs_value)) {
                 return BASE_UNIT_INDEX;
             }
@@ -612,12 +625,10 @@ namespace pnm::units
         QuantityBase(const QuantityBase&) = default;
         QuantityBase(QuantityBase&&) = default;
 
-        constexpr QuantityBase(double value)
-          : m_value{ value }
+        constexpr QuantityBase(double val)
+          : value{ val }
         {
         }
-
-        double m_value{};
 
         friend Quantity;
 
@@ -630,34 +641,34 @@ namespace pnm::units
 
         constexpr auto operator<=>(const QuantityBase&) const = default;
 
-        constexpr auto operator+() const -> Quantity { return Quantity{ m_value }; }
-        constexpr auto operator-() const -> Quantity { return Quantity{ -m_value }; }
+        constexpr auto operator+() const -> Quantity { return Quantity{ value }; }
+        constexpr auto operator-() const -> Quantity { return Quantity{ -value }; }
 
         constexpr auto operator+(const Quantity& rhs) const -> Quantity
         {
-            return Quantity{ m_value + rhs.m_value };
+            return Quantity{ value + rhs.value };
         }
 
         constexpr auto operator+=(const Quantity& rhs) -> Quantity&
         {
-            m_value += rhs.m_value;
+            value += rhs.value;
             return static_cast<Quantity&>(*this);
         }
 
         constexpr auto operator-(const Quantity& rhs) const -> Quantity
         {
-            return Quantity{ m_value - rhs.m_value };
+            return Quantity{ value - rhs.value };
         }
 
         constexpr auto operator-=(const Quantity& rhs) -> Quantity&
         {
-            m_value -= rhs.m_value;
+            value -= rhs.value;
             return static_cast<Quantity&>(*this);
         }
 
         constexpr auto operator*(std::convertible_to<double> auto rhs) const -> Quantity
         {
-            return Quantity{ m_value * static_cast<double>(rhs) };
+            return Quantity{ value * static_cast<double>(rhs) };
         }
 
         template<typename Scalar>
@@ -669,20 +680,20 @@ namespace pnm::units
 
         constexpr auto operator*=(std::convertible_to<double> auto rhs) -> Quantity&
         {
-            m_value = m_value * static_cast<double>(rhs);
+            value = value * static_cast<double>(rhs);
             return static_cast<Quantity&>(*this);
         }
 
-        constexpr auto operator/(const Quantity& rhs) const -> double { return m_value / rhs.m_value; }
+        constexpr auto operator/(const Quantity& rhs) const -> double { return value / rhs.value; }
 
         constexpr auto operator/(std::convertible_to<double> auto rhs) const -> Quantity
         {
-            return Quantity{ m_value / static_cast<double>(rhs) };
+            return Quantity{ value / static_cast<double>(rhs) };
         }
 
         constexpr auto operator/=(std::convertible_to<double> auto rhs) -> Quantity&
         {
-            m_value = m_value / static_cast<double>(rhs);
+            value = value / static_cast<double>(rhs);
             return static_cast<Quantity&>(*this);
         }
 
@@ -690,7 +701,7 @@ namespace pnm::units
         {
             auto index{ quantity.determinePrintUnitIndex() };
             auto suffix{ UnitsMeta::NESTED_TYPE_NAMES[index] };
-            os << (quantity.m_value / UNIT_FACTORS[index]);
+            os << (quantity.value / UNIT_FACTORS[index]);
             for (auto ch : suffix) {
                 os << (ch == '_' ? '/' : ch);
             }
@@ -708,10 +719,12 @@ namespace pnm::units
         template<detail::IsUnit Unit>
         constexpr auto get() const -> double
         {
-            return static_cast<double>((m_value / Unit::FACTOR) - Unit::OFFSET);
+            return static_cast<double>((value / Unit::FACTOR) - Unit::OFFSET);
         }
 
-        constexpr auto get() const -> double { return m_value; }
+        constexpr auto get() const -> double { return value; }
+
+        double value{};
     };
 
     struct TimeUnits
@@ -752,6 +765,15 @@ namespace pnm::units
         {
             return toChrono<std::chrono::duration<Rep, Period>>();
         }
+
+        template<typename Clock = std::chrono::steady_clock>
+            requires requires {
+                { Clock::now().time_since_epoch() } -> std::convertible_to<Time>;
+            }
+        static Time now()
+        {
+            return Clock::now().time_since_epoch();
+        }
     };
 
     PNM_TIME_UNITS(PNM_DEFINE_LITERAL, PNM_DEFINE_LITERAL, Time)
@@ -772,19 +794,73 @@ namespace pnm::units
     PNM_DEFINE_QUANTITY(Velocity, PNM_VELOCITY_UNITS)
     PNM_DEFINE_QUANTITY(Acceleration, PNM_ACCELERATION_UNITS)
     PNM_DEFINE_QUANTITY(Angle, PNM_ANGLE_UNITS)
+    PNM_DEFINE_QUANTITY(AngularVelocity, PNM_ANGULAR_VELOCITY_UNITS)
+    PNM_DEFINE_QUANTITY(Ratio, PNM_RATIO_UNITS)
 
     PNM_DEFINE_QUANTITY_SQUARE_RELATION(Distance, m, Area, m2)
     PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(ByteSize, bytes, Time, s, DataRate, bytes_s)
     PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(Distance, m, Time, s, Velocity, m_s)
     PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(Velocity, m_s, Time, s, Acceleration, m_s2)
+    PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(Angle, rad, Time, s, AngularVelocity, rad_s)
     PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(Force, N, Mass, kg, Acceleration, m_s2)
     PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(Energy, J, Force, N, Distance, m)
     PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(Energy, J, Time, s, Power, W)
     PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(Force, N, Area, m2, Pressure, Pa)
     PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(Power, W, Voltage, V, Current, A)
     PNM_DEFINE_QUANTITY_RECIPROCAL_RELATION(Time, s, Frequency, Hz)
+    PNM_DEFINE_QUANTITY_DIVIDE_RESULT_WITH_UNITS(Ratio, fraction, Time, s, Frequency, Hz)
+
+    template<detail::IsQuantity Quantity, std::same_as<Ratio> Scale>
+    constexpr auto operator*(const Quantity& quantity, const Scale& ratio) -> Quantity
+    {
+        return quantity * ratio.get();
+    }
+
+    template<detail::IsQuantity Quantity, std::same_as<Ratio> Scale>
+        requires(!std::same_as<Quantity, Ratio>)
+    constexpr auto operator*(const Scale& ratio, const Quantity& quantity) -> Quantity
+    {
+        return quantity * ratio.get();
+    }
+
+    template<detail::IsQuantity Quantity, std::same_as<Ratio> Scale>
+        requires(!std::same_as<Quantity, Ratio>)
+    constexpr auto operator/(const Quantity& quantity, const Scale& ratio) -> Quantity
+    {
+        return quantity / ratio.get();
+    }
+
+    template<detail::IsQuantity Quantity, std::same_as<Ratio> Scale>
+    constexpr auto operator*=(Quantity& quantity, const Scale& ratio) -> Quantity&
+    {
+        return quantity *= ratio.get();
+    }
+
+    template<detail::IsQuantity Quantity, std::same_as<Ratio> Scale>
+    constexpr auto operator/=(Quantity& quantity, const Scale& ratio) -> Quantity&
+    {
+        return quantity /= ratio.get();
+    }
 
     // ---------- Chrono interoperability ----------
+
+    template<detail::ChronoDuration Duration>
+    constexpr auto operator*(Duration lhs, const Ratio& rhs) -> Time
+    {
+        return Time{ lhs } * rhs.get();
+    }
+
+    template<detail::ChronoDuration Duration>
+    constexpr auto operator*(const Ratio& lhs, Duration rhs) -> Time
+    {
+        return lhs.get() * Time{ rhs };
+    }
+
+    template<detail::ChronoDuration Duration>
+    constexpr auto operator/(Duration lhs, const Ratio& rhs) -> Time
+    {
+        return Time{ lhs } / rhs.get();
+    }
 
     template<detail::ChronoDuration Duration>
     constexpr auto operator+(const Time& lhs, Duration rhs) -> Time
@@ -909,3 +985,5 @@ namespace pnm::units
 #undef PNM_VELOCITY_UNITS
 #undef PNM_ACCELERATION_UNITS
 #undef PNM_ANGLE_UNITS
+#undef PNM_ANGULAR_VELOCITY_UNITS
+#undef PNM_RATIO_UNITS
