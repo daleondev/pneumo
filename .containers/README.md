@@ -2,11 +2,12 @@
 
 `Dockerfile` defines both environments on Ubuntu 26.04:
 
-- `ci` builds GCC 16 and the pinned Bloomberg Clang/P2996 toolchain, including
+- `ci` installs GCC 16 and builds the pinned Bloomberg Clang/P2996 toolchain, including
   matching libc++, clang-tidy, and LLD. It smoke-tests reflection with both compilers.
 - `devcontainer` extends the published CI image with GDB, Python, SSH, sudo, and zsh,
-  and creates the `vscode` user. Both environments use the same compiler binaries
-  and runtime libraries.
+  and creates the `vscode` user. The development image inherits the CI compiler
+  toolchain; installing development packages can update Ubuntu system libraries.
+  The `gcc`, `g++`, `cc`, and `c++` commands select GCC 16.
 
 The images target `linux/amd64`. The devcontainer explicitly selects this platform;
 ARM hosts need Docker's AMD64 emulation. Native ARM toolchains are not provided.
@@ -23,8 +24,9 @@ The CI package must be public or accessible to your Docker login. For a private
 package, authenticate to `ghcr.io` on the host before opening the container.
 GitHub workflows authenticate separately using `GITHUB_TOKEN`.
 
-The workspace remains `/workspaces/pneumo`, with editor sessions running as
-`vscode`. Editor extensions and runtime options remain in `devcontainer.json`.
+The workspace is explicitly mounted at `/workspaces/pneumo`, regardless of the
+local checkout directory's name, with editor sessions running as `vscode`.
+Editor extensions and runtime options remain in `devcontainer.json`.
 The shared CMake presets disable module scanning because the library is
 header-only and the published toolchain does not include `clang-scan-deps`.
 CI additionally enables the optional serialization features in its configure step.
@@ -36,8 +38,9 @@ The **Build Container Images** workflow:
 1. On pull requests touching container configuration, builds the development
    layer using the existing published toolchain and runs `.containers/smoke-test.sh`
    as `vscode`. The check exercises sudo, zsh, GDB, Python virtual environments,
-   and the common/meta samples with the actual GCC and Clang presets. It mounts
-   the checkout read-only and builds in `/tmp`. PRs never publish images or rebuild LLVM.
+   compiler aliases, and the common/meta samples with the actual GCC and Clang
+   presets. It mounts the checkout read-only and builds in `/tmp`. PRs never
+   publish images or rebuild LLVM.
 2. On relevant pushes to `main` or manual dispatch, builds and publishes the `ci`
    target to `ghcr.io/daleondev/pneumo-ci`.
 3. Builds and tests the devcontainer against that exact CI image digest, then

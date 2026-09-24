@@ -102,7 +102,9 @@ RUN apt-get update \
         ninja-build \
     && rm -rf /var/lib/apt/lists/* \
     && ln -s /usr/bin/gcc-16 /usr/local/bin/gcc \
-    && ln -s /usr/bin/g++-16 /usr/local/bin/g++
+    && ln -s /usr/bin/g++-16 /usr/local/bin/g++ \
+    && ln -s /usr/bin/gcc-16 /usr/local/bin/cc \
+    && ln -s /usr/bin/g++-16 /usr/local/bin/c++
 
 COPY --from=clang-builder /opt/clang-p2996 /opt/clang-p2996
 
@@ -149,6 +151,11 @@ RUN apt-get update \
         zsh \
     && rm -rf /var/lib/apt/lists/* \
     && locale-gen en_US.UTF-8
+
+# Also cover published CI images that predate the cc/c++ aliases. Otherwise
+# build-essential supplies Ubuntu's default compiler, which lacks reflection.
+RUN ln -sf /usr/bin/gcc-16 /usr/local/bin/cc \
+    && ln -sf /usr/bin/g++-16 /usr/local/bin/c++
 
 # Ubuntu images may already reserve UID/GID 1000 for the ubuntu user.
 RUN if id -u ubuntu >/dev/null 2>&1; then \

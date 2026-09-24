@@ -8,6 +8,7 @@
       "--platform=linux/amd64"
     ]
   },
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/pneumo,type=bind",
   "workspaceFolder": "/workspaces/pneumo",
   "overrideCommand": true,
   "remoteUser": "vscode",

@@ -15,6 +15,15 @@ ssh -V
 
 smoke_dir=$(mktemp -d)
 trap 'rm -rf "$smoke_dir"' EXIT
+
+# Presets explicitly use g++, so also exercise tools that invoke cc/c++.
+test "$(readlink -f "$(command -v cc)")" = "$(readlink -f "$(command -v gcc)")"
+test "$(readlink -f "$(command -v c++)")" = "$(readlink -f "$(command -v g++)")"
+printf '#include <meta>\nconstexpr auto reflected = ^^int;\nint main() {}\n' \
+    > "$smoke_dir/reflection.cpp"
+c++ -std=c++26 -freflection "$smoke_dir/reflection.cpp" -o "$smoke_dir/reflection"
+"$smoke_dir/reflection"
+
 python3 -m venv "$smoke_dir/venv"
 "$smoke_dir/venv/bin/python" -m pip --version
 
