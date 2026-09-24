@@ -59,7 +59,7 @@ jobs:
       run:
         shell: bash
     container:
-      image: ghcr.io/daleondev/pneumo-ci:clang-p2996-7220baff-gcc16
+      image: ghcr.io/daleondev/pneumo-ci:clang-p2996-7220baff-gcc16@sha256:587f48bb860505957051b514828a07351b6c11556bdd31c3a7a6eeed077e0b4c
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -90,7 +90,6 @@ jobs:
       - name: Configure
         run: |
           cmake --preset "${{ matrix.preset }}" \
-            -DCMAKE_CXX_SCAN_FOR_MODULES=OFF \
             -DPFMT_ENABLE_JSON=ON \
             -DPFMT_ENABLE_YAML=ON \
             -DPFMT_ENABLE_TOML=ON
