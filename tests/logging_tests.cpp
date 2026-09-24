@@ -5,16 +5,21 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <barrier>
 #include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <filesystem>
 #include <format>
 #include <fstream>
 #include <iterator>
+#include <mutex>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <utility>
 #include <vector>
 
 #if defined(PNM_PLATFORM_POSIX)
@@ -34,6 +39,7 @@ namespace
     class RecordingSink : public pnm::log::SinkBase<RecordingSink>
     {
       public:
+        auto isTerminal() const -> bool override { return terminal; }
         auto isOpen() const -> bool override { return true; }
         auto open() -> pnm::Result<> override { return {}; }
         auto close() -> pnm::Result<> override { return {}; }
@@ -52,6 +58,7 @@ namespace
 
         std::vector<std::string> writes;
         size_t flushes{ 0 };
+        bool terminal{};
     };
 
     class PartialWriteSink : public pnm::log::SinkBase<PartialWriteSink>
@@ -74,6 +81,89 @@ namespace
         std::string output;
         size_t writes{};
     };
+
+    class ConcurrentPartialWriteSink : public pnm::log::SinkBase<ConcurrentPartialWriteSink>
+    {
+      public:
+        auto isOpen() const -> bool override { return true; }
+        auto open() -> pnm::Result<> override { return {}; }
+        auto close() -> pnm::Result<> override { return {}; }
+
+        auto write(std::span<const std::byte> data) -> pnm::Result<size_t> override
+        {
+            const auto size{ std::min<size_t>(3, data.size()) };
+            {
+                std::scoped_lock lock{ m_mutex };
+                m_pending.append(reinterpret_cast<const char*>(data.data()), size);
+            }
+            // Encourage competing records to overlap if the backend does not serialize them.
+            std::this_thread::yield();
+            return size;
+        }
+
+        auto flush() -> pnm::Result<> override
+        {
+            std::scoped_lock lock{ m_mutex };
+            m_records.push_back(std::exchange(m_pending, {}));
+            m_cv.notify_all();
+            return {};
+        }
+
+        auto waitForRecords(size_t count) -> bool
+        {
+            std::unique_lock lock{ m_mutex };
+            return m_cv.wait_for(lock, std::chrono::seconds{ 5 }, [this, count] {
+                return m_records.size() >= count;
+            });
+        }
+
+        auto records() -> std::vector<std::string>
+        {
+            std::scoped_lock lock{ m_mutex };
+            return m_records;
+        }
+
+      private:
+        std::mutex m_mutex;
+        std::condition_variable m_cv;
+        std::string m_pending;
+        std::vector<std::string> m_records;
+    };
+
+    auto check_concurrent_records(bool include_async) -> void
+    {
+        constexpr size_t thread_count{ 4 };
+        constexpr size_t messages_per_thread{ 32 };
+        auto sink{ std::make_shared<ConcurrentPartialWriteSink>() };
+        sink->colors().timestampFormat("test").showLevel(false).flushOn(pnm::log::Level::Info);
+        std::barrier start{ static_cast<std::ptrdiff_t>(thread_count) };
+        std::vector<std::jthread> threads;
+        std::vector<std::string> expected;
+
+        for (size_t thread{ 0 }; thread < thread_count; ++thread) {
+            for (size_t message{ 0 }; message < messages_per_thread; ++message) {
+                expected.push_back(std::format("\x1b[32m[test]: \x1b[0m{}:{}\n", thread, message));
+            }
+            threads.emplace_back([&, thread] {
+                start.arrive_and_wait();
+                for (size_t message{ 0 }; message < messages_per_thread; ++message) {
+                    if (include_async && thread % 2 == 0) {
+                        pnm::log::info(sink, "{}:{}", thread, message);
+                    }
+                    else {
+                        pnm::log::info(pnm::log::immediate, sink, "{}:{}", thread, message);
+                    }
+                }
+            });
+        }
+        threads.clear(); // Join producers before checking the worker's remaining records.
+
+        ASSERT_TRUE(sink->waitForRecords(expected.size()));
+        auto records{ sink->records() };
+        std::ranges::sort(records);
+        std::ranges::sort(expected);
+        EXPECT_EQ(records, expected);
+    }
 
     class ThrowingSink : public pnm::log::SinkBase<ThrowingSink>
     {
@@ -140,6 +230,18 @@ PNM_META_SOURCE_EMBED_CURRENT
 int main(int argc, char* argv[])
 {
 #if defined(PNM_PLATFORM_POSIX)
+    if (const auto* log_path{ std::getenv("PNM_LOGGING_ASYNC_COLOR_FILE") }; log_path != nullptr) {
+        auto sink{ std::make_shared<pnm::log::detail::FileSink>(log_path) };
+        sink->colors().color(pnm::log::Level::Info, pnm::log::yellow);
+        pnm::log::remove_all_global_sinks();
+        pnm::log::add_global_sink(sink);
+        pnm::log::info(pnm::log::red, "async default {}", 1);
+        pnm::log::warn(sink, pnm::log::blue, "async shared {}", 2);
+        pnm::log::error(pnm::log::file(log_path).colors(), pnm::log::green, "async object {}", 3);
+        pnm::log::info(pnm::log::no_color, "async plain {}", 4);
+        return 0;
+    }
+
     if (const auto* log_path{ std::getenv("PNM_LOGGING_ASYNC_DRAIN_FILE") }; log_path != nullptr) {
         pnm::log::info(
           pnm::log::file(log_path).sourceInfo(pnm::log::SourceField::FileName, pnm::log::SourceField::Line),
@@ -156,6 +258,195 @@ int main(int argc, char* argv[])
 }
 
 TEST(LoggingTests, InfoStdou) { SUCCEED(); }
+
+TEST(LoggingTests, DefaultPaletteColorsHeadersAndResetsBeforeMessages)
+{
+    auto sink{ std::make_shared<RecordingSink>() };
+    sink->colors().timestampFormat("test");
+
+    pnm::log::trace(pnm::log::immediate, sink, "trace");
+    pnm::log::debug(pnm::log::immediate, sink, "debug");
+    pnm::log::info(pnm::log::immediate, sink, "info");
+    pnm::log::warn(pnm::log::immediate, sink, "warn");
+    pnm::log::error(pnm::log::immediate, sink, "error");
+    pnm::log::critical(pnm::log::immediate, sink, "critical");
+
+    const std::vector<std::string> expected{
+        "\x1b[90m[test] Trace: \x1b[0mtrace\n", "\x1b[36m[test] Debug: \x1b[0mdebug\n",
+        "\x1b[32m[test] Info: \x1b[0minfo\n",   "\x1b[33m[test] Warn: \x1b[0mwarn\n",
+        "\x1b[31m[test] Error: \x1b[0merror\n", "\x1b[91m[test] Critical: \x1b[0mcritical\n"
+    };
+    EXPECT_EQ(sink->writes, expected);
+}
+
+TEST(LoggingTests, SinkPaletteCanBeConfiguredAndReset)
+{
+    auto sink{ std::make_shared<RecordingSink>() };
+    EXPECT_EQ(&sink->colors().color(pnm::log::Level::Info, pnm::log::blue), sink.get());
+    sink->color(pnm::log::Level::Warn, pnm::log::no_color);
+    pnm::log::info(pnm::log::immediate, sink, "custom info");
+    pnm::log::warn(pnm::log::immediate, sink, "plain warning");
+    sink->resetColors();
+    pnm::log::info(pnm::log::immediate, sink, "default info");
+
+    ASSERT_EQ(sink->writes.size(), 3);
+    EXPECT_TRUE(sink->writes[0].starts_with("\x1b[34m"));
+    EXPECT_TRUE(sink->writes[1].starts_with("\x1b[0m["));
+    EXPECT_TRUE(sink->writes[1].ends_with(": \x1b[0mplain warning\n"));
+    EXPECT_TRUE(sink->writes[2].starts_with("\x1b[32m"));
+    EXPECT_THROW(sink->color(pnm::log::Level::Off, pnm::log::red), std::invalid_argument);
+    EXPECT_THROW(sink->color(static_cast<pnm::log::Level>(255), pnm::log::red), std::invalid_argument);
+}
+
+TEST(LoggingTests, ExplicitColorOverridesPaletteAndPreservesFormattingAndCallSite)
+{
+    auto sink{ std::make_shared<RecordingSink>() };
+    sink->colors()
+      .color(pnm::log::Level::Info, pnm::log::blue)
+      .sourceInfo(pnm::log::SourceField::FileName, pnm::log::SourceField::Line);
+    const auto expected_line{ __LINE__ + 1U };
+    pnm::log::info(pnm::log::immediate, sink, pnm::log::red, "value {:04}", 42);
+    pnm::log::info(pnm::log::immediate, sink, pnm::log::no_color, "plain override");
+    pnm::log::info(pnm::log::immediate, sink, "palette unchanged");
+
+    ASSERT_EQ(sink->writes.size(), 3);
+    EXPECT_TRUE(sink->writes[0].starts_with("\x1b[31m"));
+    EXPECT_NE(sink->writes[0].find(std::format("logging_tests.cpp:{}", expected_line)), std::string::npos);
+    EXPECT_TRUE(sink->writes[0].ends_with("\x1b[0mvalue 0042\n"));
+    EXPECT_TRUE(sink->writes[1].starts_with("\x1b[0m["));
+    EXPECT_TRUE(sink->writes[1].ends_with(": \x1b[0mplain override\n"));
+    EXPECT_TRUE(sink->writes[2].starts_with("\x1b[34m"));
+}
+
+TEST(LoggingTests, AutoColorModeUsesSinkTerminalStatus)
+{
+    auto sink{ std::make_shared<RecordingSink>() };
+    EXPECT_EQ(sink->getColorMode(), pnm::log::ColorMode::Auto);
+    pnm::log::info(pnm::log::immediate, sink, pnm::log::red, "plain transport");
+    pnm::log::info(pnm::log::immediate, sink, pnm::log::no_color, "plain reset");
+    sink->terminal = true;
+    pnm::log::info(pnm::log::immediate, sink, "terminal transport");
+    pnm::log::info(pnm::log::immediate, sink, pnm::log::no_color, "terminal reset");
+    sink->colors(pnm::log::ColorMode::Never);
+    pnm::log::info(pnm::log::immediate, sink, pnm::log::red, "disabled transport");
+    pnm::log::info(pnm::log::immediate, sink, pnm::log::no_color, "disabled reset");
+
+    ASSERT_EQ(sink->writes.size(), 6);
+    EXPECT_EQ(sink->writes[0].find('\x1b'), std::string::npos);
+    EXPECT_EQ(sink->writes[1].find('\x1b'), std::string::npos);
+    EXPECT_TRUE(sink->writes[2].starts_with("\x1b[32m"));
+    EXPECT_TRUE(sink->writes[3].starts_with("\x1b[0m["));
+    EXPECT_TRUE(sink->writes[3].ends_with(": \x1b[0mterminal reset\n"));
+    EXPECT_EQ(sink->writes[4].find('\x1b'), std::string::npos);
+    EXPECT_EQ(sink->writes[5].find('\x1b'), std::string::npos);
+}
+
+TEST(LoggingTests, StandardStreamsStayPlainWhenRedirectedAndCanForceColor)
+{
+    const auto previous_mode{ pnm::log::std_out->getColorMode() };
+    pnm::log::std_out->colors(pnm::log::ColorMode::Auto);
+    testing::internal::CaptureStdout();
+    pnm::log::info(pnm::log::immediate, pnm::log::red, "redirected");
+    const auto plain{ testing::internal::GetCapturedStdout() };
+    pnm::log::std_out->colors(pnm::log::ColorMode::Always);
+    testing::internal::CaptureStdout();
+    pnm::log::info(pnm::log::immediate, pnm::log::red, "forced");
+    const auto colored{ testing::internal::GetCapturedStdout() };
+    pnm::log::std_out->colors(previous_mode);
+
+    EXPECT_EQ(plain.find('\x1b'), std::string::npos);
+    EXPECT_TRUE(colored.starts_with("\x1b[31m"));
+    EXPECT_TRUE(colored.ends_with("\x1b[0mforced\n"));
+}
+
+TEST(LoggingTests, ColorsAreSelectedIndependentlyForEachSink)
+{
+    auto first{ std::make_shared<RecordingSink>() };
+    auto second{ std::make_shared<RecordingSink>() };
+    first->colors().color(pnm::log::Level::Info, pnm::log::blue);
+    second->colors().color(pnm::log::Level::Info, pnm::log::yellow);
+    pnm::log::remove_all_global_sinks();
+    pnm::log::add_global_sink(first);
+    pnm::log::add_global_sink(second);
+    pnm::log::info(pnm::log::immediate, "per sink");
+    pnm::log::info(pnm::log::immediate, pnm::log::magenta, "per message");
+    pnm::log::remove_all_global_sinks();
+    pnm::log::reset_default_sinks();
+
+    ASSERT_EQ(first->writes.size(), 2);
+    ASSERT_EQ(second->writes.size(), 2);
+    EXPECT_TRUE(first->writes[0].starts_with("\x1b[34m"));
+    EXPECT_TRUE(second->writes[0].starts_with("\x1b[33m"));
+    EXPECT_TRUE(first->writes[1].starts_with("\x1b[35m"));
+    EXPECT_TRUE(second->writes[1].starts_with("\x1b[35m"));
+}
+
+TEST(LoggingTests, ColorResetPrecedesMultilineMessageAndSourceExcerpt)
+{
+    auto sink{ std::make_shared<RecordingSink>() };
+    sink->colors().sourceExcerpt().showLevel(false);
+    pnm::log::error(pnm::log::immediate, sink, pnm::log::cyan, "first\nsecond");
+    ASSERT_EQ(sink->writes.size(), 1);
+    const auto& output{ sink->writes.front() };
+    EXPECT_TRUE(output.starts_with("\x1b[36m"));
+    EXPECT_NE(output.find("\x1b[0mfirst\nsecond\n"), std::string::npos);
+    EXPECT_EQ(std::ranges::count(output, '\x1b'), 2);
+    EXPECT_NE(output.find("pnm::log::error"), std::string::npos);
+    EXPECT_EQ(output.find("Error"), std::string::npos);
+}
+
+TEST(LoggingTests, PartialWritesPreserveColorAndReset)
+{
+    auto sink{ std::make_shared<PartialWriteSink>() };
+    sink->colors();
+    pnm::log::critical(pnm::log::immediate, sink, pnm::log::bright_magenta, "partial {}", 42);
+    EXPECT_GT(sink->writes, 1);
+    EXPECT_TRUE(sink->output.starts_with("\x1b[95m"));
+    EXPECT_TRUE(sink->output.ends_with("\x1b[0mpartial 42\n"));
+}
+
+TEST(LoggingTests, FileColorsAreOptInAndAcceptDirectColorWithSinkObject)
+{
+#if !defined(PNM_PLATFORM_POSIX)
+    GTEST_SKIP() << "temporary file probe currently uses POSIX-friendly filesystem behavior";
+#else
+    const auto path{ make_temp_log_path("colors") };
+    auto sink{ pnm::log::file(path).flushOn(pnm::log::Level::Trace) };
+    pnm::log::info(pnm::log::immediate, sink, pnm::log::red, "plain file");
+    EXPECT_EQ(read_file(path).find('\x1b'), std::string::npos);
+    pnm::log::info(pnm::log::immediate, sink.colors(), pnm::log::cyan, "colored file");
+    EXPECT_NE(read_file(path).find("\x1b[36m"), std::string::npos);
+    ASSERT_TRUE(sink.close());
+    std::filesystem::remove(path);
+#endif
+}
+
+TEST(LoggingTests, AsyncColorOverridesSurviveAllRoutingForms)
+{
+#if !defined(PNM_PLATFORM_POSIX)
+    GTEST_SKIP() << "child-process shutdown probe currently uses POSIX process status";
+#else
+    const auto path{ make_temp_log_path("async-colors") };
+    const auto command{ std::format("PNM_LOGGING_ASYNC_COLOR_FILE={} {}",
+                                    shell_quote(path.string()),
+                                    shell_quote(g_test_binary.string())) };
+    const auto status{ std::system(command.c_str()) };
+    ASSERT_NE(status, -1);
+    ASSERT_TRUE(WIFEXITED(status));
+    ASSERT_EQ(WEXITSTATUS(status), 0);
+    const auto output{ read_file(path) };
+    EXPECT_NE(output.find("\x1b[31m"), std::string::npos);
+    EXPECT_NE(output.find("\x1b[0masync default 1\n"), std::string::npos);
+    EXPECT_NE(output.find("\x1b[34m"), std::string::npos);
+    EXPECT_NE(output.find("\x1b[0masync shared 2\n"), std::string::npos);
+    EXPECT_NE(output.find("\x1b[32m"), std::string::npos);
+    EXPECT_NE(output.find("\x1b[0masync object 3\n"), std::string::npos);
+    EXPECT_NE(output.find("\x1b[0m["), std::string::npos);
+    EXPECT_TRUE(output.ends_with(": \x1b[0masync plain 4\n"));
+    EXPECT_EQ(std::ranges::count(output, '\x1b'), 8);
+    std::filesystem::remove(path);
+#endif
+}
 
 TEST(LoggingTests, ThrowingFormatterDoesNotEscapeNoexceptLogApi)
 {
@@ -345,6 +636,39 @@ TEST(LoggingTests, PartialSinkWritesAreCompleted)
     EXPECT_NE(sink->output.find("partial write payload"), std::string::npos);
     ASSERT_FALSE(sink->output.empty());
     EXPECT_EQ(sink->output.back(), '\n');
+}
+
+TEST(LoggingTests, ConcurrentImmediateCallsSerializePartialWritesAndFlushes)
+{
+    check_concurrent_records(false);
+}
+
+TEST(LoggingTests, ImmediateAndAsyncCallsSerializePartialWritesAndFlushes)
+{
+    check_concurrent_records(true);
+}
+
+TEST(LoggingTests, SinkCanLogImmediatelyToAnotherSink)
+{
+    class ForwardingSink : public RecordingSink
+    {
+      public:
+        auto write(std::span<const std::byte> data) -> pnm::Result<size_t> override
+        {
+            pnm::log::info(pnm::log::immediate, target, "nested message");
+            return RecordingSink::write(data);
+        }
+
+        std::shared_ptr<RecordingSink> target{ std::make_shared<RecordingSink>() };
+    };
+
+    auto sink{ std::make_shared<ForwardingSink>() };
+    pnm::log::info(pnm::log::immediate, sink, "outer message");
+
+    ASSERT_EQ(sink->writes.size(), 1);
+    EXPECT_TRUE(sink->writes.front().ends_with(": outer message\n"));
+    ASSERT_EQ(sink->target->writes.size(), 1);
+    EXPECT_TRUE(sink->target->writes.front().ends_with(": nested message\n"));
 }
 
 TEST(LoggingTests, ThrowingSinkDoesNotBlockLaterGlobalSinks)

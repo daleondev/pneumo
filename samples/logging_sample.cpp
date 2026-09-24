@@ -43,7 +43,8 @@ int main()
     pnm::log::initialize();
 
     pnm::log::std_out->sourceInfo(pnm::log::SourceField::FileName, pnm::log::SourceField::Line)
-      .timestampFormat("{:%Y-%m-%d %H:%M:%S}");
+      .timestampFormat("{:%Y-%m-%d %H:%M:%S}")
+      .color(pnm::log::Level::Info, pnm::log::cyan);
     pnm::log::std_err
       ->sourceInfo(
         pnm::log::SourceField::FileName, pnm::log::SourceField::Line, pnm::log::SourceField::Function)
@@ -54,6 +55,9 @@ int main()
     pnm::log::set_default_sink(pnm::log::Level::Error, pnm::log::Level::Critical, pnm::log::std_err);
 
     pnm::log::trace("Hello {}", 6);
+    pnm::log::info(pnm::log::red, "Per-message color overrides the Info palette: {}", 6);
+    pnm::log::info(pnm::log::immediate, pnm::log::std_out, pnm::log::green, "Immediate colored message");
+    pnm::log::warn(pnm::log::no_color, "This message uses no color");
 
     pnm::log::info(pnm::log::std_out, "Hello {}", 6);
     pnm::log::info(pnm::log::file("debug.log")

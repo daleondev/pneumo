@@ -137,6 +137,7 @@ The logging module provides:
 *   Per-level default sinks, removable global sinks, per-call explicit sinks, minimum levels, and flush thresholds.
 *   Optional file name/path, line, column, function, and embedded source excerpts on each sink.
 *   Compile-time-checked per-sink timestamp formats and optional level labels.
+*   Default level colors, per-sink palettes, and per-message ANSI color overrides.
 *   User-defined sinks through `pnm::log::ISink` and `pnm::log::SinkBase`.
 
 ### CMake Targets and Headers
@@ -270,6 +271,8 @@ auto main() -> int
 
 Normal calls are queued to a background worker. Passing `pnm::log::immediate` performs the write before the call returns. An explicit per-call sink routes only to that sink; otherwise a record is sent to its level’s default sink and every registered global sink. The backend drains queued records and closes cached files during process shutdown.
 
+Immediate calls and the background worker share an output lock. Each record's sink operations, including partial writes and flushing, are serialized against logging from other threads. Immediate calls may overtake queued messages; they do not drain the queue. The lock permits a custom sink to log immediately to another sink on the same thread. Direct calls to sink methods and changes to sink configuration are outside this synchronization; configure sinks before logging starts.
+
 Default routes can be changed per level or level range:
 
 ```cpp
@@ -286,6 +289,39 @@ pnm::log::reset_default_sinks();
 ```
 
 Source excerpts require the translation unit to be registered with `PNM_META_SOURCE_EMBED_CURRENT`, `PNM_META_SOURCE_EMBED_BEGIN`/`PNM_META_SOURCE_EMBED_END`, or otherwise available to `pnm::meta::source::excerpt` at runtime.
+
+### Colors
+
+Stdout and stderr automatically use ANSI foreground colors when attached to a terminal on POSIX systems. Redirected output, files, and custom sinks stay plain by default. The default palette is:
+
+| Level | Color |
+| :--- | :--- |
+| Trace | Bright black (gray) |
+| Debug | Cyan |
+| Info | Green |
+| Warn | Yellow |
+| Error | Red |
+| Critical | Bright red |
+
+Configure a sink's palette with the same builder style as source metadata:
+
+```cpp
+pnm::log::std_out
+  ->sourceInfo(pnm::log::SourceField::FileName, pnm::log::SourceField::Line)
+  .color(pnm::log::Level::Info, pnm::log::cyan)
+  .color(pnm::log::Level::Warn, pnm::log::bright_yellow);
+
+pnm::log::info("Uses the configured Info color");
+pnm::log::info(pnm::log::red, "Message {}", 42); // overrides the level color
+pnm::log::info(pnm::log::no_color, "Plain message");
+pnm::log::info(pnm::log::immediate, pnm::log::std_out, pnm::log::green, "Ready");
+```
+
+Named colors are `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, and `white`, with `bright_` versions of each. They are constants of type `pnm::log::Color`; `no_color` is `Color::None`. When ANSI output is enabled, `no_color` emits a reset (`\x1b[0m`) to restore the terminal's default styling.
+
+Use `.colors(ColorMode::Auto)` for terminal detection, `.colors(ColorMode::Always)` (or `.colors()`) to force ANSI output, and `.colors(ColorMode::Never)` to suppress all logger-generated ANSI sequences, including resets. A per-message color overrides the palette but still respects the sink's color mode, so file output stays plain even when the same message is colored on a terminal. A custom sink can override `isTerminal()` to participate in automatic detection, or enable colors explicitly. `.resetColors()` restores the default palette without changing the mode.
+
+Color covers the header (timestamp, level, source metadata, and separator); a reset is emitted before the message. Messages and source excerpts remain plain. The color argument goes immediately before the format string, after any `immediate` tag and explicit sink, and works with both synchronous and asynchronous calls. Configure sinks before sending messages through them, as with the existing source and timestamp settings.
 
 ### Custom sinks
 
