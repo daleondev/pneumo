@@ -307,6 +307,8 @@ namespace pnm::log
         constexpr auto color_sequence(Color color) noexcept -> std::string_view
         {
             switch (color) {
+                case Color::None:
+                    return "\x1b[0m";
                 case Color::Black:
                     return "\x1b[30m";
                 case Color::Red:
@@ -746,10 +748,10 @@ namespace pnm::log
             }
 
             output += ": ";
-            output += record.message;
             if (!color.empty()) {
-                output += "\x1b[0m";
+                output += color_sequence(Color::None);
             }
+            output += record.message;
             output += '\n';
 
             if (source_info.contains(SourceField::Excerpt)) {
