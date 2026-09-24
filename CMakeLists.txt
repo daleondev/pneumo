@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 4.2.0)
 project(
     pneumo
-    VERSION 0.1.0
+    VERSION 0.2.0
     DESCRIPTION "Pneumo C++26 utilities"
     LANGUAGES CXX
 )
