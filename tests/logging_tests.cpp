@@ -5,16 +5,21 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <barrier>
 #include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <filesystem>
 #include <format>
 #include <fstream>
 #include <iterator>
+#include <mutex>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <utility>
 #include <vector>
 
 #if defined(PNM_PLATFORM_POSIX)
@@ -76,6 +81,89 @@ namespace
         std::string output;
         size_t writes{};
     };
+
+    class ConcurrentPartialWriteSink : public pnm::log::SinkBase<ConcurrentPartialWriteSink>
+    {
+      public:
+        auto isOpen() const -> bool override { return true; }
+        auto open() -> pnm::Result<> override { return {}; }
+        auto close() -> pnm::Result<> override { return {}; }
+
+        auto write(std::span<const std::byte> data) -> pnm::Result<size_t> override
+        {
+            const auto size{ std::min<size_t>(3, data.size()) };
+            {
+                std::scoped_lock lock{ m_mutex };
+                m_pending.append(reinterpret_cast<const char*>(data.data()), size);
+            }
+            // Encourage competing records to overlap if the backend does not serialize them.
+            std::this_thread::yield();
+            return size;
+        }
+
+        auto flush() -> pnm::Result<> override
+        {
+            std::scoped_lock lock{ m_mutex };
+            m_records.push_back(std::exchange(m_pending, {}));
+            m_cv.notify_all();
+            return {};
+        }
+
+        auto waitForRecords(size_t count) -> bool
+        {
+            std::unique_lock lock{ m_mutex };
+            return m_cv.wait_for(lock, std::chrono::seconds{ 5 }, [this, count] {
+                return m_records.size() >= count;
+            });
+        }
+
+        auto records() -> std::vector<std::string>
+        {
+            std::scoped_lock lock{ m_mutex };
+            return m_records;
+        }
+
+      private:
+        std::mutex m_mutex;
+        std::condition_variable m_cv;
+        std::string m_pending;
+        std::vector<std::string> m_records;
+    };
+
+    auto check_concurrent_records(bool include_async) -> void
+    {
+        constexpr size_t thread_count{ 4 };
+        constexpr size_t messages_per_thread{ 32 };
+        auto sink{ std::make_shared<ConcurrentPartialWriteSink>() };
+        sink->colors().timestampFormat("test").showLevel(false).flushOn(pnm::log::Level::Info);
+        std::barrier start{ static_cast<std::ptrdiff_t>(thread_count) };
+        std::vector<std::jthread> threads;
+        std::vector<std::string> expected;
+
+        for (size_t thread{ 0 }; thread < thread_count; ++thread) {
+            for (size_t message{ 0 }; message < messages_per_thread; ++message) {
+                expected.push_back(std::format("\x1b[32m[test]: \x1b[0m{}:{}\n", thread, message));
+            }
+            threads.emplace_back([&, thread] {
+                start.arrive_and_wait();
+                for (size_t message{ 0 }; message < messages_per_thread; ++message) {
+                    if (include_async && thread % 2 == 0) {
+                        pnm::log::info(sink, "{}:{}", thread, message);
+                    }
+                    else {
+                        pnm::log::info(pnm::log::immediate, sink, "{}:{}", thread, message);
+                    }
+                }
+            });
+        }
+        threads.clear(); // Join producers before checking the worker's remaining records.
+
+        ASSERT_TRUE(sink->waitForRecords(expected.size()));
+        auto records{ sink->records() };
+        std::ranges::sort(records);
+        std::ranges::sort(expected);
+        EXPECT_EQ(records, expected);
+    }
 
     class ThrowingSink : public pnm::log::SinkBase<ThrowingSink>
     {
@@ -548,6 +636,39 @@ TEST(LoggingTests, PartialSinkWritesAreCompleted)
     EXPECT_NE(sink->output.find("partial write payload"), std::string::npos);
     ASSERT_FALSE(sink->output.empty());
     EXPECT_EQ(sink->output.back(), '\n');
+}
+
+TEST(LoggingTests, ConcurrentImmediateCallsSerializePartialWritesAndFlushes)
+{
+    check_concurrent_records(false);
+}
+
+TEST(LoggingTests, ImmediateAndAsyncCallsSerializePartialWritesAndFlushes)
+{
+    check_concurrent_records(true);
+}
+
+TEST(LoggingTests, SinkCanLogImmediatelyToAnotherSink)
+{
+    class ForwardingSink : public RecordingSink
+    {
+      public:
+        auto write(std::span<const std::byte> data) -> pnm::Result<size_t> override
+        {
+            pnm::log::info(pnm::log::immediate, target, "nested message");
+            return RecordingSink::write(data);
+        }
+
+        std::shared_ptr<RecordingSink> target{ std::make_shared<RecordingSink>() };
+    };
+
+    auto sink{ std::make_shared<ForwardingSink>() };
+    pnm::log::info(pnm::log::immediate, sink, "outer message");
+
+    ASSERT_EQ(sink->writes.size(), 1);
+    EXPECT_TRUE(sink->writes.front().ends_with(": outer message\n"));
+    ASSERT_EQ(sink->target->writes.size(), 1);
+    EXPECT_TRUE(sink->target->writes.front().ends_with(": nested message\n"));
 }
 
 TEST(LoggingTests, ThrowingSinkDoesNotBlockLaterGlobalSinks)

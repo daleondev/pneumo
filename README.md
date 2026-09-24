@@ -271,6 +271,8 @@ auto main() -> int
 
 Normal calls are queued to a background worker. Passing `pnm::log::immediate` performs the write before the call returns. An explicit per-call sink routes only to that sink; otherwise a record is sent to its level’s default sink and every registered global sink. The backend drains queued records and closes cached files during process shutdown.
 
+Immediate calls and the background worker share an output lock. Each record's sink operations, including partial writes and flushing, are serialized against logging from other threads. Immediate calls may overtake queued messages; they do not drain the queue. The lock permits a custom sink to log immediately to another sink on the same thread. Direct calls to sink methods and changes to sink configuration are outside this synchronization; configure sinks before logging starts.
+
 Default routes can be changed per level or level range:
 
 ```cpp

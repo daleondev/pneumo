@@ -920,8 +920,10 @@ namespace pnm::log
                 FileSink::closeAll();
             }
 
-            static auto write(const LogEntry& entry) -> void
+            auto write(const LogEntry& entry) -> void
             {
+                std::scoped_lock lock{ m_writeMutex };
+
                 for (const auto& sink : entry.sinks) {
                     try {
                         if (!should_log(entry.record.level, sink->getMinLevel())) {
@@ -973,6 +975,7 @@ namespace pnm::log
 
             mutable std::mutex m_mutex;
             mutable std::mutex m_routingMutex;
+            std::recursive_mutex m_writeMutex;
             std::condition_variable_any m_cv;
             std::deque<LogEntry> m_queue;
             DefaultSinks m_defaultSinks{ makeDefaultSinks() };
