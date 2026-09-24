@@ -75,6 +75,7 @@ jobs:
           file: .containers/Dockerfile
           target: devcontainer
           platforms: linux/amd64
+          pull: true
           # PRs use the existing published toolchain. Publishing runs use the
           # exact CI image just built, even if its tag is subsequently moved.
           build-args: ${{ steps.ci.outputs.digest != '' && format('TOOLCHAIN_IMAGE={0}@{1}', env.IMAGE, steps.ci.outputs.digest) || '' }}
@@ -100,7 +101,9 @@ jobs:
           platforms: linux/amd64
           build-args: TOOLCHAIN_IMAGE=${{ env.IMAGE }}@${{ steps.ci.outputs.digest }}
           push: true
-          tags: ${{ env.DEV_IMAGE }}:${{ env.IMAGE_TAG }}
+          tags: |
+            ${{ env.DEV_IMAGE }}:${{ env.IMAGE_TAG }}
+            ${{ github.ref == 'refs/heads/main' && format('{0}:latest', env.DEV_IMAGE) || '' }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}

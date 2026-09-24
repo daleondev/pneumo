@@ -59,7 +59,7 @@ jobs:
       run:
         shell: bash
     container:
-      image: ghcr.io/daleondev/pneumo-ci:clang-p2996-7220baff-gcc16@sha256:587f48bb860505957051b514828a07351b6c11556bdd31c3a7a6eeed077e0b4c
+      image: ghcr.io/daleondev/pneumo-ci:latest
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}

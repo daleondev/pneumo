@@ -14,15 +14,30 @@ ARM hosts need Docker's AMD64 emulation. Native ARM toolchains are not provided.
 
 ## Opening the devcontainer
 
-Open the repository in VS Code and select **Dev Containers: Rebuild and Reopen in
-Container**. `.devcontainer/devcontainer.json` selects the `devcontainer` target.
-BuildKit pulls the digest-pinned `pneumo-ci` image and builds only the development
-layer; it does not compile LLVM. This also works before the new
-`pneumo-devcontainer` image has been published.
+Open the repository in VS Code and select **Dev Containers: Reopen in Container**.
+`.devcontainer/devcontainer.json` uses
+`ghcr.io/daleondev/pneumo-devcontainer:latest` directly. VS Code starts the published
+development environment without building the project's Dockerfile locally.
 
-The CI package must be public or accessible to your Docker login. For a private
-package, authenticate to `ghcr.io` on the host before opening the container.
-GitHub workflows authenticate separately using `GITHUB_TOKEN`.
+The development image must have been published before opening the container.
+For the first `latest` publication, merge the image workflow changes to `main`
+and let **Build Container Images** finish, or manually dispatch that workflow on
+`main` after the changes are present. Dispatching on another branch only publishes
+SHA tags and does not create or update `latest`.
+
+The development package must be public or accessible to your Docker login. For a
+private package, authenticate to `ghcr.io` on the host before opening the container.
+GitHub workflows authenticate separately using `GITHUB_TOKEN` and need access to
+the CI package.
+
+To update an existing local environment, run this on the Docker host, then select
+**Dev Containers: Rebuild Container** in VS Code:
+
+```sh
+docker pull --platform linux/amd64 ghcr.io/daleondev/pneumo-devcontainer:latest
+```
+
+Publishing a new `latest` image does not change an already running container.
 
 The workspace is explicitly mounted at `/workspaces/pneumo`, regardless of the
 local checkout directory's name, with editor sessions running as `vscode`.
@@ -46,44 +61,42 @@ The **Build Container Images** workflow:
 3. Builds and tests the devcontainer against that exact CI image digest, then
    publishes it to `ghcr.io/daleondev/pneumo-devcontainer` under the matching tag.
 
-Main builds maintain the versioned CI tag and the existing CI `latest` alias.
+Main builds maintain versioned tags and the `latest` alias for both images.
 Manual dispatches on other branches publish only `sha-<commit>` tags, so they
 cannot replace the images used by normal development and CI. Normal project CI
-continues to consume its existing versioned image independently of image publishing.
+uses `pneumo-ci:latest`; VS Code uses `pneumo-devcontainer:latest`. The publishing
+workflow still uses the exact newly built CI digest when building and validating
+the development image so a moved tag cannot change its base midway through a run.
 
-The prebuilt development image is also available for direct Docker use. The
-checked-in devcontainer builds the small development layer locally so edits to
-that layer can be tested before publication.
+Project CI and image publishing run independently. A project CI job that starts
+before publication completes can use the previous image. The two `latest` tags
+are published separately, so a failed development-image build can leave CI ahead
+of the published development environment. After successful publication, rerun
+project CI to check the new toolchain and refresh your local container as above.
 
 ## Toolchain updates
 
-Keep image publication and adoption in this order to avoid missing-image failures:
-
 1. Update `CLANG_P2996_COMMIT` or other toolchain settings in `Dockerfile`. Choose
    a new versioned tag in the workflow's main-branch `IMAGE_TAG` expression.
-   Leave the Dockerfile's default `TOOLCHAIN_IMAGE` and the main CI consumer tag
-   pointing at the previous published image for now.
 2. To validate the complete compiler build before merging, manually dispatch
    **Build Container Images** on the branch. This publishes isolated SHA tags and
    tests the devcontainer against the newly built CI image.
-3. Merge to `main` and wait for the new versioned images to publish successfully.
-4. Update `TOOLCHAIN_IMAGE` in `Dockerfile` and `container.image` in
-   `.github/workflows/cmake-multi-platform.yml` together, including the new digest,
-   to adopt the new CI image.
-   Rebuild the devcontainer afterward.
+3. Merge to `main` and wait for both `latest` images to publish successfully.
+4. Pull the development image and recreate your devcontainer. Subsequent project
+   CI jobs use the published CI `latest` image without a digest-update commit.
 
-Use a new version tag for toolchain changes, even if the Clang commit stays the
-same. Both consumers pin the same published image digest so rebuilding or moving
-a registry tag cannot silently change their toolchain.
-For initial registry setup, run the image workflow manually and make the CI
-package public or grant the needed package access.
+With mutable `latest` tags, the same source commit can use different toolchains
+over time. Use a versioned tag or digest explicitly when reproducing an older
+environment. Development-only Dockerfile changes follow the same publication
+process; editing the file alone does not change the running VS Code environment.
 
 ## Local builds
 
-From the repository root, build the normal development layer:
+For testing Dockerfile edits before publication, optionally build the development
+image locally from the repository root:
 
 ```sh
-docker buildx build --load --platform linux/amd64 \
+docker buildx build --pull --load --platform linux/amd64 \
   --target devcontainer -t pneumo-devcontainer:local .containers
 ```
 
@@ -97,9 +110,9 @@ docker buildx build --load --platform linux/amd64 \
   --build-arg BUILD_JOBS=2 -t pneumo-devcontainer:local .containers
 ```
 
-To use that source build through VS Code, temporarily add
-`"args": { "TOOLCHAIN_IMAGE": "ci" }` to the `build` object in
-`.devcontainer/devcontainer.json`.
+To use either local build through VS Code, temporarily set `image` in
+`.devcontainer/devcontainer.json` to `pneumo-devcontainer:local`, then rebuild the
+container. Restore the published image reference before committing.
 
 Run the same development smoke check as GitHub:
 

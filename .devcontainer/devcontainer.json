@@ -1,13 +1,6 @@
 {
   "name": "pneumo-devcontainer",
-  "build": {
-    "dockerfile": "../.containers/Dockerfile",
-    "context": "../.containers",
-    "target": "devcontainer",
-    "options": [
-      "--platform=linux/amd64"
-    ]
-  },
+  "image": "ghcr.io/daleondev/pneumo-devcontainer:latest",
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/pneumo,type=bind",
   "workspaceFolder": "/workspaces/pneumo",
   "overrideCommand": true,
