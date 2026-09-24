@@ -820,7 +820,7 @@ namespace pnm::log
                 }
 
                 utils::queue::push(m_queue, std::move(entry), m_mutex);
-                m_cv.notify_one();
+                m_wake.notify_one();
             }
 
             auto addGlobalSink(uint64_t id, std::shared_ptr<ISink> sink) -> bool
@@ -914,7 +914,6 @@ namespace pnm::log
             {
                 if (m_worker.joinable()) {
                     m_worker.request_stop();
-                    m_cv.notify_all();
                     m_worker.join();
                 }
                 FileSink::closeAll();
@@ -957,7 +956,7 @@ namespace pnm::log
                     {
                         std::unique_lock lock{ m_mutex };
 
-                        auto has_entry{ m_cv.wait(lock, token, [this] { return !m_queue.empty(); }) };
+                        auto has_entry{ m_wake.wait(lock, token, [this] { return !m_queue.empty(); }) };
                         if (!has_entry) {
                             break;
                         }
@@ -976,7 +975,7 @@ namespace pnm::log
             mutable std::mutex m_mutex;
             mutable std::mutex m_routingMutex;
             std::recursive_mutex m_writeMutex;
-            std::condition_variable_any m_cv;
+            std::condition_variable_any m_wake;
             std::deque<LogEntry> m_queue;
             DefaultSinks m_defaultSinks{ makeDefaultSinks() };
             std::map<uint64_t, std::shared_ptr<ISink>> m_globalSinks;
