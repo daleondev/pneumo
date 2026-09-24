@@ -34,6 +34,7 @@ namespace
     class RecordingSink : public pnm::log::SinkBase<RecordingSink>
     {
       public:
+        auto isTerminal() const -> bool override { return terminal; }
         auto isOpen() const -> bool override { return true; }
         auto open() -> pnm::Result<> override { return {}; }
         auto close() -> pnm::Result<> override { return {}; }
@@ -52,6 +53,7 @@ namespace
 
         std::vector<std::string> writes;
         size_t flushes{ 0 };
+        bool terminal{};
     };
 
     class PartialWriteSink : public pnm::log::SinkBase<PartialWriteSink>
@@ -140,6 +142,18 @@ PNM_META_SOURCE_EMBED_CURRENT
 int main(int argc, char* argv[])
 {
 #if defined(PNM_PLATFORM_POSIX)
+    if (const auto* log_path{ std::getenv("PNM_LOGGING_ASYNC_COLOR_FILE") }; log_path != nullptr) {
+        auto sink{ std::make_shared<pnm::log::detail::FileSink>(log_path) };
+        sink->colors().color(pnm::log::Level::Info, pnm::log::yellow);
+        pnm::log::remove_all_global_sinks();
+        pnm::log::add_global_sink(sink);
+        pnm::log::info(pnm::log::red, "async default {}", 1);
+        pnm::log::warn(sink, pnm::log::blue, "async shared {}", 2);
+        pnm::log::error(pnm::log::file(log_path).colors(), pnm::log::green, "async object {}", 3);
+        pnm::log::info(pnm::log::no_color, "async plain {}", 4);
+        return 0;
+    }
+
     if (const auto* log_path{ std::getenv("PNM_LOGGING_ASYNC_DRAIN_FILE") }; log_path != nullptr) {
         pnm::log::info(
           pnm::log::file(log_path).sourceInfo(pnm::log::SourceField::FileName, pnm::log::SourceField::Line),
@@ -156,6 +170,184 @@ int main(int argc, char* argv[])
 }
 
 TEST(LoggingTests, InfoStdou) { SUCCEED(); }
+
+TEST(LoggingTests, DefaultPaletteColorsAllLevelsAndResetsBeforeNewline)
+{
+    auto sink{ std::make_shared<RecordingSink>() };
+    sink->colors().timestampFormat("test");
+
+    pnm::log::trace(pnm::log::immediate, sink, "trace");
+    pnm::log::debug(pnm::log::immediate, sink, "debug");
+    pnm::log::info(pnm::log::immediate, sink, "info");
+    pnm::log::warn(pnm::log::immediate, sink, "warn");
+    pnm::log::error(pnm::log::immediate, sink, "error");
+    pnm::log::critical(pnm::log::immediate, sink, "critical");
+
+    const std::vector<std::string> expected{
+        "\x1b[90m[test] Trace: trace\x1b[0m\n", "\x1b[36m[test] Debug: debug\x1b[0m\n",
+        "\x1b[32m[test] Info: info\x1b[0m\n",   "\x1b[33m[test] Warn: warn\x1b[0m\n",
+        "\x1b[31m[test] Error: error\x1b[0m\n", "\x1b[91m[test] Critical: critical\x1b[0m\n"
+    };
+    EXPECT_EQ(sink->writes, expected);
+}
+
+TEST(LoggingTests, SinkPaletteCanBeConfiguredAndReset)
+{
+    auto sink{ std::make_shared<RecordingSink>() };
+    EXPECT_EQ(&sink->colors().color(pnm::log::Level::Info, pnm::log::blue), sink.get());
+    sink->color(pnm::log::Level::Warn, pnm::log::no_color);
+    pnm::log::info(pnm::log::immediate, sink, "custom info");
+    pnm::log::warn(pnm::log::immediate, sink, "plain warning");
+    sink->resetColors();
+    pnm::log::info(pnm::log::immediate, sink, "default info");
+
+    ASSERT_EQ(sink->writes.size(), 3);
+    EXPECT_TRUE(sink->writes[0].starts_with("\x1b[34m"));
+    EXPECT_EQ(sink->writes[1].find('\x1b'), std::string::npos);
+    EXPECT_TRUE(sink->writes[2].starts_with("\x1b[32m"));
+    EXPECT_THROW(sink->color(pnm::log::Level::Off, pnm::log::red), std::invalid_argument);
+    EXPECT_THROW(sink->color(static_cast<pnm::log::Level>(255), pnm::log::red), std::invalid_argument);
+}
+
+TEST(LoggingTests, ExplicitColorOverridesPaletteAndPreservesFormattingAndCallSite)
+{
+    auto sink{ std::make_shared<RecordingSink>() };
+    sink->colors()
+      .color(pnm::log::Level::Info, pnm::log::blue)
+      .sourceInfo(pnm::log::SourceField::FileName, pnm::log::SourceField::Line);
+    const auto expected_line{ __LINE__ + 1U };
+    pnm::log::info(pnm::log::immediate, sink, pnm::log::red, "value {:04}", 42);
+    pnm::log::info(pnm::log::immediate, sink, pnm::log::no_color, "plain override");
+    pnm::log::info(pnm::log::immediate, sink, "palette unchanged");
+
+    ASSERT_EQ(sink->writes.size(), 3);
+    EXPECT_TRUE(sink->writes[0].starts_with("\x1b[31m"));
+    EXPECT_NE(sink->writes[0].find(std::format("logging_tests.cpp:{}", expected_line)), std::string::npos);
+    EXPECT_TRUE(sink->writes[0].ends_with("value 0042\x1b[0m\n"));
+    EXPECT_EQ(sink->writes[1].find('\x1b'), std::string::npos);
+    EXPECT_TRUE(sink->writes[2].starts_with("\x1b[34m"));
+}
+
+TEST(LoggingTests, AutoColorModeUsesSinkTerminalStatus)
+{
+    auto sink{ std::make_shared<RecordingSink>() };
+    EXPECT_EQ(sink->getColorMode(), pnm::log::ColorMode::Auto);
+    pnm::log::info(pnm::log::immediate, sink, pnm::log::red, "plain transport");
+    sink->terminal = true;
+    pnm::log::info(pnm::log::immediate, sink, "terminal transport");
+    sink->colors(pnm::log::ColorMode::Never);
+    pnm::log::info(pnm::log::immediate, sink, pnm::log::red, "disabled transport");
+
+    ASSERT_EQ(sink->writes.size(), 3);
+    EXPECT_EQ(sink->writes[0].find('\x1b'), std::string::npos);
+    EXPECT_TRUE(sink->writes[1].starts_with("\x1b[32m"));
+    EXPECT_EQ(sink->writes[2].find('\x1b'), std::string::npos);
+}
+
+TEST(LoggingTests, StandardStreamsStayPlainWhenRedirectedAndCanForceColor)
+{
+    const auto previous_mode{ pnm::log::std_out->getColorMode() };
+    pnm::log::std_out->colors(pnm::log::ColorMode::Auto);
+    testing::internal::CaptureStdout();
+    pnm::log::info(pnm::log::immediate, pnm::log::red, "redirected");
+    const auto plain{ testing::internal::GetCapturedStdout() };
+    pnm::log::std_out->colors(pnm::log::ColorMode::Always);
+    testing::internal::CaptureStdout();
+    pnm::log::info(pnm::log::immediate, pnm::log::red, "forced");
+    const auto colored{ testing::internal::GetCapturedStdout() };
+    pnm::log::std_out->colors(previous_mode);
+
+    EXPECT_EQ(plain.find('\x1b'), std::string::npos);
+    EXPECT_TRUE(colored.starts_with("\x1b[31m"));
+    EXPECT_TRUE(colored.ends_with("forced\x1b[0m\n"));
+}
+
+TEST(LoggingTests, ColorsAreSelectedIndependentlyForEachSink)
+{
+    auto first{ std::make_shared<RecordingSink>() };
+    auto second{ std::make_shared<RecordingSink>() };
+    first->colors().color(pnm::log::Level::Info, pnm::log::blue);
+    second->colors().color(pnm::log::Level::Info, pnm::log::yellow);
+    pnm::log::remove_all_global_sinks();
+    pnm::log::add_global_sink(first);
+    pnm::log::add_global_sink(second);
+    pnm::log::info(pnm::log::immediate, "per sink");
+    pnm::log::info(pnm::log::immediate, pnm::log::magenta, "per message");
+    pnm::log::remove_all_global_sinks();
+    pnm::log::reset_default_sinks();
+
+    ASSERT_EQ(first->writes.size(), 2);
+    ASSERT_EQ(second->writes.size(), 2);
+    EXPECT_TRUE(first->writes[0].starts_with("\x1b[34m"));
+    EXPECT_TRUE(second->writes[0].starts_with("\x1b[33m"));
+    EXPECT_TRUE(first->writes[1].starts_with("\x1b[35m"));
+    EXPECT_TRUE(second->writes[1].starts_with("\x1b[35m"));
+}
+
+TEST(LoggingTests, ColorResetPrecedesSourceExcerptEvenWithMultilineMessage)
+{
+    auto sink{ std::make_shared<RecordingSink>() };
+    sink->colors().sourceExcerpt().showLevel(false);
+    pnm::log::error(pnm::log::immediate, sink, pnm::log::cyan, "first\nsecond");
+    ASSERT_EQ(sink->writes.size(), 1);
+    const auto& output{ sink->writes.front() };
+    EXPECT_TRUE(output.starts_with("\x1b[36m"));
+    EXPECT_NE(output.find("first\nsecond\x1b[0m\n"), std::string::npos);
+    EXPECT_NE(output.find("pnm::log::error"), std::string::npos);
+    EXPECT_EQ(output.find("Error"), std::string::npos);
+}
+
+TEST(LoggingTests, PartialWritesPreserveColorAndReset)
+{
+    auto sink{ std::make_shared<PartialWriteSink>() };
+    sink->colors();
+    pnm::log::critical(pnm::log::immediate, sink, pnm::log::bright_magenta, "partial {}", 42);
+    EXPECT_GT(sink->writes, 1);
+    EXPECT_TRUE(sink->output.starts_with("\x1b[95m"));
+    EXPECT_TRUE(sink->output.ends_with("partial 42\x1b[0m\n"));
+}
+
+TEST(LoggingTests, FileColorsAreOptInAndAcceptDirectColorWithSinkObject)
+{
+#if !defined(PNM_PLATFORM_POSIX)
+    GTEST_SKIP() << "temporary file probe currently uses POSIX-friendly filesystem behavior";
+#else
+    const auto path{ make_temp_log_path("colors") };
+    auto sink{ pnm::log::file(path).flushOn(pnm::log::Level::Trace) };
+    pnm::log::info(pnm::log::immediate, sink, pnm::log::red, "plain file");
+    EXPECT_EQ(read_file(path).find('\x1b'), std::string::npos);
+    pnm::log::info(pnm::log::immediate, sink.colors(), pnm::log::cyan, "colored file");
+    EXPECT_NE(read_file(path).find("\x1b[36m"), std::string::npos);
+    ASSERT_TRUE(sink.close());
+    std::filesystem::remove(path);
+#endif
+}
+
+TEST(LoggingTests, AsyncColorOverridesSurviveAllRoutingForms)
+{
+#if !defined(PNM_PLATFORM_POSIX)
+    GTEST_SKIP() << "child-process shutdown probe currently uses POSIX process status";
+#else
+    const auto path{ make_temp_log_path("async-colors") };
+    const auto command{ std::format("PNM_LOGGING_ASYNC_COLOR_FILE={} {}",
+                                    shell_quote(path.string()),
+                                    shell_quote(g_test_binary.string())) };
+    const auto status{ std::system(command.c_str()) };
+    ASSERT_NE(status, -1);
+    ASSERT_TRUE(WIFEXITED(status));
+    ASSERT_EQ(WEXITSTATUS(status), 0);
+    const auto output{ read_file(path) };
+    EXPECT_NE(output.find("\x1b[31m"), std::string::npos);
+    EXPECT_NE(output.find("async default 1\x1b[0m\n"), std::string::npos);
+    EXPECT_NE(output.find("\x1b[34m"), std::string::npos);
+    EXPECT_NE(output.find("async shared 2\x1b[0m\n"), std::string::npos);
+    EXPECT_NE(output.find("\x1b[32m"), std::string::npos);
+    EXPECT_NE(output.find("async object 3\x1b[0m\n"), std::string::npos);
+    EXPECT_TRUE(output.ends_with("async plain 4\n"));
+    EXPECT_EQ(std::ranges::count(output, '\x1b'), 6);
+    std::filesystem::remove(path);
+#endif
+}
 
 TEST(LoggingTests, ThrowingFormatterDoesNotEscapeNoexceptLogApi)
 {

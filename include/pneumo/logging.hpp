@@ -17,6 +17,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <print>
 #include <ranges>
 #include <source_location>
@@ -29,6 +30,10 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
+
+#if defined(PNM_PLATFORM_POSIX)
+#include <unistd.h>
+#endif
 
 namespace pnm::log
 {
@@ -44,15 +49,71 @@ namespace pnm::log
         Critical
     };
 
+    enum class Color : uint8_t
+    {
+        None,
+        Black,
+        Red,
+        Green,
+        Yellow,
+        Blue,
+        Magenta,
+        Cyan,
+        White,
+        BrightBlack,
+        BrightRed,
+        BrightGreen,
+        BrightYellow,
+        BrightBlue,
+        BrightMagenta,
+        BrightCyan,
+        BrightWhite
+    };
+
+    enum class ColorMode : uint8_t
+    {
+        Auto,
+        Always,
+        Never
+    };
+
+    constexpr auto default_color(Level level) noexcept -> Color
+    {
+        switch (level) {
+            case Level::Off:
+                return Color::None;
+            case Level::Trace:
+                return Color::BrightBlack;
+            case Level::Debug:
+                return Color::Cyan;
+            case Level::Info:
+                return Color::Green;
+            case Level::Warn:
+                return Color::Yellow;
+            case Level::Error:
+                return Color::Red;
+            case Level::Critical:
+                return Color::BrightRed;
+            default:
+                return Color::None;
+        }
+    }
+
     enum class SourceField : uint8_t
     {
         None = 0,
-        FileName = utils::bit::get<0, uint8_t>(),
-        FilePath = utils::bit::get<1, uint8_t>(),
-        Line = utils::bit::get<2, uint8_t>(),
-        Column = utils::bit::get<3, uint8_t>(),
-        Function = utils::bit::get<4, uint8_t>(),
-        Excerpt = utils::bit::get<5, uint8_t>()
+        FileName = utils::bit::get < 0,
+        uint8_t>(),
+        FilePath = utils::bit::get < 1,
+        uint8_t>(),
+        Line = utils::bit::get < 2,
+        uint8_t>(),
+        Column = utils::bit::get < 3,
+        uint8_t>(),
+        Function = utils::bit::get < 4,
+        uint8_t>(),
+        Excerpt = utils::bit::get < 5,
+        uint8_t>()
     };
 
     struct SourceInfo
@@ -62,10 +123,7 @@ namespace pnm::log
             return (fields & std::to_underlying(field)) != 0U;
         }
 
-        constexpr auto enable(SourceField field) noexcept -> void
-        {
-            fields |= std::to_underlying(field);
-        }
+        constexpr auto enable(SourceField field) noexcept -> void { fields |= std::to_underlying(field); }
 
         uint8_t fields{};
         size_t excerpt_context{};
@@ -117,6 +175,9 @@ namespace pnm::log
         virtual auto getSourceInfo() const -> SourceInfo { return {}; }
         virtual auto getShowLevel() const -> bool { return true; }
         virtual auto getTimestampFormat() const -> std::string_view { return "{:%H:%M:%S}"; }
+        virtual auto getColorMode() const -> ColorMode { return ColorMode::Auto; }
+        virtual auto getColor(Level level) const -> Color { return default_color(level); }
+        virtual auto isTerminal() const -> bool { return false; }
 
       protected:
         ISink() = default;
@@ -173,11 +234,40 @@ namespace pnm::log
             return static_cast<Sink&>(*this);
         }
 
+        auto colors(ColorMode mode = ColorMode::Always) -> Sink&
+        {
+            m_colorMode = mode;
+            return static_cast<Sink&>(*this);
+        }
+
+        auto color(Level level, Color color) -> Sink&
+        {
+            if (level < Level::Trace || level > Level::Critical) {
+                throw std::invalid_argument{ "Cannot set color for an invalid log level" };
+            }
+            m_colors[std::to_underlying(level)] = color;
+            return static_cast<Sink&>(*this);
+        }
+
+        auto resetColors() -> Sink&
+        {
+            m_colors = DEFAULT_COLORS;
+            return static_cast<Sink&>(*this);
+        }
+
         auto getMinLevel() const -> Level override { return m_minLevel; }
         auto getFlushLevel() const -> Level override { return m_flushLevel; }
         auto getSourceInfo() const -> SourceInfo override { return m_sourceInfo; }
         auto getShowLevel() const -> bool override { return m_showLevel; }
         auto getTimestampFormat() const -> std::string_view override { return m_timestampFormat; }
+        auto getColorMode() const -> ColorMode override { return m_colorMode; }
+        auto getColor(Level level) const -> Color override
+        {
+            if (level < Level::Trace || level > Level::Critical) {
+                return Color::None;
+            }
+            return m_colors[std::to_underlying(level)];
+        }
 
       private:
         friend Sink;
@@ -193,10 +283,67 @@ namespace pnm::log
         SourceInfo m_sourceInfo{};
         bool m_showLevel{ true };
         std::string m_timestampFormat{ "{:%H:%M:%S}" };
+        static constexpr std::array DEFAULT_COLORS{
+            default_color(Level::Off),     default_color(Level::Trace), default_color(Level::Debug),
+            default_color(Level::Info),    default_color(Level::Warn),  default_color(Level::Error),
+            default_color(Level::Critical)
+        };
+        ColorMode m_colorMode{ ColorMode::Auto };
+        std::array<Color, DEFAULT_COLORS.size()> m_colors{ DEFAULT_COLORS };
     };
 
     namespace detail
     {
+        inline auto stream_is_terminal(std::FILE* stream) -> bool
+        {
+#if defined(PNM_PLATFORM_POSIX)
+            return ::isatty(::fileno(stream)) == 1;
+#else
+            static_cast<void>(stream);
+            return false;
+#endif
+        }
+
+        constexpr auto color_sequence(Color color) noexcept -> std::string_view
+        {
+            switch (color) {
+                case Color::Black:
+                    return "\x1b[30m";
+                case Color::Red:
+                    return "\x1b[31m";
+                case Color::Green:
+                    return "\x1b[32m";
+                case Color::Yellow:
+                    return "\x1b[33m";
+                case Color::Blue:
+                    return "\x1b[34m";
+                case Color::Magenta:
+                    return "\x1b[35m";
+                case Color::Cyan:
+                    return "\x1b[36m";
+                case Color::White:
+                    return "\x1b[37m";
+                case Color::BrightBlack:
+                    return "\x1b[90m";
+                case Color::BrightRed:
+                    return "\x1b[91m";
+                case Color::BrightGreen:
+                    return "\x1b[92m";
+                case Color::BrightYellow:
+                    return "\x1b[93m";
+                case Color::BrightBlue:
+                    return "\x1b[94m";
+                case Color::BrightMagenta:
+                    return "\x1b[95m";
+                case Color::BrightCyan:
+                    return "\x1b[96m";
+                case Color::BrightWhite:
+                    return "\x1b[97m";
+                default:
+                    return {};
+            }
+        }
+
         inline auto unique_id() noexcept -> uint64_t
         {
             static std::atomic_uint64_t next{ 1 };
@@ -240,6 +387,8 @@ namespace pnm::log
         class StdOutSink : public SinkBase<StdOutSink>
         {
           public:
+            auto isTerminal() const -> bool override { return stream_is_terminal(stdout); }
+
             auto isOpen() const -> bool override { return true; }
 
             auto open() -> pnm::Result<> override { return {}; }
@@ -273,6 +422,8 @@ namespace pnm::log
         class StdErrSink : public SinkBase<StdErrSink>
         {
           public:
+            auto isTerminal() const -> bool override { return stream_is_terminal(stderr); }
+
             auto isOpen() const -> bool override { return true; }
 
             auto open() -> pnm::Result<> override { return {}; }
@@ -521,6 +672,7 @@ namespace pnm::log
             std::string message;
             std::chrono::system_clock::time_point timestamp;
             std::source_location source;
+            std::optional<Color> color;
         };
 
         struct LogEntry
@@ -574,7 +726,14 @@ namespace pnm::log
         inline auto format_record(const LogRecord& record, const ISink& sink) -> std::string
         {
             const auto source_info{ sink.getSourceInfo() };
-            auto output{ std::string{ "[" } };
+            const auto color_mode{ sink.getColorMode() };
+            const auto use_color{ color_mode == ColorMode::Always ||
+                                  (color_mode == ColorMode::Auto && sink.isTerminal()) };
+            const auto color{ use_color
+                                ? color_sequence(record.color ? *record.color : sink.getColor(record.level))
+                                : std::string_view{} };
+            auto output{ std::string{ color } };
+            output += '[';
             output += std::vformat(sink.getTimestampFormat(), std::make_format_args(record.timestamp));
             output += ']';
 
@@ -588,6 +747,9 @@ namespace pnm::log
 
             output += ": ";
             output += record.message;
+            if (!color.empty()) {
+                output += "\x1b[0m";
+            }
             output += '\n';
 
             if (source_info.contains(SourceField::Excerpt)) {
@@ -624,7 +786,8 @@ namespace pnm::log
                       std::string message,
                       std::source_location source,
                       bool sync,
-                      std::shared_ptr<ISink> sink = nullptr) -> void
+                      std::shared_ptr<ISink> sink = nullptr,
+                      std::optional<Color> color = std::nullopt) -> void
             {
                 std::vector<std::shared_ptr<ISink>> sinks;
                 if (sink) {
@@ -645,7 +808,8 @@ namespace pnm::log
                 LogEntry entry{ .record = { .level = level,
                                             .message = std::move(message),
                                             .timestamp = std::chrono::system_clock::now(),
-                                            .source = source },
+                                            .source = source,
+                                            .color = color },
                                 .sinks = std::move(sinks) };
 
                 if (sync) {
@@ -827,12 +991,17 @@ namespace pnm::log
         };
 
         template<meta::string::FixedString Lvl, bool Sync, typename... Args>
-        auto log_message(LogFormatString<Args...> fmt, Args&&... args) noexcept -> void
+        auto log_message(std::optional<Color> color, LogFormatString<Args...> fmt, Args&&... args) noexcept
+          -> void
         {
             constexpr auto level{ level_from_string<Lvl>() };
             try {
-                backend().emit(
-                  level, std::format(fmt.getFormat(), std::forward<Args>(args)...), fmt.getLocation(), Sync);
+                backend().emit(level,
+                               std::format(fmt.getFormat(), std::forward<Args>(args)...),
+                               fmt.getLocation(),
+                               Sync,
+                               nullptr,
+                               color);
             } catch (...) {
                 report_internal_error("pneumo logging: dropped a message after an internal exception");
             }
@@ -840,6 +1009,7 @@ namespace pnm::log
 
         template<meta::string::FixedString Lvl, bool Sync, typename... Args>
         auto log_message_to_sink(std::shared_ptr<ISink> sink,
+                                 std::optional<Color> color,
                                  LogFormatString<Args...> fmt,
                                  Args&&... args) noexcept -> void
         {
@@ -853,7 +1023,8 @@ namespace pnm::log
                                std::format(fmt.getFormat(), std::forward<Args>(args)...),
                                fmt.getLocation(),
                                Sync,
-                               std::move(sink));
+                               std::move(sink),
+                               color);
             } catch (...) {
                 report_internal_error("pneumo logging: dropped a routed message after an internal exception");
             }
@@ -872,12 +1043,14 @@ namespace pnm::log
         }
 
         template<meta::string::FixedString Lvl, bool Sync, SinkObject Sink, typename... Args>
-        auto log_message_to_sink_object(Sink&& sink, LogFormatString<Args...> fmt, Args&&... args) noexcept
-          -> void
+        auto log_message_to_sink_object(Sink&& sink,
+                                        std::optional<Color> color,
+                                        LogFormatString<Args...> fmt,
+                                        Args&&... args) noexcept -> void
         {
             try {
                 log_message_to_sink<Lvl, Sync>(
-                  make_sink_ptr(std::forward<Sink>(sink)), fmt, std::forward<Args>(args)...);
+                  make_sink_ptr(std::forward<Sink>(sink)), color, fmt, std::forward<Args>(args)...);
             } catch (...) {
                 report_internal_error("pneumo logging: failed to create a routed sink");
             }
@@ -892,6 +1065,23 @@ namespace pnm::log
     // NOLINTBEGIN(readability-identifier-naming)
 
     inline constexpr detail::Immediate immediate{};
+    inline constexpr auto no_color{ Color::None };
+    inline constexpr auto black{ Color::Black };
+    inline constexpr auto red{ Color::Red };
+    inline constexpr auto green{ Color::Green };
+    inline constexpr auto yellow{ Color::Yellow };
+    inline constexpr auto blue{ Color::Blue };
+    inline constexpr auto magenta{ Color::Magenta };
+    inline constexpr auto cyan{ Color::Cyan };
+    inline constexpr auto white{ Color::White };
+    inline constexpr auto bright_black{ Color::BrightBlack };
+    inline constexpr auto bright_red{ Color::BrightRed };
+    inline constexpr auto bright_green{ Color::BrightGreen };
+    inline constexpr auto bright_yellow{ Color::BrightYellow };
+    inline constexpr auto bright_blue{ Color::BrightBlue };
+    inline constexpr auto bright_magenta{ Color::BrightMagenta };
+    inline constexpr auto bright_cyan{ Color::BrightCyan };
+    inline constexpr auto bright_white{ Color::BrightWhite };
 
     inline const auto std_out{ detail::standard_output_sink() };
     inline const auto std_err{ detail::standard_error_sink() };
@@ -978,7 +1168,7 @@ namespace pnm::log
     template<typename... Args>                                                                               \
     inline auto level(LogFormatString<Args...> fmt, Args&&... args) noexcept -> void                         \
     {                                                                                                        \
-        detail::log_message<#level, false>(fmt, std::forward<Args>(args)...);                                \
+        detail::log_message<#level, false>(std::nullopt, fmt, std::forward<Args>(args)...);                  \
     }                                                                                                        \
                                                                                                              \
     template<std::derived_from<ISink> Sink, typename... Args>                                                \
@@ -986,20 +1176,20 @@ namespace pnm::log
       -> void                                                                                                \
     {                                                                                                        \
         detail::log_message_to_sink<#level, false>(                                                          \
-          std::static_pointer_cast<ISink>(std::move(sink)), fmt, std::forward<Args>(args)...);               \
+          std::static_pointer_cast<ISink>(std::move(sink)), std::nullopt, fmt, std::forward<Args>(args)...); \
     }                                                                                                        \
                                                                                                              \
     template<detail::SinkObject Sink, typename... Args>                                                      \
     inline auto level(Sink&& sink, LogFormatString<Args...> fmt, Args&&... args) noexcept -> void            \
     {                                                                                                        \
         detail::log_message_to_sink_object<#level, false>(                                                   \
-          std::forward<Sink>(sink), fmt, std::forward<Args>(args)...);                                       \
+          std::forward<Sink>(sink), std::nullopt, fmt, std::forward<Args>(args)...);                         \
     }                                                                                                        \
                                                                                                              \
     template<typename... Args>                                                                               \
     inline auto level(detail::Immediate, LogFormatString<Args...> fmt, Args&&... args) noexcept -> void      \
     {                                                                                                        \
-        detail::log_message<#level, true>(fmt, std::forward<Args>(args)...);                                 \
+        detail::log_message<#level, true>(std::nullopt, fmt, std::forward<Args>(args)...);                   \
     }                                                                                                        \
                                                                                                              \
     template<std::derived_from<ISink> Sink, typename... Args>                                                \
@@ -1008,7 +1198,7 @@ namespace pnm::log
       -> void                                                                                                \
     {                                                                                                        \
         detail::log_message_to_sink<#level, true>(                                                           \
-          std::static_pointer_cast<ISink>(std::move(sink)), fmt, std::forward<Args>(args)...);               \
+          std::static_pointer_cast<ISink>(std::move(sink)), std::nullopt, fmt, std::forward<Args>(args)...); \
     }                                                                                                        \
                                                                                                              \
     template<detail::SinkObject Sink, typename... Args>                                                      \
@@ -1016,7 +1206,57 @@ namespace pnm::log
       -> void                                                                                                \
     {                                                                                                        \
         detail::log_message_to_sink_object<#level, true>(                                                    \
-          std::forward<Sink>(sink), fmt, std::forward<Args>(args)...);                                       \
+          std::forward<Sink>(sink), std::nullopt, fmt, std::forward<Args>(args)...);                         \
+    }                                                                                                        \
+                                                                                                             \
+    template<typename... Args>                                                                               \
+    inline auto level(Color color, LogFormatString<Args...> fmt, Args&&... args) noexcept -> void            \
+    {                                                                                                        \
+        detail::log_message<#level, false>(color, fmt, std::forward<Args>(args)...);                         \
+    }                                                                                                        \
+                                                                                                             \
+    template<std::derived_from<ISink> Sink, typename... Args>                                                \
+    inline auto level(                                                                                       \
+      std::shared_ptr<Sink> sink, Color color, LogFormatString<Args...> fmt, Args&&... args) noexcept        \
+      -> void                                                                                                \
+    {                                                                                                        \
+        detail::log_message_to_sink<#level, false>(                                                          \
+          std::static_pointer_cast<ISink>(std::move(sink)), color, fmt, std::forward<Args>(args)...);        \
+    }                                                                                                        \
+                                                                                                             \
+    template<detail::SinkObject Sink, typename... Args>                                                      \
+    inline auto level(Sink&& sink, Color color, LogFormatString<Args...> fmt, Args&&... args) noexcept       \
+      -> void                                                                                                \
+    {                                                                                                        \
+        detail::log_message_to_sink_object<#level, false>(                                                   \
+          std::forward<Sink>(sink), color, fmt, std::forward<Args>(args)...);                                \
+    }                                                                                                        \
+                                                                                                             \
+    template<typename... Args>                                                                               \
+    inline auto level(detail::Immediate, Color color, LogFormatString<Args...> fmt, Args&&... args) noexcept \
+      -> void                                                                                                \
+    {                                                                                                        \
+        detail::log_message<#level, true>(color, fmt, std::forward<Args>(args)...);                          \
+    }                                                                                                        \
+                                                                                                             \
+    template<std::derived_from<ISink> Sink, typename... Args>                                                \
+    inline auto level(detail::Immediate,                                                                     \
+                      std::shared_ptr<Sink> sink,                                                            \
+                      Color color,                                                                           \
+                      LogFormatString<Args...> fmt,                                                          \
+                      Args&&... args) noexcept -> void                                                       \
+    {                                                                                                        \
+        detail::log_message_to_sink<#level, true>(                                                           \
+          std::static_pointer_cast<ISink>(std::move(sink)), color, fmt, std::forward<Args>(args)...);        \
+    }                                                                                                        \
+                                                                                                             \
+    template<detail::SinkObject Sink, typename... Args>                                                      \
+    inline auto level(                                                                                       \
+      detail::Immediate, Sink&& sink, Color color, LogFormatString<Args...> fmt, Args&&... args) noexcept    \
+      -> void                                                                                                \
+    {                                                                                                        \
+        detail::log_message_to_sink_object<#level, true>(                                                    \
+          std::forward<Sink>(sink), color, fmt, std::forward<Args>(args)...);                                \
     }
 
     PNM_DEFINE_LOG_LEVEL(trace)
