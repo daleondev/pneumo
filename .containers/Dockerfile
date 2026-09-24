@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1.7
 
-# Reuse the published compiler layer for normal devcontainer builds.
+# Reuse the published compiler layer for PR validation and local image builds.
 # Set TOOLCHAIN_IMAGE=ci to build both targets entirely from source.
-ARG TOOLCHAIN_IMAGE=ghcr.io/daleondev/pneumo-ci:clang-p2996-7220baff-gcc16@sha256:587f48bb860505957051b514828a07351b6c11556bdd31c3a7a6eeed077e0b4c
+ARG TOOLCHAIN_IMAGE=ghcr.io/daleondev/pneumo-ci:latest
 ARG UBUNTU_VERSION=26.04
 ARG CLANG_P2996_COMMIT=7220baffd57ea5b0f8cf59bee494dd5b7cc2b748
 
