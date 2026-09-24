@@ -171,7 +171,7 @@ int main(int argc, char* argv[])
 
 TEST(LoggingTests, InfoStdou) { SUCCEED(); }
 
-TEST(LoggingTests, DefaultPaletteColorsAllLevelsAndResetsBeforeNewline)
+TEST(LoggingTests, DefaultPaletteColorsHeadersAndResetsBeforeMessages)
 {
     auto sink{ std::make_shared<RecordingSink>() };
     sink->colors().timestampFormat("test");
@@ -184,9 +184,9 @@ TEST(LoggingTests, DefaultPaletteColorsAllLevelsAndResetsBeforeNewline)
     pnm::log::critical(pnm::log::immediate, sink, "critical");
 
     const std::vector<std::string> expected{
-        "\x1b[90m[test] Trace: trace\x1b[0m\n", "\x1b[36m[test] Debug: debug\x1b[0m\n",
-        "\x1b[32m[test] Info: info\x1b[0m\n",   "\x1b[33m[test] Warn: warn\x1b[0m\n",
-        "\x1b[31m[test] Error: error\x1b[0m\n", "\x1b[91m[test] Critical: critical\x1b[0m\n"
+        "\x1b[90m[test] Trace: \x1b[0mtrace\n", "\x1b[36m[test] Debug: \x1b[0mdebug\n",
+        "\x1b[32m[test] Info: \x1b[0minfo\n",   "\x1b[33m[test] Warn: \x1b[0mwarn\n",
+        "\x1b[31m[test] Error: \x1b[0merror\n", "\x1b[91m[test] Critical: \x1b[0mcritical\n"
     };
     EXPECT_EQ(sink->writes, expected);
 }
@@ -203,7 +203,8 @@ TEST(LoggingTests, SinkPaletteCanBeConfiguredAndReset)
 
     ASSERT_EQ(sink->writes.size(), 3);
     EXPECT_TRUE(sink->writes[0].starts_with("\x1b[34m"));
-    EXPECT_EQ(sink->writes[1].find('\x1b'), std::string::npos);
+    EXPECT_TRUE(sink->writes[1].starts_with("\x1b[0m["));
+    EXPECT_TRUE(sink->writes[1].ends_with(": \x1b[0mplain warning\n"));
     EXPECT_TRUE(sink->writes[2].starts_with("\x1b[32m"));
     EXPECT_THROW(sink->color(pnm::log::Level::Off, pnm::log::red), std::invalid_argument);
     EXPECT_THROW(sink->color(static_cast<pnm::log::Level>(255), pnm::log::red), std::invalid_argument);
@@ -223,8 +224,9 @@ TEST(LoggingTests, ExplicitColorOverridesPaletteAndPreservesFormattingAndCallSit
     ASSERT_EQ(sink->writes.size(), 3);
     EXPECT_TRUE(sink->writes[0].starts_with("\x1b[31m"));
     EXPECT_NE(sink->writes[0].find(std::format("logging_tests.cpp:{}", expected_line)), std::string::npos);
-    EXPECT_TRUE(sink->writes[0].ends_with("value 0042\x1b[0m\n"));
-    EXPECT_EQ(sink->writes[1].find('\x1b'), std::string::npos);
+    EXPECT_TRUE(sink->writes[0].ends_with("\x1b[0mvalue 0042\n"));
+    EXPECT_TRUE(sink->writes[1].starts_with("\x1b[0m["));
+    EXPECT_TRUE(sink->writes[1].ends_with(": \x1b[0mplain override\n"));
     EXPECT_TRUE(sink->writes[2].starts_with("\x1b[34m"));
 }
 
@@ -233,15 +235,22 @@ TEST(LoggingTests, AutoColorModeUsesSinkTerminalStatus)
     auto sink{ std::make_shared<RecordingSink>() };
     EXPECT_EQ(sink->getColorMode(), pnm::log::ColorMode::Auto);
     pnm::log::info(pnm::log::immediate, sink, pnm::log::red, "plain transport");
+    pnm::log::info(pnm::log::immediate, sink, pnm::log::no_color, "plain reset");
     sink->terminal = true;
     pnm::log::info(pnm::log::immediate, sink, "terminal transport");
+    pnm::log::info(pnm::log::immediate, sink, pnm::log::no_color, "terminal reset");
     sink->colors(pnm::log::ColorMode::Never);
     pnm::log::info(pnm::log::immediate, sink, pnm::log::red, "disabled transport");
+    pnm::log::info(pnm::log::immediate, sink, pnm::log::no_color, "disabled reset");
 
-    ASSERT_EQ(sink->writes.size(), 3);
+    ASSERT_EQ(sink->writes.size(), 6);
     EXPECT_EQ(sink->writes[0].find('\x1b'), std::string::npos);
-    EXPECT_TRUE(sink->writes[1].starts_with("\x1b[32m"));
-    EXPECT_EQ(sink->writes[2].find('\x1b'), std::string::npos);
+    EXPECT_EQ(sink->writes[1].find('\x1b'), std::string::npos);
+    EXPECT_TRUE(sink->writes[2].starts_with("\x1b[32m"));
+    EXPECT_TRUE(sink->writes[3].starts_with("\x1b[0m["));
+    EXPECT_TRUE(sink->writes[3].ends_with(": \x1b[0mterminal reset\n"));
+    EXPECT_EQ(sink->writes[4].find('\x1b'), std::string::npos);
+    EXPECT_EQ(sink->writes[5].find('\x1b'), std::string::npos);
 }
 
 TEST(LoggingTests, StandardStreamsStayPlainWhenRedirectedAndCanForceColor)
@@ -259,7 +268,7 @@ TEST(LoggingTests, StandardStreamsStayPlainWhenRedirectedAndCanForceColor)
 
     EXPECT_EQ(plain.find('\x1b'), std::string::npos);
     EXPECT_TRUE(colored.starts_with("\x1b[31m"));
-    EXPECT_TRUE(colored.ends_with("forced\x1b[0m\n"));
+    EXPECT_TRUE(colored.ends_with("\x1b[0mforced\n"));
 }
 
 TEST(LoggingTests, ColorsAreSelectedIndependentlyForEachSink)
@@ -284,7 +293,7 @@ TEST(LoggingTests, ColorsAreSelectedIndependentlyForEachSink)
     EXPECT_TRUE(second->writes[1].starts_with("\x1b[35m"));
 }
 
-TEST(LoggingTests, ColorResetPrecedesSourceExcerptEvenWithMultilineMessage)
+TEST(LoggingTests, ColorResetPrecedesMultilineMessageAndSourceExcerpt)
 {
     auto sink{ std::make_shared<RecordingSink>() };
     sink->colors().sourceExcerpt().showLevel(false);
@@ -292,7 +301,8 @@ TEST(LoggingTests, ColorResetPrecedesSourceExcerptEvenWithMultilineMessage)
     ASSERT_EQ(sink->writes.size(), 1);
     const auto& output{ sink->writes.front() };
     EXPECT_TRUE(output.starts_with("\x1b[36m"));
-    EXPECT_NE(output.find("first\nsecond\x1b[0m\n"), std::string::npos);
+    EXPECT_NE(output.find("\x1b[0mfirst\nsecond\n"), std::string::npos);
+    EXPECT_EQ(std::ranges::count(output, '\x1b'), 2);
     EXPECT_NE(output.find("pnm::log::error"), std::string::npos);
     EXPECT_EQ(output.find("Error"), std::string::npos);
 }
@@ -304,7 +314,7 @@ TEST(LoggingTests, PartialWritesPreserveColorAndReset)
     pnm::log::critical(pnm::log::immediate, sink, pnm::log::bright_magenta, "partial {}", 42);
     EXPECT_GT(sink->writes, 1);
     EXPECT_TRUE(sink->output.starts_with("\x1b[95m"));
-    EXPECT_TRUE(sink->output.ends_with("partial 42\x1b[0m\n"));
+    EXPECT_TRUE(sink->output.ends_with("\x1b[0mpartial 42\n"));
 }
 
 TEST(LoggingTests, FileColorsAreOptInAndAcceptDirectColorWithSinkObject)
@@ -338,13 +348,14 @@ TEST(LoggingTests, AsyncColorOverridesSurviveAllRoutingForms)
     ASSERT_EQ(WEXITSTATUS(status), 0);
     const auto output{ read_file(path) };
     EXPECT_NE(output.find("\x1b[31m"), std::string::npos);
-    EXPECT_NE(output.find("async default 1\x1b[0m\n"), std::string::npos);
+    EXPECT_NE(output.find("\x1b[0masync default 1\n"), std::string::npos);
     EXPECT_NE(output.find("\x1b[34m"), std::string::npos);
-    EXPECT_NE(output.find("async shared 2\x1b[0m\n"), std::string::npos);
+    EXPECT_NE(output.find("\x1b[0masync shared 2\n"), std::string::npos);
     EXPECT_NE(output.find("\x1b[32m"), std::string::npos);
-    EXPECT_NE(output.find("async object 3\x1b[0m\n"), std::string::npos);
-    EXPECT_TRUE(output.ends_with("async plain 4\n"));
-    EXPECT_EQ(std::ranges::count(output, '\x1b'), 6);
+    EXPECT_NE(output.find("\x1b[0masync object 3\n"), std::string::npos);
+    EXPECT_NE(output.find("\x1b[0m["), std::string::npos);
+    EXPECT_TRUE(output.ends_with(": \x1b[0masync plain 4\n"));
+    EXPECT_EQ(std::ranges::count(output, '\x1b'), 8);
     std::filesystem::remove(path);
 #endif
 }

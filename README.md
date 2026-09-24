@@ -315,11 +315,11 @@ pnm::log::info(pnm::log::no_color, "Plain message");
 pnm::log::info(pnm::log::immediate, pnm::log::std_out, pnm::log::green, "Ready");
 ```
 
-Named colors are `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, and `white`, with `bright_` versions of each. They are constants of type `pnm::log::Color`; `no_color` is `Color::None`.
+Named colors are `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, and `white`, with `bright_` versions of each. They are constants of type `pnm::log::Color`; `no_color` is `Color::None`. When ANSI output is enabled, `no_color` emits a reset (`\x1b[0m`) to restore the terminal's default styling.
 
-Use `.colors(ColorMode::Auto)` for terminal detection, `.colors(ColorMode::Always)` (or `.colors()`) to force ANSI output, and `.colors(ColorMode::Never)` to disable it. A per-message color overrides the palette but still respects the sink's color mode, so file output stays plain even when the same message is colored on a terminal. A custom sink can override `isTerminal()` to participate in automatic detection, or enable colors explicitly. `.resetColors()` restores the default palette without changing the mode.
+Use `.colors(ColorMode::Auto)` for terminal detection, `.colors(ColorMode::Always)` (or `.colors()`) to force ANSI output, and `.colors(ColorMode::Never)` to suppress all logger-generated ANSI sequences, including resets. A per-message color overrides the palette but still respects the sink's color mode, so file output stays plain even when the same message is colored on a terminal. A custom sink can override `isTerminal()` to participate in automatic detection, or enable colors explicitly. `.resetColors()` restores the default palette without changing the mode.
 
-Color covers the timestamp, level, source metadata, and message; a reset is emitted before the final newline. Source excerpts remain plain. The color argument goes immediately before the format string, after any `immediate` tag and explicit sink, and works with both synchronous and asynchronous calls. Configure sinks before sending messages through them, as with the existing source and timestamp settings.
+Color covers the header (timestamp, level, source metadata, and separator); a reset is emitted before the message. Messages and source excerpts remain plain. The color argument goes immediately before the format string, after any `immediate` tag and explicit sink, and works with both synchronous and asynchronous calls. Configure sinks before sending messages through them, as with the existing source and timestamp settings.
 
 ### Custom sinks
 
