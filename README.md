@@ -1018,6 +1018,11 @@ runtime source-registry mutex before `main()`.
 
 ## Build Instructions
 
+For a ready-to-use GCC 16 and Clang/P2996 environment, open the repository in its
+VS Code devcontainer. Development and GitHub CI share the same compiler image;
+normal devcontainer builds do not compile LLVM. See [container setup and image
+updates](.containers/README.md) for details.
+
 ### Build the library, samples, and tests
 
 ```bash

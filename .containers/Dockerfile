@@ -1,5 +1,8 @@
 # syntax=docker/dockerfile:1.7
 
+# Reuse the published compiler layer for normal devcontainer builds.
+# Set TOOLCHAIN_IMAGE=ci to build both targets entirely from source.
+ARG TOOLCHAIN_IMAGE=ghcr.io/daleondev/pneumo-ci:clang-p2996-7220baff-gcc16@sha256:587f48bb860505957051b514828a07351b6c11556bdd31c3a7a6eeed077e0b4c
 ARG UBUNTU_VERSION=26.04
 ARG CLANG_P2996_COMMIT=7220baffd57ea5b0f8cf59bee494dd5b7cc2b748
 
@@ -78,7 +81,7 @@ FROM clang-configured AS clang-builder
 RUN cmake --build /tmp/clang-build --target install-distribution --parallel "${BUILD_JOBS}" \
     && cmake --build /tmp/clang-build --target install-runtimes --parallel "${BUILD_JOBS}"
 
-FROM ubuntu:${UBUNTU_VERSION}
+FROM ubuntu:${UBUNTU_VERSION} AS ci
 
 ARG CLANG_P2996_COMMIT
 
@@ -116,3 +119,56 @@ RUN printf '#include <meta>\nconstexpr auto reflected = ^^int;\nint main() { ret
     && rm -f /tmp/reflection-smoke.cpp /tmp/gcc-smoke /tmp/clang-smoke
 
 WORKDIR /workspace
+
+# BuildKit skips the compiler stages when TOOLCHAIN_IMAGE is a registry image.
+FROM ${TOOLCHAIN_IMAGE} AS devcontainer
+
+USER root
+
+LABEL org.opencontainers.image.description="Pneumo development environment with the CI toolchain"
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+        build-essential \
+        curl \
+        gdb \
+        gpg \
+        less \
+        locales \
+        openssh-client \
+        procps \
+        python-is-python3 \
+        python3 \
+        python3-dev \
+        python3-pip \
+        python3-venv \
+        sudo \
+        unzip \
+        vim-tiny \
+        wget \
+        zsh \
+    && rm -rf /var/lib/apt/lists/* \
+    && locale-gen en_US.UTF-8
+
+# Ubuntu images may already reserve UID/GID 1000 for the ubuntu user.
+RUN if id -u ubuntu >/dev/null 2>&1; then \
+        usermod --login vscode --home /home/vscode --move-home --shell /bin/zsh ubuntu \
+        && groupmod --new-name vscode ubuntu; \
+    else \
+        groupadd --gid 1000 vscode \
+        && useradd --uid 1000 --gid vscode --create-home --shell /bin/zsh vscode; \
+    fi \
+    && printf 'vscode ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/vscode \
+    && chmod 0440 /etc/sudoers.d/vscode \
+    && visudo --check \
+    && printf 'autoload -Uz compinit\ncompinit\nbindkey -e\n' > /home/vscode/.zshrc \
+    && chown vscode:vscode /home/vscode/.zshrc \
+    && mkdir -p /workspaces/pneumo \
+    && chown vscode:vscode /workspaces/pneumo
+
+ENV LANG=en_US.UTF-8 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /workspaces/pneumo
+
+USER vscode
