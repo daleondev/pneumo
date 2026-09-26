@@ -274,6 +274,13 @@ auto main() -> int
     std::cout << "Embedded source code: \n"
               << *pnm::meta::source::excerpt(__FILE__, __LINE__, 3) << std::endl;
 
+#if defined(__cpp_lib_stacktrace)
+    auto trace{ pnm::meta::source::stacktrace(std::stacktrace::current(), true, 3) };
+    if (trace) {
+        std::cout << *trace << std::endl;
+    }
+#endif
+
     return 0;
 }
 

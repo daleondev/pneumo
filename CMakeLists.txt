@@ -81,6 +81,7 @@ target_link_libraries(
     pneumo_meta
     INTERFACE
     pneumo::common
+    stdc++exp
 )
 
 target_compile_features(
