@@ -16,6 +16,8 @@
 #include <functional>
 #include <list>
 #include <memory>
+#include <map>
+#include <stop_token>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
@@ -352,11 +354,18 @@ namespace pnm::coro
             std::coroutine_handle<> handle;
             DetachedTask owner;
         };
+        struct TimerEntry
+        {
+            std::function<void()> callback;
+        };
+        using Clock = std::chrono::steady_clock;
+        using Timers = std::multimap<Clock::time_point, std::shared_ptr<TimerEntry>>;
         struct State
         {
             std::mutex mutex;
             std::condition_variable wake;
             std::deque<Work> queue;
+            Timers timers;
             bool stopped{};
         };
 
@@ -378,25 +387,75 @@ namespace pnm::coro
         Context(Context&&) = delete;
         auto operator=(Context&&) -> Context& = delete;
 
+        // Drive from one thread only. poll() integrates with an existing application loop.
         auto run() -> void override
         {
-            auto state{ m_state };
-            while (true) {
-                Work work;
-                {
-                    std::unique_lock lock{ state->mutex };
-                    state->wake.wait(lock, [&] { return state->stopped || !state->queue.empty(); });
-                    if (state->queue.empty()) {
-                        return;
-                    }
-                    work = std::move(state->queue.front());
-                    state->queue.pop_front();
+            auto state = m_state;
+            while (runOne(state, true)) {}
+        }
+        auto poll(std::size_t limit = 64) -> std::size_t
+        {
+            auto state = m_state;
+            std::size_t count{};
+            while (count < limit && runOne(state, false)) { ++count; }
+            return count;
+        }
+
+        class Timer
+        {
+          public:
+            Timer() = default;
+            Timer(const Timer&) = delete;
+            auto operator=(const Timer&) -> Timer& = delete;
+            Timer(Timer&& other) noexcept
+              : m_state{std::move(other.m_state)}, m_entry{std::move(other.m_entry)}, m_deadline{other.m_deadline} {}
+            auto operator=(Timer&& other) noexcept -> Timer&
+            {
+                if (this != &other) {
+                    cancel();
+                    m_state = std::move(other.m_state);
+                    m_entry = std::move(other.m_entry);
+                    m_deadline = other.m_deadline;
                 }
-                if (work.handle && !work.handle.done()) {
-                    static_cast<void>(work.owner.release());
-                    work.handle.resume();
-                }
+                return *this;
             }
+            ~Timer() { cancel(); }
+            // Cancels a queued callback; a callback already executing may finish.
+            auto cancel() noexcept -> void
+            {
+                auto state = m_state.lock();
+                auto entry = m_entry.lock();
+                m_entry.reset();
+                if (!state || !entry) { return; }
+                Timers::node_type removed;
+                {
+                    std::scoped_lock lock{state->mutex};
+                    const auto [first, last] = state->timers.equal_range(m_deadline);
+                    for (auto it = first; it != last; ++it) {
+                        if (it->second == entry) { removed = state->timers.extract(it); break; }
+                    }
+                }
+                state->wake.notify_all();
+            }
+          private:
+            friend class Context;
+            Timer(const std::shared_ptr<State>& state, const std::shared_ptr<TimerEntry>& entry, Clock::time_point deadline)
+              : m_state{state}, m_entry{entry}, m_deadline{deadline} {}
+            std::weak_ptr<State> m_state;
+            std::weak_ptr<TimerEntry> m_entry;
+            Clock::time_point m_deadline;
+        };
+
+        [[nodiscard]] auto scheduleAt(Clock::time_point deadline, std::function<void()> callback) -> Timer
+        {
+            auto entry = std::make_shared<TimerEntry>(std::move(callback));
+            {
+                std::scoped_lock lock{m_state->mutex};
+                if (m_state->stopped) { throw std::runtime_error{"Cannot schedule a timer on a stopped context"}; }
+                m_state->timers.emplace(deadline, entry);
+            }
+            m_state->wake.notify_all();
+            return Timer{m_state, entry, deadline};
         }
 
         auto stop() -> void override
@@ -433,6 +492,39 @@ namespace pnm::coro
         }
 
       private:
+        static auto runOne(const std::shared_ptr<State>& state, bool wait) -> bool
+        {
+            Work work;
+            std::shared_ptr<TimerEntry> timer;
+            {
+                std::unique_lock lock{state->mutex};
+                for (;;) {
+                    if (!state->timers.empty() && state->timers.begin()->first <= Clock::now()) {
+                        timer = std::move(state->timers.begin()->second);
+                        state->timers.erase(state->timers.begin());
+                        break;
+                    }
+                    if (!state->queue.empty()) {
+                        work = std::move(state->queue.front());
+                        state->queue.pop_front();
+                        break;
+                    }
+                    if (state->stopped || !wait) { return false; }
+                    if (state->timers.empty()) { state->wake.wait(lock); }
+                    else {
+                        const auto deadline = state->timers.begin()->first;
+                        state->wake.wait_until(lock, deadline);
+                    }
+                }
+            }
+            if (timer) { timer->callback(); }
+            else if (work.handle && !work.handle.done()) {
+                static_cast<void>(work.owner.release());
+                work.handle.resume();
+            }
+            return true;
+        }
+
         static auto enqueue(const std::shared_ptr<State>& state, Work work) -> void
         {
             std::scoped_lock lock{ state->mutex };
@@ -615,6 +707,9 @@ namespace pnm::coro
             std::exception_ptr exception;
             std::shared_ptr<Continuation> continuation;
             bool linked{};
+            // The callback takes a shared waiter reference before dispatching. Destruction
+            // of an awaiting task cannot join a callback blocked on its execution mutex.
+            std::unique_ptr<std::stop_callback<std::function<void()>>> cancellation;
         };
 
         template<typename T>
@@ -631,8 +726,8 @@ namespace pnm::coro
         class ChannelAwaiter
         {
           public:
-            explicit ChannelAwaiter(std::shared_ptr<ChannelState<T>> state)
-              : m_state{ std::move(state) }
+            explicit ChannelAwaiter(std::shared_ptr<ChannelState<T>> state, std::stop_token stop = {})
+              : m_state{ std::move(state) }, m_stop{stop}
             {
             }
             ~ChannelAwaiter()
@@ -663,6 +758,21 @@ namespace pnm::coro
             template<typename Promise>
             auto await_suspend(std::coroutine_handle<Promise> handle) -> bool
             {
+                if (m_stop.stop_possible()) {
+                    m_waiter->cancellation = std::make_unique<std::stop_callback<std::function<void()>>>(
+                      m_stop, [state = std::weak_ptr{m_state}, waiter = std::weak_ptr{m_waiter}] {
+                        auto pending = waiter.lock();
+                        auto channel = state.lock();
+                        if (!pending || !channel) { return; }
+                        {
+                            std::scoped_lock lock{channel->mutex};
+                            if (!pending->linked) { return; }
+                            channel->waiters.remove(pending);
+                            pending->linked = false;
+                        }
+                        pending->continuation->dispatch();
+                    });
+                }
                 std::scoped_lock lock{ m_state->mutex };
                 if (takeReady()) {
                     return false;
@@ -686,6 +796,7 @@ namespace pnm::coro
           private:
             auto takeReady() -> bool
             {
+                if (m_stop.stop_requested()) { return true; }
                 if (!m_state->queue.empty()) {
                     m_waiter->result.emplace(std::move(m_state->queue.front()));
                     m_state->queue.pop_front();
@@ -694,6 +805,7 @@ namespace pnm::coro
                 return m_state->closed;
             }
             std::shared_ptr<ChannelState<T>> m_state;
+            std::stop_token m_stop;
             std::shared_ptr<ChannelWaiter<T>> m_waiter{ std::make_shared<ChannelWaiter<T>>() };
         };
 
@@ -763,9 +875,9 @@ namespace pnm::coro
         }
 
         template<typename T>
-        auto read_channel(std::shared_ptr<ChannelState<T>> state) -> Task<std::optional<T>>
+        auto read_channel(std::shared_ptr<ChannelState<T>> state, std::stop_token stop = {}) -> Task<std::optional<T>>
         {
-            co_return co_await ChannelAwaiter<T>{ std::move(state) };
+            co_return co_await ChannelAwaiter<T>{ std::move(state), stop };
         }
 
         class RawBinaryAwaiter
@@ -797,11 +909,26 @@ namespace pnm::coro
       public:
         auto push(T value) -> void { detail::push_channel(m_state, std::move(value)); }
         auto close() -> void { detail::close_channel(m_state); }
-        auto next() -> Task<std::optional<T>> { return detail::read_channel(m_state); }
+        // Cancellation returns nullopt without closing the channel or consuming a queued value.
+        auto next(std::stop_token stop = {}) -> Task<std::optional<T>> { return detail::read_channel(m_state, stop); }
 
       private:
         std::shared_ptr<detail::ChannelState<T>> m_state{ std::make_shared<detail::ChannelState<T>>() };
     };
+
+    // Timer-backed, interruptible sleep. The context must be driven until this task finishes.
+    // Returns false when canceled. No worker thread is created.
+    template<typename Rep, typename Period>
+    auto sleep(Context& context, std::chrono::duration<Rep, Period> duration, std::stop_token stop = {}) -> Task<bool>
+    {
+        if (stop.stop_requested()) { co_return false; }
+        if (duration <= duration.zero()) { co_return true; }
+        Channel<bool> elapsed;
+        auto timer = context.scheduleAt(std::chrono::steady_clock::now() +
+          std::chrono::duration_cast<std::chrono::steady_clock::duration>(duration),
+          [elapsed]() mutable { elapsed.push(true); });
+        co_return (co_await elapsed.next(stop)).value_or(false);
+    }
 
     class RawBinaryChannel
     {

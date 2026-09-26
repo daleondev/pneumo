@@ -744,3 +744,106 @@ TEST(CoroutinesBinaryChannelTests, ABroadcastConsumerCanCancelAnotherConsumer)
 }
 
 // NOLINTEND
+
+TEST(CoroutinesContextTests, PollIsNonblockingAndHonorsItsWorkLimit)
+{
+    pnm::coro::Context context;
+    int calls{};
+    EXPECT_EQ(context.poll(), 0);
+    for (int index{}; index < 3; ++index) {
+        pnm::coro::co_spawn(context, [&](pnm::coro::Context&) -> pnm::coro::Task<void> {
+            ++calls;
+            co_return;
+        });
+    }
+    EXPECT_EQ(context.poll(2), 2);
+    EXPECT_EQ(calls, 2);
+    EXPECT_EQ(context.poll(), 1);
+    EXPECT_EQ(calls, 3);
+}
+
+TEST(CoroutinesContextTests, TimerCancellationReleasesQueuedCallback)
+{
+    pnm::coro::Context context;
+    auto token = std::make_shared<int>(42);
+    bool called{};
+    {
+        auto timer = context.scheduleAt(std::chrono::steady_clock::now(), [token, &called] { called = true; });
+        EXPECT_EQ(token.use_count(), 2);
+    }
+    EXPECT_EQ(token.use_count(), 1);
+    EXPECT_EQ(context.poll(), 0);
+    EXPECT_FALSE(called);
+    context.stop();
+    EXPECT_THROW(static_cast<void>(context.scheduleAt(std::chrono::steady_clock::now(), [] {})), std::runtime_error);
+}
+
+TEST(CoroutinesChannelTests, CancellationRemovesOnlyItsOwnWaiter)
+{
+    pnm::coro::Channel<int> channel;
+    std::stop_source stop;
+    auto first = channel.next(stop.get_token());
+    auto second = channel.next();
+    first.resume();
+    second.resume();
+    stop.request_stop();
+    ASSERT_TRUE(first.await_ready());
+    EXPECT_FALSE(first.await_resume());
+    EXPECT_FALSE(second.await_ready());
+    channel.push(42);
+    ASSERT_TRUE(second.await_ready());
+    EXPECT_EQ(second.await_resume(), 42);
+    channel.push(7);
+    auto canceled = channel.next(stop.get_token());
+    canceled.resume();
+    EXPECT_FALSE(canceled.await_resume());
+    auto buffered = channel.next();
+    buffered.resume();
+    EXPECT_EQ(buffered.await_resume(), 7);
+}
+
+TEST(CoroutinesAsyncTests, ContextSleepUsesTimersAndCanBeInterrupted)
+{
+    pnm::coro::Context context;
+    std::exception_ptr error;
+    const auto caller = std::this_thread::get_id();
+    pnm::coro::co_spawn(context, [&](pnm::coro::Context& executor) -> pnm::coro::Task<void> {
+        try {
+            const auto before = std::chrono::steady_clock::now();
+            EXPECT_TRUE(co_await pnm::coro::sleep(executor, 1ms));
+            EXPECT_GE(std::chrono::steady_clock::now(), before + 1ms);
+            EXPECT_EQ(std::this_thread::get_id(), caller);
+            std::stop_source stop;
+            auto cancel = executor.scheduleAt(std::chrono::steady_clock::now() + 1ms, [&] { stop.request_stop(); });
+            EXPECT_FALSE(co_await pnm::coro::sleep(executor, 1h, stop.get_token()));
+            EXPECT_EQ(std::this_thread::get_id(), caller);
+        } catch (...) { error = std::current_exception(); }
+        executor.stop();
+    });
+    context.run();
+    EXPECT_FALSE(error);
+}
+
+TEST(CoroutinesContextTests, CancellingAndReplacingTheNextTimerWakesRunner)
+{
+    pnm::coro::Context context;
+    auto longTimer = context.scheduleAt(std::chrono::steady_clock::now() + 1h, [] {});
+    std::latch started{1};
+    std::promise<void> fired;
+    auto finished = fired.get_future();
+    pnm::coro::co_spawn(context, [&](pnm::coro::Context&) -> pnm::coro::Task<void> {
+        started.count_down();
+        co_return;
+    });
+    std::jthread scheduler{[&] {
+        started.wait();
+        longTimer.cancel();
+        auto shortTimer = context.scheduleAt(std::chrono::steady_clock::now() + 1ms, [&] {
+            fired.set_value();
+            context.stop();
+        });
+        EXPECT_EQ(finished.wait_for(2s), std::future_status::ready);
+    }};
+    context.run();
+    scheduler.join();
+}
