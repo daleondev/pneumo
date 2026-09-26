@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <expected>
 #include <limits>
+#include <meta>
 #include <mutex>
 #include <optional>
 #include <ranges>
@@ -30,8 +31,53 @@ namespace pnm
     {
         namespace memory
         {
+            namespace detail
+            {
+                template<typename T>
+                struct is_span : std::false_type
+                {
+                };
+
+                template<typename T, size_t Extent>
+                struct is_span<std::span<T, Extent>> : std::true_type
+                {
+                };
+
+                template<typename T>
+                inline constexpr bool is_span_v = is_span<std::remove_cvref_t<T>>::value;
+
+                template<typename T>
+                consteval bool is_serializable()
+                {
+                    using U = std::remove_cvref_t<T>;
+
+                    if constexpr (!std::is_trivially_copyable_v<U> || std::is_pointer_v<U> ||
+                                  std::is_member_pointer_v<U> || std::is_reference_v<T> || is_span_v<U>) {
+                        return false;
+                    }
+                    else if constexpr (std::is_array_v<U>) {
+                        return is_serializable<std::remove_extent_t<U>>();
+                    }
+                    else if constexpr (std::is_class_v<U> || std::is_union_v<U>) {
+                        constexpr auto subobjects{ std::define_static_array(
+                          std::meta::subobjects_of(^^U, std::meta::access_context::unchecked())) };
+                        template for (constexpr auto subobject : subobjects)
+                        {
+                            using MemberType = [:std::meta::type_of(subobject):];
+                            if constexpr (!is_serializable<MemberType>()) {
+                                return false;
+                            }
+                        }
+                        return true;
+                    }
+                    else {
+                        return true;
+                    }
+                }
+            }
+
             template<typename T>
-            concept Serializable = std::is_trivially_copyable_v<T> && !std::is_pointer_v<T>;
+            concept Serializable = detail::is_serializable<T>();
 
             auto copy(Serializable auto& dest, const Serializable auto& src) -> bool
             {
