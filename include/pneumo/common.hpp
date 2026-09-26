@@ -33,6 +33,8 @@ namespace pnm
         {
             namespace detail
             {
+                // NOLINTBEGIN(readability-identifier-naming)
+
                 template<typename T>
                 struct is_span : std::false_type
                 {
@@ -47,7 +49,7 @@ namespace pnm
                 inline constexpr bool is_span_v = is_span<std::remove_cvref_t<T>>::value;
 
                 template<typename T>
-                consteval bool is_serializable()
+                consteval auto is_serializable() -> bool
                 {
                     using U = std::remove_cvref_t<T>;
 
@@ -59,11 +61,26 @@ namespace pnm
                         return is_serializable<std::remove_extent_t<U>>();
                     }
                     else if constexpr (std::is_class_v<U> || std::is_union_v<U>) {
-                        constexpr auto subobjects{ std::define_static_array(
-                          std::meta::subobjects_of(^^U, std::meta::access_context::unchecked())) };
-                        template for (constexpr auto subobject : subobjects)
+                        if constexpr (std::is_class_v<U>) {
+                            static constexpr auto bases{ std::define_static_array(
+                              std::meta::bases_of(^^U, std::meta::access_context::unchecked())) };
+                            // NOLINTNEXTLINE(bugprone-reserved-identifier,readability-identifier-naming)
+                            template for (constexpr auto base : bases)
+                            {
+                                using BaseType = [:std::meta::type_of(base):];
+                                if constexpr (!is_serializable<BaseType>()) {
+                                    return false;
+                                }
+                            }
+                        }
+
+                        static constexpr auto members{ std::define_static_array(
+                          std::meta::nonstatic_data_members_of(^^U,
+                                                               std::meta::access_context::unchecked())) };
+                        // NOLINTNEXTLINE(bugprone-reserved-identifier,readability-identifier-naming)
+                        template for (constexpr auto member : members)
                         {
-                            using MemberType = [:std::meta::type_of(subobject):];
+                            using MemberType = [:std::meta::type_of(member):];
                             if constexpr (!is_serializable<MemberType>()) {
                                 return false;
                             }
@@ -74,6 +91,8 @@ namespace pnm
                         return true;
                     }
                 }
+
+                // NOLINTEND(readability-identifier-naming)
             }
 
             template<typename T>

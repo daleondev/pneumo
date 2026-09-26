@@ -46,6 +46,14 @@ target_compile_features(
     cxx_std_26
 )
 
+target_compile_options(
+    pneumo_common
+    INTERFACE
+    -freflection
+    $<$<CXX_COMPILER_ID:Clang>:-fexpansion-statements>
+    $<$<CXX_COMPILER_ID:Clang>:-Wno-c23-extensions>
+)
+
 target_compile_definitions(
     pneumo_common
     INTERFACE
@@ -79,14 +87,6 @@ target_compile_features(
     pneumo_meta
     INTERFACE
     cxx_std_26
-)
-
-target_compile_options(
-    pneumo_meta
-    INTERFACE
-    -freflection
-    $<$<CXX_COMPILER_ID:Clang>:-fexpansion-statements>
-    $<$<CXX_COMPILER_ID:Clang>:-Wno-c23-extensions>
 )
 
 #---------------------------------------------------------
