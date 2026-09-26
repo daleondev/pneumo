@@ -13,6 +13,7 @@
 #include <mutex>
 #include <optional>
 #include <queue>
+#include <span>
 #include <stop_token>
 #include <system_error>
 #include <thread>
@@ -42,6 +43,80 @@ namespace
         ASSERT_EQ(result.wait_for(2s), std::future_status::ready);
         EXPECT_FALSE(result.get());
     }
+
+    struct MemoryValue
+    {
+        std::uint32_t id;
+        std::array<std::uint16_t, 2> values;
+    };
+
+    struct MemoryDerived : MemoryValue
+    {
+        std::uint32_t count;
+    };
+
+    struct PointerMember
+    {
+        int* pointer;
+    };
+
+    struct PrivatePointerBase : private PointerMember
+    {
+    };
+
+    class PrivatePointerMember
+    {
+      public:
+        auto pointer() const -> int* { return m_pointer; }
+
+      private:
+        int* m_pointer{};
+    };
+
+    struct ViewMember
+    {
+        std::span<int> view;
+    };
+
+    struct ReferenceMember
+    {
+        int& reference;
+    };
+
+    union ValueUnion
+    {
+        std::uint32_t integral;
+        float real;
+    };
+
+    union PointerUnion
+    {
+        std::uint32_t integral;
+        int* pointer;
+    };
+
+    using pnm::utils::memory::Serializable;
+    static_assert(Serializable<std::uint32_t>);
+    static_assert(Serializable<MemoryValue>);
+    static_assert(Serializable<const MemoryValue>);
+    static_assert(Serializable<MemoryDerived>);
+    static_assert(Serializable<MemoryValue[2]>);
+    static_assert(Serializable<ValueUnion>);
+    static_assert(!Serializable<int*>);
+    static_assert(!Serializable<std::uint32_t MemoryValue::*>);
+    static_assert(!Serializable<MemoryValue&>);
+    static_assert(!Serializable<MemoryValue&&>);
+    static_assert(!Serializable<PointerMember>);
+    static_assert(!Serializable<PrivatePointerMember>);
+    static_assert(!Serializable<PrivatePointerBase>);
+    static_assert(!Serializable<PointerMember[2]>);
+    static_assert(!Serializable<std::array<PointerMember, 2>>);
+    static_assert(!Serializable<std::span<int>>);
+    static_assert(!Serializable<std::span<int, 0>>);
+    static_assert(!Serializable<ViewMember>);
+    static_assert(!Serializable<ReferenceMember>);
+    static_assert(!Serializable<PointerUnion>);
+    static_assert(!Serializable<std::vector<int>>);
 
     static_assert(std::same_as<pnm::Result<int>, std::expected<int, std::error_code>>);
     static_assert(pnm::utils::bit::size<std::uint8_t>() == 8);
@@ -96,6 +171,18 @@ TEST(CommonMemoryTests, CopyBetweenValueAndByteBufferRoundTrips)
     EXPECT_TRUE(pnm::utils::memory::copy(bytes, source));
     EXPECT_TRUE(pnm::utils::memory::copy(restored, bytes));
     EXPECT_EQ(restored, source);
+}
+
+TEST(CommonMemoryTests, CopyNestedValueAndByteBufferRoundTrips)
+{
+    constexpr MemoryValue source{ 42U, { 10U, 20U } };
+    std::array<std::byte, sizeof(source)> bytes{};
+    MemoryValue restored{};
+
+    EXPECT_TRUE(pnm::utils::memory::copy(bytes, source));
+    EXPECT_TRUE(pnm::utils::memory::copy(restored, bytes));
+    EXPECT_EQ(restored.id, source.id);
+    EXPECT_EQ(restored.values, source.values);
 }
 
 TEST(CommonMemoryTests, CopyRejectsMismatchedSizes)

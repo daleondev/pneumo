@@ -153,8 +153,8 @@ The logging module provides:
 
 ## Requirements
 
-*   **`pneumo::common`** uses standard C++26 library facilities and does not depend on static reflection.
-*   **`pneumo::meta`**, **`pneumo::formatting`**, **`pneumo::units`**, and **`pneumo::logging`** currently require a compiler/toolchain with C++26 static reflection support.
+*   All modules require a compiler/toolchain with C++26 static reflection support. **`pneumo::common`** uses reflection to check the subobjects of types accepted by its `Serializable` concept.
+*   The CMake targets propagate the required reflection flags, including when linking only **`pneumo::common`**.
 *   **CMake 4.2.0+**
 
 The checked-in CMake presets in this repository currently target GCC 16 and the Clang P2996 toolchain configured in `CMakePresets.json`.

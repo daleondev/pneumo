@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <expected>
 #include <limits>
+#include <meta>
 #include <mutex>
 #include <optional>
 #include <ranges>
@@ -30,8 +31,72 @@ namespace pnm
     {
         namespace memory
         {
+            namespace detail
+            {
+                // NOLINTBEGIN(readability-identifier-naming)
+
+                template<typename T>
+                struct is_span : std::false_type
+                {
+                };
+
+                template<typename T, size_t Extent>
+                struct is_span<std::span<T, Extent>> : std::true_type
+                {
+                };
+
+                template<typename T>
+                inline constexpr bool is_span_v = is_span<std::remove_cvref_t<T>>::value;
+
+                template<typename T>
+                consteval auto is_serializable() -> bool
+                {
+                    using U = std::remove_cvref_t<T>;
+
+                    if constexpr (!std::is_trivially_copyable_v<U> || std::is_pointer_v<U> ||
+                                  std::is_member_pointer_v<U> || std::is_reference_v<T> || is_span_v<U>) {
+                        return false;
+                    }
+                    else if constexpr (std::is_array_v<U>) {
+                        return is_serializable<std::remove_extent_t<U>>();
+                    }
+                    else if constexpr (std::is_class_v<U> || std::is_union_v<U>) {
+                        if constexpr (std::is_class_v<U>) {
+                            static constexpr auto bases{ std::define_static_array(
+                              std::meta::bases_of(^^U, std::meta::access_context::unchecked())) };
+                            // NOLINTNEXTLINE(bugprone-reserved-identifier,readability-identifier-naming)
+                            template for (constexpr auto base : bases)
+                            {
+                                using BaseType = [:std::meta::type_of(base):];
+                                if constexpr (!is_serializable<BaseType>()) {
+                                    return false;
+                                }
+                            }
+                        }
+
+                        static constexpr auto members{ std::define_static_array(
+                          std::meta::nonstatic_data_members_of(^^U,
+                                                               std::meta::access_context::unchecked())) };
+                        // NOLINTNEXTLINE(bugprone-reserved-identifier,readability-identifier-naming)
+                        template for (constexpr auto member : members)
+                        {
+                            using MemberType = [:std::meta::type_of(member):];
+                            if constexpr (!is_serializable<MemberType>()) {
+                                return false;
+                            }
+                        }
+                        return true;
+                    }
+                    else {
+                        return true;
+                    }
+                }
+
+                // NOLINTEND(readability-identifier-naming)
+            }
+
             template<typename T>
-            concept Serializable = std::is_trivially_copyable_v<T> && !std::is_pointer_v<T>;
+            concept Serializable = detail::is_serializable<T>();
 
             auto copy(Serializable auto& dest, const Serializable auto& src) -> bool
             {
