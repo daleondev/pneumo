@@ -68,6 +68,11 @@ int main()
                    "Hello {}",
                    6);
 
+#if defined(__cpp_lib_stacktrace)
+    pnm::log::error(pnm::log::file("stacktrace.log").sourceStacktrace(true, 1),
+                    "Includes the calling thread's stack and available source excerpts");
+#endif
+
     std::this_thread::sleep_for(std::chrono::seconds(1));
 
     auto handle = pnm::log::add_global_sink(pnm::log::file("debug.log")

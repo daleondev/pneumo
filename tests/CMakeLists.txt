@@ -104,6 +104,11 @@ target_link_libraries(
     pneumo::compiler_warnings
 )
 
+# Stacktrace tests need debug information and preserved caller frames in all build types.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(logging_tests PRIVATE -g -fno-optimize-sibling-calls)
+endif()
+
 include(GoogleTest)
 gtest_discover_tests(common_tests)
 gtest_discover_tests(meta_tests)
