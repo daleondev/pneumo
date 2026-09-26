@@ -8,8 +8,10 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <future>
 #include <latch>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -743,8 +745,6 @@ TEST(CoroutinesBinaryChannelTests, ABroadcastConsumerCanCancelAnotherConsumer)
     EXPECT_FALSE(second.getHandle());
 }
 
-// NOLINTEND
-
 TEST(CoroutinesContextTests, PollIsNonblockingAndHonorsItsWorkLimit)
 {
     pnm::coro::Context context;
@@ -768,14 +768,16 @@ TEST(CoroutinesContextTests, TimerCancellationReleasesQueuedCallback)
     auto token = std::make_shared<int>(42);
     bool called{};
     {
-        auto timer = context.scheduleAt(std::chrono::steady_clock::now(), [token, &called] { called = true; });
+        auto timer =
+          context.scheduleAt(std::chrono::steady_clock::now(), [token, &called] { called = true; });
         EXPECT_EQ(token.use_count(), 2);
     }
     EXPECT_EQ(token.use_count(), 1);
     EXPECT_EQ(context.poll(), 0);
     EXPECT_FALSE(called);
     context.stop();
-    EXPECT_THROW(static_cast<void>(context.scheduleAt(std::chrono::steady_clock::now(), [] {})), std::runtime_error);
+    EXPECT_THROW(static_cast<void>(context.scheduleAt(std::chrono::steady_clock::now(), [] {})),
+                 std::runtime_error);
 }
 
 TEST(CoroutinesChannelTests, CancellationRemovesOnlyItsOwnWaiter)
@@ -814,10 +816,13 @@ TEST(CoroutinesAsyncTests, ContextSleepUsesTimersAndCanBeInterrupted)
             EXPECT_GE(std::chrono::steady_clock::now(), before + 1ms);
             EXPECT_EQ(std::this_thread::get_id(), caller);
             std::stop_source stop;
-            auto cancel = executor.scheduleAt(std::chrono::steady_clock::now() + 1ms, [&] { stop.request_stop(); });
+            auto cancel =
+              executor.scheduleAt(std::chrono::steady_clock::now() + 1ms, [&] { stop.request_stop(); });
             EXPECT_FALSE(co_await pnm::coro::sleep(executor, 1h, stop.get_token()));
             EXPECT_EQ(std::this_thread::get_id(), caller);
-        } catch (...) { error = std::current_exception(); }
+        } catch (...) {
+            error = std::current_exception();
+        }
         executor.stop();
     });
     context.run();
@@ -828,14 +833,14 @@ TEST(CoroutinesContextTests, CancellingAndReplacingTheNextTimerWakesRunner)
 {
     pnm::coro::Context context;
     auto longTimer = context.scheduleAt(std::chrono::steady_clock::now() + 1h, [] {});
-    std::latch started{1};
+    std::latch started{ 1 };
     std::promise<void> fired;
     auto finished = fired.get_future();
     pnm::coro::co_spawn(context, [&](pnm::coro::Context&) -> pnm::coro::Task<void> {
         started.count_down();
         co_return;
     });
-    std::jthread scheduler{[&] {
+    std::jthread scheduler{ [&] {
         started.wait();
         longTimer.cancel();
         auto shortTimer = context.scheduleAt(std::chrono::steady_clock::now() + 1ms, [&] {
@@ -843,7 +848,171 @@ TEST(CoroutinesContextTests, CancellingAndReplacingTheNextTimerWakesRunner)
             context.stop();
         });
         EXPECT_EQ(finished.wait_for(2s), std::future_status::ready);
-    }};
+    } };
     context.run();
     scheduler.join();
 }
+
+TEST(CoroutinesContextTests, RepeatingDueTimersDoNotStarveWorkAcrossPollCalls)
+{
+    pnm::coro::Context context;
+    int timer_calls{};
+    int task_calls{};
+    pnm::coro::Context::Timer timer;
+    std::function<void()> repeat = [&] {
+        ++timer_calls;
+        timer = context.scheduleAt(std::chrono::steady_clock::now(), repeat);
+    };
+    timer = context.scheduleAt(std::chrono::steady_clock::now(), repeat);
+    for (int index{}; index < 3; ++index) {
+        pnm::coro::co_spawn(context, [&](pnm::coro::Context&) -> pnm::coro::Task<void> {
+            ++task_calls;
+            co_return;
+        });
+    }
+    for (int step{}; step < 6; ++step) {
+        EXPECT_EQ(context.poll(1), 1);
+    }
+    EXPECT_EQ(task_calls, 3);
+    EXPECT_EQ(timer_calls, 3);
+    timer.cancel();
+    EXPECT_EQ(context.poll(), 0);
+}
+
+TEST(CoroutinesContextTests, ReadyWorkDoesNotStarveDueTimers)
+{
+    pnm::coro::Context context;
+    bool fired{};
+    int task_calls{};
+    for (int index{}; index < 5; ++index) {
+        pnm::coro::co_spawn(context, [&](pnm::coro::Context&) -> pnm::coro::Task<void> {
+            ++task_calls;
+            co_return;
+        });
+    }
+    auto timer{ context.scheduleAt(std::chrono::steady_clock::now(), [&] { fired = true; }) };
+    EXPECT_EQ(context.poll(2), 2);
+    EXPECT_TRUE(fired);
+    EXPECT_EQ(task_calls, 1);
+    context.stop();
+    context.run();
+    EXPECT_EQ(task_calls, 5);
+}
+
+TEST(CoroutinesContextTests, FairDispatchPreservesQueueAndDeadlineOrderWhenStopped)
+{
+    pnm::coro::Context context;
+    std::vector<int> timer_order;
+    std::vector<int> task_order;
+    const auto now{ std::chrono::steady_clock::now() };
+    auto later{ context.scheduleAt(now, [&] { timer_order.push_back(2); }) };
+    auto earlier{ context.scheduleAt(now - 1ms, [&] { timer_order.push_back(1); }) };
+    auto same_deadline{ context.scheduleAt(now, [&] { timer_order.push_back(3); }) };
+    auto future{ context.scheduleAt(now + 1h, [&] { timer_order.push_back(4); }) };
+    for (int index{ 1 }; index <= 3; ++index) {
+        pnm::coro::co_spawn(context, [&, index](pnm::coro::Context&) -> pnm::coro::Task<void> {
+            task_order.push_back(index);
+            co_return;
+        });
+    }
+    EXPECT_EQ(context.poll(0), 0);
+    EXPECT_TRUE(task_order.empty());
+    EXPECT_TRUE(timer_order.empty());
+    context.stop();
+    context.run();
+    EXPECT_EQ(timer_order, (std::vector<int>{ 1, 2, 3 }));
+    EXPECT_EQ(task_order, (std::vector<int>{ 1, 2, 3 }));
+}
+
+TEST(CoroutinesSleepTests, OversizedContextSleepsStayPendingAndCanBeCancelled)
+{
+    auto check = [](auto duration) {
+        pnm::coro::Context context;
+        std::stop_source stop;
+        auto task{ pnm::coro::sleep(context, duration, stop.get_token()) };
+        task.resume();
+        EXPECT_FALSE(task.await_ready());
+        EXPECT_EQ(context.poll(), 0);
+        EXPECT_FALSE(task.await_ready());
+        stop.request_stop();
+        ASSERT_TRUE(task.await_ready());
+        EXPECT_FALSE(task.await_resume());
+        EXPECT_EQ(context.poll(), 0);
+    };
+    check(std::chrono::steady_clock::duration::max());
+    check(std::chrono::hours::max());
+    check(std::chrono::duration<std::uint64_t>::max());
+    check(std::chrono::duration<double>::max());
+    check(std::chrono::duration<double>{ std::numeric_limits<double>::infinity() });
+    // A naive integral duration_cast overflows count * 2 even though the final ticks fit.
+    check(std::chrono::duration<std::int64_t, std::ratio<2, 3'000'000'000>>::max());
+}
+
+TEST(CoroutinesSleepTests, DeadlineConversionSaturatesAtTheClockBoundary)
+{
+    using Clock = std::chrono::steady_clock;
+    const auto near_limit{ Clock::time_point::max() - Clock::duration{ 10 } };
+    EXPECT_EQ(pnm::coro::detail::sleep_deadline(Clock::duration{ 9 }, near_limit),
+              Clock::time_point::max() - Clock::duration{ 1 });
+    EXPECT_EQ(pnm::coro::detail::sleep_deadline(Clock::duration{ 10 }, near_limit), Clock::time_point::max());
+    EXPECT_EQ(pnm::coro::detail::sleep_deadline(Clock::duration{ 11 }, near_limit), Clock::time_point::max());
+    const Clock::time_point epoch;
+    EXPECT_EQ(pnm::coro::detail::sleep_deadline(1500ms, epoch), epoch + 1500ms);
+    EXPECT_EQ(pnm::coro::detail::sleep_deadline(std::chrono::duration<double>{ 1.25 }, epoch),
+              epoch + 1250ms);
+}
+
+TEST(CoroutinesSleepTests, ContextSleepPreservesImmediateCompletionAndCancellationPriority)
+{
+    pnm::coro::Context context;
+    std::stop_source stop;
+    stop.request_stop();
+    for (auto duration : { 0ms, -1ms }) {
+        auto completed{ pnm::coro::sleep(context, duration) };
+        completed.resume();
+        ASSERT_TRUE(completed.await_ready());
+        EXPECT_TRUE(completed.await_resume());
+        auto canceled{ pnm::coro::sleep(context, duration, stop.get_token()) };
+        canceled.resume();
+        ASSERT_TRUE(canceled.await_ready());
+        EXPECT_FALSE(canceled.await_resume());
+    }
+    EXPECT_EQ(context.poll(), 0);
+}
+
+TEST(CoroutinesSleepTests, InvalidFloatingDurationPropagatesAnException)
+{
+    pnm::coro::Context context;
+    auto task{ pnm::coro::sleep(context,
+                                std::chrono::duration<double>{ std::numeric_limits<double>::quiet_NaN() }) };
+    task.resume();
+    ASSERT_TRUE(task.await_ready());
+    EXPECT_THROW(task.await_resume(), std::invalid_argument);
+    EXPECT_EQ(context.poll(), 0);
+}
+
+TEST(CoroutinesSleepTests, SaturatedDeadlineCanBeCancelledWhileContextRuns)
+{
+    pnm::coro::Context context;
+    std::stop_source stop;
+    bool elapsed{ true };
+    auto wait = [&]() -> pnm::coro::Task<void> {
+        elapsed =
+          co_await pnm::coro::sleep(context, std::chrono::steady_clock::duration::max(), stop.get_token());
+        context.stop();
+    };
+    auto task{ wait() };
+    task.resume();
+    ASSERT_FALSE(task.await_ready());
+    std::jthread cancel{ [&] {
+        std::this_thread::sleep_for(1ms);
+        stop.request_stop();
+    } };
+    context.run();
+    cancel.join();
+    ASSERT_TRUE(task.await_ready());
+    EXPECT_NO_THROW(task.await_resume());
+    EXPECT_FALSE(elapsed);
+}
+
+// NOLINTEND

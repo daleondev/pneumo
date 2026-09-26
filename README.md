@@ -149,6 +149,8 @@ Link `pneumo::coroutines` and include `<pneumo/coroutines.hpp>` to use the `pnm:
 *   `Context` runs scheduled coroutine handles; `co_spawn(context, callable)` starts a task whose callable accepts the executor by reference.
 *   `runAsync<T>(callable)` runs work on a detached thread and delivers its result or exception to the awaiting task.
 *   `sleep(duration)` suspends for positive durations; nonpositive durations complete immediately.
+*   `sleep(context, duration, stop_token)` uses a context timer and returns `false` when cancelled. Oversized positive durations saturate to the clock's maximum deadline; NaN durations throw `std::invalid_argument`.
+*   `Context::poll(limit)` processes ready work without waiting, with a default limit of 64 callbacks or resumptions. Due timers and queued tasks alternate when both are ready, preserving deadline order and queue order respectively. `scheduleAt(deadline, callback)` returns a timer whose destruction cancels its queued callback.
 *   `Channel<T>` queues values for individual consumers. Closing a channel wakes waiting consumers and allows buffered values to drain before `next()` returns `std::nullopt`.
 *   `RawBinaryChannel` supports broadcast and load-balancing delivery; `BinaryChannel<T>` decodes same-process, trivially copyable payloads of the expected size.
 
@@ -173,7 +175,7 @@ Tasks have one consumer and one result: await an unstarted task, or start it wit
 
 `co_spawn` transfers ownership to the context, which releases queued, unstarted frames if destroyed. Nested tasks inherit the executor, so async work, timers, and channel waits resume on a thread running that context. Unbound tasks can resume on the worker or channel producer thread. Keep the context alive until spawned work finishes. `Context::stop()` rejects new scheduling and drains already queued work; it does not cancel outstanding operations. A rejected continuation resumes inline to propagate the scheduling exception to its awaiting task.
 
-For the built-in async, timer, and channel waits, destroying a suspended `Task` disconnects its continuation safely, but detached workers and timers still run to completion. Any objects borrowed by worker callables must remain alive until the workers finish. Channel reads retain their shared state even when the original channel wrapper is moved or destroyed. Custom executors must outlive scheduling calls; the default `scheduleOwned` transfers frames to `schedule`, whose accepted work must eventually run. Executors that can abandon queued work should override `scheduleOwned` to retain and release that ownership.
+For the built-in async, timer, and channel waits, destroying a suspended `Task` disconnects its continuation safely. Detached workers and thread-based sleeps still run to completion; destroying a context-backed sleep cancels its queued timer. Any objects borrowed by worker callables must remain alive until the workers finish. Channel reads retain their shared state even when the original channel wrapper is moved or destroyed. Custom executors must outlive scheduling calls; the default `scheduleOwned` transfers frames to `schedule`, whose accepted work must eventually run. Executors that can abandon queued work should override `scheduleOwned` to retain and release that ownership.
 
 ### CMake Targets and Headers
 
