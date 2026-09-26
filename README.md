@@ -18,15 +18,16 @@
 
 # Pneumo
 
-**pneumo** is a header-only C++26 utility library with five module targets and one umbrella target:
+**pneumo** is a header-only C++26 utility library with six module targets and one umbrella target:
 
 *   **`pneumo::common`** for shared result, assertion, memory, queue, and bit helpers.
 *   **`pneumo::meta`** for compile-time reflection and metaprogramming utilities built on C++26 static reflection.
 *   **`pneumo::formatting`** for reflection-aware std::format extensions.
 *   **`pneumo::units`** for strongly typed quantities, literals, conversions, and dimensional operations.
 *   **`pneumo::logging`** for asynchronous structured logging, configurable routing, source metadata, files, and custom sinks.
+*   **`pneumo::coroutines`** for lazy tasks, executor contexts, asynchronous work, timers, and channels.
 
-`pneumo::pneumo` links all five modules, and `pneumo/pneumo.hpp` is the matching umbrella header.
+`pneumo::pneumo` links all six modules, and `pneumo/pneumo.hpp` is the matching umbrella header.
 
 ## Module Overview
 
@@ -140,6 +141,27 @@ The logging module provides:
 *   Default level colors, per-sink palettes, and per-message ANSI color overrides.
 *   User-defined sinks through `pnm::log::ISink` and `pnm::log::SinkBase`.
 
+### `pneumo::coroutines`
+
+Link `pneumo::coroutines` and include `<pneumo/coroutines.hpp>` to use the `pnm::coro` namespace. The target supplies the common module and platform thread dependency; it is also included by `pneumo::pneumo`.
+
+*   `Task<T>` and `Task<void>` are lazy, move-only coroutine results with exception propagation.
+*   `Context` runs scheduled coroutine handles; `co_spawn(context, callable)` starts a task whose callable accepts the executor by reference.
+*   `runAsync<T>(callable)` runs work on a detached thread and delivers its result or exception to the awaiting task.
+*   `sleep(duration)` suspends for positive durations; nonpositive durations complete immediately.
+*   `Channel<T>` queues values for individual consumers. Closing a channel wakes waiting consumers and allows buffered values to drain before `next()` returns `std::nullopt`.
+*   `RawBinaryChannel` supports broadcast and load-balancing delivery; `BinaryChannel<T>` decodes same-process, trivially copyable payloads of the expected size.
+
+See [`samples/coroutines_sample.cpp`](samples/coroutines_sample.cpp) for a producer/consumer example using task composition, async work, a timer, and channel closure. Build and run it with:
+
+```bash
+cmake --build --preset gcc-debug --target coroutines_sample coroutines_tests
+./build/gcc-debug/samples/coroutines_sample
+ctest --preset gcc-debug -R Coroutines --output-on-failure
+```
+
+Keep the context and referenced channels alive until their tasks finish, and keep tasks suspended in `runAsync` or `sleep` alive until the worker completes. These helpers use detached threads and can resume continuations on those threads; `Context::stop()` stops the event loop after its ready queue drains, without cancelling outstanding work.
+
 ### CMake Targets and Headers
 
 | Target | Header(s) | Purpose |
@@ -149,6 +171,7 @@ The logging module provides:
 | `pneumo::formatting` | `pneumo/formatting.hpp` | Reflection-based formatting and optional serialization |
 | `pneumo::units` | `pneumo/units.hpp` | Strong quantity types, literals, conversions, and derived operations |
 | `pneumo::logging` | `pneumo/logging.hpp` | Asynchronous logging, routing, metadata, files, and custom sinks |
+| `pneumo::coroutines` | `pneumo/coroutines.hpp` | Lazy tasks, executors, asynchronous work, timers, and channels |
 | `pneumo::pneumo` | `pneumo/pneumo.hpp` | Convenience target and umbrella header for all modules |
 
 ## Requirements
@@ -1106,6 +1129,9 @@ cmake --build --preset clang-release
 
 # Logging sample
 ./build/clang-release/samples/logging_sample
+
+# Coroutines sample
+./build/clang-release/samples/coroutines_sample
 ```
 
 ### Run the tests:

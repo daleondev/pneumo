@@ -81,3 +81,18 @@ target_link_libraries(
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_compile_options(logging_sample PRIVATE -g -fno-optimize-sibling-calls)
 endif()
+
+add_executable(coroutines_sample)
+
+target_sources(
+    coroutines_sample
+    PRIVATE
+    coroutines_sample.cpp
+)
+
+target_link_libraries(
+    coroutines_sample
+    PRIVATE
+    pneumo::coroutines
+    pneumo::compiler_warnings
+)

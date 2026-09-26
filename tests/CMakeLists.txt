@@ -109,12 +109,26 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_compile_options(logging_tests PRIVATE -g -fno-optimize-sibling-calls)
 endif()
 
+add_executable(
+    coroutines_tests
+    coroutines_tests.cpp
+)
+
+target_link_libraries(
+    coroutines_tests
+    PRIVATE
+    GTest::gtest_main
+    pneumo::coroutines
+    pneumo::compiler_warnings
+)
+
 include(GoogleTest)
 gtest_discover_tests(common_tests)
 gtest_discover_tests(meta_tests)
 gtest_discover_tests(formatting_tests)
 gtest_discover_tests(units_tests)
 gtest_discover_tests(logging_tests)
+gtest_discover_tests(coroutines_tests PROPERTIES TIMEOUT 15)
 
 add_test(
     NAME SourceEmbedProbes.SingleTU

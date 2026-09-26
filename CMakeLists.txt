@@ -181,6 +181,36 @@ target_compile_features(
 )
 
 #---------------------------------------------------------
+# coroutines
+#---------------------------------------------------------
+
+add_library(pneumo_coroutines INTERFACE)
+add_library(pneumo::coroutines ALIAS pneumo_coroutines)
+
+find_package(Threads REQUIRED)
+
+target_sources(
+    pneumo_coroutines
+    INTERFACE
+    FILE_SET HEADERS
+    BASE_DIRS ${CMAKE_CURRENT_LIST_DIR}/include
+    FILES ${CMAKE_CURRENT_LIST_DIR}/include/pneumo/coroutines.hpp
+)
+
+target_link_libraries(
+    pneumo_coroutines
+    INTERFACE
+    pneumo::common
+    Threads::Threads
+)
+
+target_compile_features(
+    pneumo_coroutines
+    INTERFACE
+    cxx_std_26
+)
+
+#---------------------------------------------------------
 # combined
 #---------------------------------------------------------
 
@@ -203,6 +233,7 @@ target_link_libraries(
     pneumo::formatting
     pneumo::units
     pneumo::logging
+    pneumo::coroutines
 )
 
 #---------------------------------------------------------
