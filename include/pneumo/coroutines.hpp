@@ -859,7 +859,7 @@ namespace pnm::coro
             if (!bytes || bytes->size() != sizeof(T)) {
                 co_return std::nullopt;
             }
-            std::array<std::byte, sizeof(T)> representation;
+            std::array<std::byte, sizeof(T)> representation{};
             std::ranges::copy(*bytes, representation.begin());
             co_return std::bit_cast<T>(representation);
         }

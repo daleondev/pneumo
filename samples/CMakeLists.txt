@@ -96,3 +96,18 @@ target_link_libraries(
     pneumo::coroutines
     pneumo::compiler_warnings
 )
+
+add_executable(coroutines_pipeline_sample)
+
+target_sources(
+    coroutines_pipeline_sample
+    PRIVATE
+    coroutines_pipeline_sample.cpp
+)
+
+target_link_libraries(
+    coroutines_pipeline_sample
+    PRIVATE
+    pneumo::coroutines
+    pneumo::compiler_warnings
+)

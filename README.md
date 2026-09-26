@@ -160,6 +160,15 @@ cmake --build --preset gcc-debug --target coroutines_sample coroutines_tests
 ctest --preset gcc-debug -R Coroutines --output-on-failure
 ```
 
+The larger [`samples/coroutines_pipeline_sample.cpp`](samples/coroutines_pipeline_sample.cpp) processes nine jobs with three workers. It demonstrates move-only jobs, application-level backpressure with channel permits, nested async calculations, timed retries, per-job error handling, and broadcast results consumed by independent dashboard and metrics observers. Acknowledgements ensure both observers receive every broadcast; a completion channel joins all seven pipeline tasks before stopping the context.
+
+```bash
+cmake --build --preset gcc-debug --target coroutines_pipeline_sample
+./build/gcc-debug/samples/coroutines_pipeline_sample
+```
+
+Job 3 deliberately fails once and retries; job 6 is rejected permanently. Completion order varies, but the final summary is always `8 succeeded, 1 failed, 1 retried; checksum=3344`. The example uses one context thread for continuations and separate threads for blocking calculations.
+
 Tasks have one consumer and one result: await an unstarted task, or start it with `Task::resume()` and retrieve its result after completion. Invalid operations on empty, running, or already-consumed tasks throw `std::logic_error`. Raw handles from `getHandle()` are borrowed; callers must manage their lifetime and synchronization. A separately owned task awaited by reference must outlive the await.
 
 `co_spawn` transfers ownership to the context, which releases queued, unstarted frames if destroyed. Nested tasks inherit the executor, so async work, timers, and channel waits resume on a thread running that context. Unbound tasks can resume on the worker or channel producer thread. Keep the context alive until spawned work finishes. `Context::stop()` rejects new scheduling and drains already queued work; it does not cancel outstanding operations. A rejected continuation resumes inline to propagate the scheduling exception to its awaiting task.
