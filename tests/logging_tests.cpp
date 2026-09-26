@@ -15,6 +15,7 @@
 #include <iterator>
 #include <mutex>
 #include <span>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -131,6 +132,25 @@ namespace
     };
 
 #if defined(__cpp_lib_stacktrace)
+    auto check_user_stacktrace(std::string_view output) -> void
+    {
+        std::istringstream lines{ std::string{ output } };
+        std::string line;
+        size_t expected_index{};
+        while (std::getline(lines, line)) {
+            if (!line.starts_with('#')) {
+                continue;
+            }
+            std::istringstream frame{ line.substr(1) };
+            size_t index{};
+            ASSERT_TRUE(frame >> index) << line;
+            EXPECT_EQ(index, expected_index++) << line;
+            EXPECT_EQ(line.find(" at logging.hpp:"), std::string::npos) << line;
+            EXPECT_EQ(line.find("pnm::log::detail::"), std::string::npos) << line;
+        }
+        EXPECT_GT(expected_index, 0) << output;
+    }
+
     [[gnu::noinline]] auto emit_stacktrace_probe(const std::shared_ptr<pnm::log::ISink>& sink,
                                                 bool immediate) -> void
     {
@@ -613,6 +633,49 @@ TEST(LoggingTests, SourceExcerptUsesEmbeddedSource)
 }
 
 #if defined(__cpp_lib_stacktrace)
+TEST(LoggingTests, StacktraceFilteringPreservesApplicationFramesWithLoggingArguments)
+{
+    EXPECT_TRUE(pnm::log::detail::is_logging_frame("pnm::log::detail::Backend::emit(...)", ""));
+    EXPECT_TRUE(pnm::log::detail::is_logging_frame("void pnm::log::error<int>(...)", ""));
+    EXPECT_FALSE(pnm::log::detail::is_logging_frame("app::write(pnm::log::Level)", "app.cpp"));
+    EXPECT_FALSE(pnm::log::detail::is_logging_frame(
+      "void app::write(std::shared_ptr<pnm::log::ISink>)", "/application/logging.hpp"));
+    EXPECT_FALSE(pnm::log::detail::is_logging_frame("", ""));
+}
+
+TEST(LoggingTests, StacktraceFilteringHandlesSinkObjectsAndExplicitColors)
+{
+    class SharedRecordingSink : public pnm::log::SinkBase<SharedRecordingSink>
+    {
+      public:
+        explicit SharedRecordingSink(std::shared_ptr<std::string> output)
+          : m_output{ std::move(output) }
+        {
+        }
+        auto isOpen() const -> bool override { return true; }
+        auto open() -> pnm::Result<> override { return {}; }
+        auto close() -> pnm::Result<> override { return {}; }
+        auto write(std::span<const std::byte> data) -> pnm::Result<size_t> override
+        {
+            m_output->append(reinterpret_cast<const char*>(data.data()), data.size());
+            return data.size();
+        }
+        auto flush() -> pnm::Result<> override { return {}; }
+
+      private:
+        std::shared_ptr<std::string> m_output;
+    };
+
+    auto output{ std::make_shared<std::string>() };
+    pnm::log::error(pnm::log::immediate,
+                    SharedRecordingSink{ output }.sourceStacktrace().colors(),
+                    pnm::log::red,
+                    "sink object stacktrace");
+
+    EXPECT_NE(output->find("\x1b[0msink object stacktrace\n#"), std::string::npos);
+    check_user_stacktrace(*output);
+}
+
 TEST(LoggingTests, ImmediateStacktraceIncludesTheProducerCaller)
 {
     auto sink{ std::make_shared<RecordingSink>() };
@@ -624,6 +687,7 @@ TEST(LoggingTests, ImmediateStacktraceIncludesTheProducerCaller)
     const auto& output{ sink->writes.front() };
     EXPECT_NE(output.find("\x1b[0mstacktrace payload\n#"), std::string::npos);
     EXPECT_NE(output.find("log_stacktrace_from_producer"), std::string::npos) << output;
+    check_user_stacktrace(output);
     EXPECT_EQ(output.find(" | "), std::string::npos);
 }
 
@@ -641,6 +705,7 @@ TEST(LoggingTests, AsyncStacktraceRetainsTheProducerCallerAfterItReturns)
     EXPECT_NE(records.front().find("stacktrace payload\n#"), std::string::npos);
     EXPECT_NE(records.front().find("log_stacktrace_from_producer"), std::string::npos) << records.front();
     EXPECT_EQ(records.front().find("doWork"), std::string::npos);
+    check_user_stacktrace(records.front());
 }
 
 TEST(LoggingTests, StacktraceExcerptsIncludeRequestedContext)
@@ -653,6 +718,7 @@ TEST(LoggingTests, StacktraceExcerptsIncludeRequestedContext)
     ASSERT_EQ(sink->writes.size(), 1);
     const auto& output{ sink->writes.front() };
     EXPECT_NE(output.find("log_stacktrace_from_producer"), std::string::npos) << output;
+    check_user_stacktrace(output);
     EXPECT_NE(output.find("// Context before the producer's stacktrace probe."), std::string::npos) << output;
     EXPECT_NE(output.find("// Context after the producer's stacktrace probe."), std::string::npos);
 }
@@ -682,6 +748,8 @@ TEST(LoggingTests, StacktraceSettingsAreIndependentForEachSink)
     EXPECT_EQ(frames_sink->writes.front().find(" | "), std::string::npos);
     EXPECT_NE(excerpts_sink->writes.front().find("\n#"), std::string::npos);
     EXPECT_NE(excerpts_sink->writes.front().find(" | "), std::string::npos);
+    check_user_stacktrace(frames_sink->writes.front());
+    check_user_stacktrace(excerpts_sink->writes.front());
 }
 
 TEST(LoggingTests, StacktraceRespectsFilteringAndSourceInfoReset)

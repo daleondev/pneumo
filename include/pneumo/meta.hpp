@@ -1379,7 +1379,7 @@ namespace pnm::meta
             }
         }
 
-        static auto stacktrace(const std::stacktrace& stacktrace,
+        static auto stacktrace(std::span<const std::stacktrace_entry> stacktrace,
                                bool show_excerpts = false,
                                size_t context_size = 0) -> Result<std::string>
         {
@@ -1402,6 +1402,15 @@ namespace pnm::meta
                 }
             }
             return trace.str();
+        }
+
+        static auto stacktrace(const std::stacktrace& stacktrace,
+                               bool show_excerpts = false,
+                               size_t context_size = 0) -> Result<std::string>
+        {
+            return source::stacktrace(std::span<const std::stacktrace_entry>{ stacktrace },
+                                     show_excerpts,
+                                     context_size);
         }
 #endif
     }
