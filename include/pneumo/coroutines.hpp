@@ -2,20 +2,23 @@
 
 #include "pneumo/common.hpp"
 
+#include <algorithm>
+#include <array>
+#include <bit>
 #include <chrono>
+#include <concepts>
 #include <condition_variable>
 #include <coroutine>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <deque>
 #include <exception>
 #include <functional>
-#include <future>
 #include <list>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <stdexcept>
 #include <thread>
 #include <type_traits>
 #include <utility>
@@ -23,7 +26,8 @@
 
 namespace pnm::coro
 {
-    // ---------- Context ----------
+    class DetachedTask;
+    using Scheduler = std::function<void(DetachedTask)>;
 
     class IExecutor
     {
@@ -33,6 +37,9 @@ namespace pnm::coro
         virtual auto stop() -> void = 0;
         virtual auto schedule(std::coroutine_handle<> handle) -> void = 0;
         virtual auto getLifeToken() -> std::weak_ptr<void> = 0;
+        // Throw only before accepting work. Override this to retain ownership of queued frames.
+        virtual auto scheduleOwned(DetachedTask task) -> void;
+        virtual auto getScheduler() -> Scheduler;
 
       protected:
         IExecutor() = default;
@@ -43,295 +50,554 @@ namespace pnm::coro
     };
 
     template<typename T>
-    concept Executor = std::is_base_of_v<IExecutor, T>;
-
-    class Context : public IExecutor
-    {
-      public:
-        Context() = default;
-        ~Context() override = default;
-        Context(const Context&) = delete;
-        Context& operator=(const Context&) = delete;
-        Context(Context&&) = delete;
-        Context& operator=(Context&&) = delete;
-
-        auto run() -> void override
-        {
-            while (true) {
-                std::unique_lock lock(m_mutex);
-                m_cv.wait(lock, [this] { return !m_queue.empty() || !m_running; });
-
-                if (!m_running && m_queue.empty()) {
-                    break;
-                }
-
-                while (auto handle{ utils::queue::pop(m_queue) }) {
-                    lock.unlock();
-                    if (*handle && !handle->done()) {
-                        handle->resume();
-                    }
-                    lock.lock();
-                }
-            }
-        }
-
-        auto stop() -> void override
-        {
-            std::scoped_lock lock{ m_mutex };
-            m_running = false;
-            m_cv.notify_all();
-        }
-
-        auto schedule(std::coroutine_handle<> handle) -> void override
-        {
-            utils::queue::push(m_queue, handle, m_mutex);
-            m_cv.notify_one();
-        }
-
-        auto getLifeToken() -> std::weak_ptr<void> override { return m_lifeToken; }
-
-      private:
-        bool m_running{ true };
-        std::mutex m_mutex;
-        std::condition_variable m_cv;
-        std::deque<std::coroutine_handle<>> m_queue;
-        std::shared_ptr<bool> m_lifeToken{ std::make_shared<bool>(true) };
-    };
-
-    // ---------- Task ----------
+    concept Executor = std::derived_from<T, IExecutor>;
 
     namespace detail
     {
         struct DetachedTaskPromise;
         template<typename T>
         struct TaskPromise;
+
+        struct InitialAwaiter
+        {
+            bool* started;
+            static auto await_ready() noexcept -> bool { return false; }
+            static auto await_suspend(std::coroutine_handle<> /*handle*/) noexcept -> void {}
+            auto await_resume() const noexcept -> void { *started = true; }
+        };
+
+        struct PromiseBase
+        {
+            IExecutor* executor{ nullptr };
+            Scheduler scheduler;
+            std::shared_ptr<std::recursive_mutex> execution_mutex{ std::make_shared<std::recursive_mutex>() };
+            bool started{};
+
+            auto initial_suspend() noexcept -> InitialAwaiter { return { &started }; }
+        };
     }
 
-    template<typename T>
-    class Task;
-
+    // Owns an unstarted frame until release() transfers it to an executor.
     class DetachedTask
     {
       public:
         using promise_type = detail::DetachedTaskPromise;
         using handle_type = std::coroutine_handle<promise_type>;
 
-        DetachedTask(handle_type handle)
+        DetachedTask() = default;
+        explicit DetachedTask(handle_type handle) noexcept
           : m_handle{ handle }
         {
         }
-        ~DetachedTask() = default;
-
+        ~DetachedTask() { reset(); }
         DetachedTask(const DetachedTask&) = delete;
         auto operator=(const DetachedTask&) -> DetachedTask& = delete;
         DetachedTask(DetachedTask&& other) noexcept
-          : m_handle{ std::exchange(other.m_handle, nullptr) }
+          : m_handle{ other.release() }
         {
         }
         auto operator=(DetachedTask&& other) noexcept -> DetachedTask&
         {
-            m_handle = std::exchange(other.m_handle, nullptr);
+            if (this != &other) {
+                reset();
+                m_handle = other.release();
+            }
             return *this;
         }
-
-        auto getHandle() const -> const handle_type& { return m_handle; }
+        auto getHandle() const noexcept -> handle_type { return m_handle; }
+        auto release() noexcept -> handle_type { return std::exchange(m_handle, {}); }
 
       private:
+        auto reset() noexcept -> void
+        {
+            if (m_handle) {
+                m_handle.destroy();
+            }
+        }
         handle_type m_handle;
     };
 
-    template<typename T>
+    template<typename T = void>
     class Task
     {
       public:
         using promise_type = detail::TaskPromise<T>;
         using handle_type = std::coroutine_handle<promise_type>;
 
-        Task(handle_type handle)
+        Task() = default;
+        explicit Task(handle_type handle) noexcept
           : m_handle{ handle }
         {
         }
-        ~Task()
-        {
-            if (m_handle)
-                m_handle.destroy();
-        }
-
+        ~Task() { reset(); }
         Task(const Task&) = delete;
         auto operator=(const Task&) -> Task& = delete;
-
         Task(Task&& other) noexcept
-          : m_handle{ std::exchange(other.m_handle, nullptr) }
+          : m_handle{ std::exchange(other.m_handle, {}) }
         {
         }
         auto operator=(Task&& other) noexcept -> Task&
         {
             if (this != &other) {
-                if (m_handle)
-                    m_handle.destroy();
-                m_handle = std::exchange(other.m_handle, nullptr);
+                reset();
+                m_handle = std::exchange(other.m_handle, {});
             }
             return *this;
         }
 
-        auto await_ready() const noexcept -> bool { return !m_handle || m_handle.done(); }
-        auto await_suspend(std::coroutine_handle<> waiter) noexcept -> std::coroutine_handle<>
+        auto await_ready() const -> bool { return isReady(m_handle); }
+        template<typename Promise>
+        auto await_suspend(std::coroutine_handle<Promise> waiter) -> std::coroutine_handle<>
         {
-            m_handle.promise().waiter = waiter;
-            return m_handle;
+            return suspend(m_handle, waiter);
         }
-        auto await_resume() -> T
+        auto await_resume() -> T { return result(m_handle); }
+
+        // Disconnect a borrowed child if its awaiting parent is destroyed first.
+        class Awaiter
         {
-            if (m_handle.promise().exception)
-                std::rethrow_exception(m_handle.promise().exception);
+          public:
+            explicit Awaiter(handle_type handle) noexcept
+              : m_handle{ handle }
+            {
+            }
+            ~Awaiter()
+            {
+                if (m_waiter) {
+                    auto& promise{ m_handle.promise() };
+                    std::scoped_lock lock{ *promise.execution_mutex };
+                    if (promise.waiter == m_waiter) {
+                        promise.waiter = {};
+                    }
+                }
+            }
+            Awaiter(const Awaiter&) = delete;
+            auto operator=(const Awaiter&) -> Awaiter& = delete;
+            Awaiter(Awaiter&&) = delete;
+            auto operator=(Awaiter&&) -> Awaiter& = delete;
+            auto await_ready() const -> bool { return isReady(m_handle); }
+            template<typename Promise>
+            auto await_suspend(std::coroutine_handle<Promise> waiter) -> std::coroutine_handle<>
+            {
+                auto next{ suspend(m_handle, waiter) };
+                m_waiter = waiter;
+                return next;
+            }
+            auto await_resume() -> T { return result(m_handle); }
+
+          private:
+            handle_type m_handle;
+            std::coroutine_handle<> m_waiter;
+        };
+
+        auto operator co_await() noexcept -> Awaiter { return Awaiter{ m_handle }; }
+
+        // Prefer this to resuming the borrowed raw handle when a completion can race with the caller.
+        auto resume() -> void
+        {
+            if (!m_handle) {
+                throw std::logic_error{ "Cannot resume an empty task" };
+            }
+            auto mutex{ m_handle.promise().execution_mutex };
+            std::scoped_lock lock{ *mutex };
+            if (m_handle.promise().started) {
+                throw std::logic_error{ "Task has already been started" };
+            }
+            m_handle.resume();
+        }
+
+        auto getHandle() const noexcept -> handle_type { return m_handle; }
+
+      private:
+        static auto isReady(handle_type handle) -> bool
+        {
+            if (!handle) {
+                return true;
+            }
+            std::scoped_lock lock{ *handle.promise().execution_mutex };
+            return handle.done();
+        }
+
+        template<typename Promise>
+        static auto suspend(handle_type handle, std::coroutine_handle<Promise> waiter)
+          -> std::coroutine_handle<>
+        {
+            auto& promise{ handle.promise() };
+            if (promise.started || promise.waiter) {
+                throw std::logic_error{ "A running task cannot be awaited again" };
+            }
+            if constexpr (std::derived_from<Promise, detail::PromiseBase>) {
+                promise.execution_mutex = waiter.promise().execution_mutex;
+                promise.executor = waiter.promise().executor;
+                promise.scheduler = waiter.promise().scheduler;
+            }
+            promise.waiter = waiter;
+            return handle;
+        }
+
+        static auto result(handle_type handle) -> T
+        {
+            if (!handle) {
+                throw std::logic_error{ "Cannot await an empty task" };
+            }
+            std::scoped_lock lock{ *handle.promise().execution_mutex };
+            auto& promise{ handle.promise() };
+            if (!handle.done() || promise.consumed) {
+                throw std::logic_error{ "Task result is not ready or has already been consumed" };
+            }
+            promise.consumed = true;
+            if (promise.exception) {
+                std::rethrow_exception(promise.exception);
+            }
             if constexpr (!std::is_void_v<T>) {
-                auto& value{ m_handle.promise().value };
-                if (!value) {
+                if (!promise.value) {
                     throw std::bad_optional_access{};
                 }
-                return std::move(*value);
+                return std::move(*promise.value);
             }
         }
 
-        auto getHandle() const -> const handle_type& { return m_handle; }
-
-      private:
+        auto reset() noexcept -> void
+        {
+            if (m_handle) {
+                // Awaited children share this lock, including symmetric transfers back to their parents.
+                auto mutex{ m_handle.promise().execution_mutex };
+                std::scoped_lock lock{ *mutex };
+                m_handle.destroy();
+            }
+        }
         handle_type m_handle;
     };
 
     namespace detail
     {
-        struct DetachedTaskPromise
+        struct DetachedTaskPromise : PromiseBase
         {
-            auto get_return_object() -> DetachedTask;
-            static auto initial_suspend() -> std::suspend_always { return {}; }
+            auto get_return_object() -> DetachedTask
+            {
+                return DetachedTask{ DetachedTask::handle_type::from_promise(*this) };
+            }
             static auto final_suspend() noexcept -> std::suspend_never { return {}; }
-            static auto unhandled_exception() -> void { std::terminate(); }
-            static auto return_void() -> void {}
+            static auto unhandled_exception() noexcept -> void { std::terminate(); }
+            static auto return_void() noexcept -> void {}
         };
 
         template<typename T>
-        struct TaskPromiseBase
+        struct TaskPromiseBase : PromiseBase
         {
             std::coroutine_handle<> waiter;
             std::exception_ptr exception;
-            IExecutor* executor{ nullptr };
+            bool consumed{};
 
-            static auto initial_suspend() -> std::suspend_always { return {}; }
             static auto final_suspend() noexcept
             {
                 struct Awaiter
                 {
                     static auto await_ready() noexcept -> bool { return false; }
-                    static auto await_suspend(std::coroutine_handle<TaskPromise<T>> h) noexcept
+                    static auto await_suspend(std::coroutine_handle<TaskPromise<T>> handle) noexcept
                       -> std::coroutine_handle<>
                     {
-                        return h.promise().waiter ? h.promise().waiter : std::noop_coroutine();
+                        return handle.promise().waiter ? handle.promise().waiter : std::noop_coroutine();
                     }
                     static auto await_resume() noexcept -> void {}
                 };
                 return Awaiter{};
             }
-            auto unhandled_exception() -> void { exception = std::current_exception(); }
-            template<typename U>
-            auto await_transform(Task<U>&& child_task) -> Task<U>&&
-            {
-                return std::move(child_task);
-            }
-            template<typename U>
-            auto await_transform(U&& task) -> U&&
-            {
-                return std::forward<U>(task);
-            }
+            auto unhandled_exception() noexcept -> void { exception = std::current_exception(); }
         };
 
-        template<typename T = void>
-        struct TaskPromise : public TaskPromiseBase<T>
+        template<typename T>
+        struct TaskPromise : TaskPromiseBase<T>
         {
-            auto get_return_object() -> Task<T> { return Task<T>::handle_type::from_promise(*this); }
-            std::optional<T> value{};
-            auto return_value(T val) -> void { value.emplace(std::move(val)); }
+            std::optional<T> value;
+            auto get_return_object() -> Task<T>
+            {
+                return Task<T>{ Task<T>::handle_type::from_promise(*this) };
+            }
+            auto return_value(T result) -> void { value.emplace(std::move(result)); }
         };
 
         template<>
-        struct TaskPromise<void> : public TaskPromiseBase<void>
+        struct TaskPromise<void> : TaskPromiseBase<void>
         {
-            auto get_return_object() -> Task<void> { return Task<void>::handle_type::from_promise(*this); }
-            static auto return_void() -> void {}
+            auto get_return_object() -> Task<void>
+            {
+                return Task<void>{ Task<void>::handle_type::from_promise(*this) };
+            }
+            static auto return_void() noexcept -> void {}
         };
-
-        inline auto DetachedTaskPromise::get_return_object() -> DetachedTask
-        {
-            return { std::coroutine_handle<DetachedTaskPromise>::from_promise(*this) };
-        }
     }
 
-    template<typename T>
-    // NOLINTNEXTLINE(readability-identifier-naming)
-    auto runAsync(auto func) -> Task<T>
+    inline auto IExecutor::scheduleOwned(DetachedTask task) -> void
     {
-        struct Awaiter
-        {
-            std::decay_t<decltype(func)> f;
-            std::optional<std::conditional_t<std::is_void_v<T>, bool, T>> result{};
-            std::exception_ptr exception;
+        schedule(task.getHandle());
+        static_cast<void>(task.release());
+    }
 
-            static auto await_ready() -> bool { return false; }
-            void await_suspend(std::coroutine_handle<> h)
+    inline auto IExecutor::getScheduler() -> Scheduler
+    {
+        // Custom executors must outlive in-flight calls to their scheduling methods.
+        return [this, token = getLifeToken()](DetachedTask task) {
+            if (token.expired()) {
+                throw std::runtime_error{ "Coroutine executor is no longer alive" };
+            }
+            scheduleOwned(std::move(task));
+        };
+    }
+
+    class Context : public IExecutor
+    {
+        struct Work
+        {
+            std::coroutine_handle<> handle;
+            DetachedTask owner;
+        };
+        struct State
+        {
+            std::mutex mutex;
+            std::condition_variable wake;
+            std::deque<Work> queue;
+            bool stopped{};
+        };
+
+      public:
+        Context() = default;
+        ~Context() override
+        {
+            std::deque<Work> abandoned;
             {
-                std::thread([this, h]() mutable {
-                    try {
-                        if constexpr (std::is_void_v<T>)
-                            f();
-                        else
-                            result.emplace(f());
-                    } catch (...) {
-                        exception = std::current_exception();
+                std::scoped_lock lock{ m_state->mutex };
+                m_state->stopped = true;
+                abandoned.swap(m_state->queue);
+                m_state->wake.notify_all();
+            }
+            // Destroy unstarted owned frames after releasing the queue lock.
+        }
+        Context(const Context&) = delete;
+        auto operator=(const Context&) -> Context& = delete;
+        Context(Context&&) = delete;
+        auto operator=(Context&&) -> Context& = delete;
+
+        auto run() -> void override
+        {
+            auto state{ m_state };
+            while (true) {
+                Work work;
+                {
+                    std::unique_lock lock{ state->mutex };
+                    state->wake.wait(lock, [&] { return state->stopped || !state->queue.empty(); });
+                    if (state->queue.empty()) {
+                        return;
                     }
-                    h.resume();
+                    work = std::move(state->queue.front());
+                    state->queue.pop_front();
+                }
+                if (work.handle && !work.handle.done()) {
+                    static_cast<void>(work.owner.release());
+                    work.handle.resume();
+                }
+            }
+        }
+
+        auto stop() -> void override
+        {
+            std::scoped_lock lock{ m_state->mutex };
+            m_state->stopped = true;
+            m_state->wake.notify_all();
+        }
+
+        auto schedule(std::coroutine_handle<> handle) -> void override
+        {
+            if (handle) {
+                enqueue(m_state, Work{ .handle = handle, .owner = {} });
+            }
+        }
+        auto scheduleOwned(DetachedTask task) -> void override
+        {
+            if (auto handle{ task.getHandle() }) {
+                enqueue(m_state, Work{ .handle = handle, .owner = std::move(task) });
+            }
+        }
+        auto getLifeToken() -> std::weak_ptr<void> override { return m_state; }
+        auto getScheduler() -> Scheduler override
+        {
+            return [weak = std::weak_ptr<State>{ m_state }](DetachedTask task) {
+                auto state{ weak.lock() };
+                if (!state) {
+                    throw std::runtime_error{ "Coroutine context is no longer alive" };
+                }
+                if (auto handle{ task.getHandle() }) {
+                    enqueue(state, Work{ .handle = handle, .owner = std::move(task) });
+                }
+            };
+        }
+
+      private:
+        static auto enqueue(const std::shared_ptr<State>& state, Work work) -> void
+        {
+            std::scoped_lock lock{ state->mutex };
+            if (state->stopped) {
+                throw std::runtime_error{ "Cannot schedule work on a stopped context" };
+            }
+            state->queue.push_back(std::move(work));
+            state->wake.notify_one();
+        }
+        std::shared_ptr<State> m_state{ std::make_shared<State>() };
+    };
+
+    namespace detail
+    {
+        // A queued delivery owns this ticket, never a pointer into a suspended awaiter.
+        class Continuation : public std::enable_shared_from_this<Continuation>
+        {
+          public:
+            template<typename Promise>
+            explicit Continuation(std::coroutine_handle<Promise> handle)
+              : m_handle{ handle }
+            {
+                if constexpr (std::derived_from<Promise, PromiseBase>) {
+                    m_mutex = handle.promise().execution_mutex;
+                    m_scheduler = handle.promise().scheduler;
+                    if (!m_scheduler && handle.promise().executor) {
+                        m_scheduler = handle.promise().executor->getScheduler();
+                    }
+                }
+            }
+
+            auto cancel() -> void
+            {
+                std::scoped_lock lock{ *m_mutex };
+                m_handle = {};
+            }
+            auto resume() -> void
+            {
+                auto mutex{ m_mutex };
+                std::scoped_lock lock{ *mutex };
+                if (auto handle{ std::exchange(m_handle, {}) }) {
+                    handle.resume();
+                }
+            }
+            auto dispatch() -> void;
+            auto rethrowError() const -> void
+            {
+                if (m_exception) {
+                    std::rethrow_exception(m_exception);
+                }
+            }
+
+          private:
+            std::coroutine_handle<> m_handle;
+            std::shared_ptr<std::recursive_mutex> m_mutex{ std::make_shared<std::recursive_mutex>() };
+            Scheduler m_scheduler;
+            std::exception_ptr m_exception;
+        };
+
+        // Implicit coroutine calls access static promise hooks through the promise object.
+        // NOLINTBEGIN(readability-static-accessed-through-instance)
+        inline auto resume_later(std::shared_ptr<Continuation> continuation) -> DetachedTask
+        {
+            continuation->resume();
+            co_return;
+        }
+
+        // NOLINTEND(readability-static-accessed-through-instance)
+
+        inline auto Continuation::dispatch() -> void
+        {
+            auto self{ shared_from_this() };
+            if (!m_scheduler) {
+                resume();
+                return;
+            }
+            try {
+                m_scheduler(resume_later(self));
+            } catch (...) {
+                // A rejected delivery must complete with an error rather than strand the task.
+                std::scoped_lock lock{ *m_mutex };
+                m_exception = std::current_exception();
+                resume();
+            }
+        }
+
+        template<typename Function, typename T>
+        class AsyncAwaiter
+        {
+            struct State
+            {
+                Function function;
+                std::optional<std::conditional_t<std::is_void_v<T>, bool, T>> result;
+                std::exception_ptr exception;
+                std::shared_ptr<Continuation> continuation;
+            };
+
+          public:
+            explicit AsyncAwaiter(Function function)
+              : m_state{ std::make_shared<State>(std::move(function), std::nullopt, nullptr, nullptr) }
+            {
+            }
+            ~AsyncAwaiter()
+            {
+                if (m_state->continuation) {
+                    m_state->continuation->cancel();
+                }
+            }
+            AsyncAwaiter(const AsyncAwaiter&) = delete;
+            auto operator=(const AsyncAwaiter&) -> AsyncAwaiter& = delete;
+            AsyncAwaiter(AsyncAwaiter&&) = delete;
+            auto operator=(AsyncAwaiter&&) -> AsyncAwaiter& = delete;
+            static auto await_ready() noexcept -> bool { return false; }
+
+            template<typename Promise>
+            auto await_suspend(std::coroutine_handle<Promise> handle) -> void
+            {
+                m_state->continuation = std::make_shared<Continuation>(handle);
+                std::thread([state = m_state] {
+                    try {
+                        if constexpr (std::is_void_v<T>) {
+                            std::invoke(state->function);
+                        }
+                        else {
+                            state->result.emplace(std::invoke(state->function));
+                        }
+                    } catch (...) {
+                        state->exception = std::current_exception();
+                    }
+                    state->continuation->dispatch();
                 }).detach();
             }
-            T await_resume()
+            auto await_resume() -> T
             {
-                if (exception) {
-                    std::rethrow_exception(exception);
+                m_state->continuation->rethrowError();
+                if (m_state->exception) {
+                    std::rethrow_exception(m_state->exception);
                 }
                 if constexpr (!std::is_void_v<T>) {
-                    if (!result) {
+                    if (!m_state->result) {
                         throw std::bad_optional_access{};
                     }
-                    return std::move(*result);
+                    return std::move(*m_state->result);
                 }
             }
+
+          private:
+            std::shared_ptr<State> m_state;
         };
-        co_return co_await Awaiter{ .f = std::move(func), .result = {}, .exception = {} };
+    }
+
+    template<typename T, typename Function>
+        requires std::invocable<Function&>
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    auto runAsync(Function function) -> Task<T>
+    {
+        co_return co_await detail::AsyncAwaiter<Function, T>{ std::move(function) };
     }
 
     template<typename Rep, typename Period>
     auto sleep(std::chrono::duration<Rep, Period> duration) -> Task<void>
     {
-        struct Awaiter
-        {
-            std::chrono::duration<Rep, Period> d;
-            bool await_ready() { return d.count() <= 0; }
-            void await_suspend(std::coroutine_handle<> h)
-            {
-                std::thread([this, h]() {
-                    std::this_thread::sleep_for(d);
-                    h.resume();
-                }).detach();
-            }
-            static auto await_resume() -> void {}
-        };
-        co_await Awaiter{ duration };
-        co_return;
-    }
-
-    // ---------- Channel ----------
-
-    namespace detail
-    {
-        struct RawBinaryAwaiter;
+        if (duration > duration.zero()) {
+            co_await runAsync<void>([duration] { std::this_thread::sleep_for(duration); });
+        }
     }
 
     enum class ChannelMode : uint8_t
@@ -340,425 +606,281 @@ namespace pnm::coro
         LoadBalancer
     };
 
+    namespace detail
+    {
+        template<typename T>
+        struct ChannelWaiter
+        {
+            std::optional<T> result;
+            std::exception_ptr exception;
+            std::shared_ptr<Continuation> continuation;
+            bool linked{};
+        };
+
+        template<typename T>
+        struct ChannelState
+        {
+            std::mutex mutex;
+            std::deque<T> queue;
+            std::list<std::shared_ptr<ChannelWaiter<T>>> waiters;
+            bool closed{};
+            ChannelMode mode{ ChannelMode::LoadBalancer };
+        };
+
+        template<typename T>
+        class ChannelAwaiter
+        {
+          public:
+            explicit ChannelAwaiter(std::shared_ptr<ChannelState<T>> state)
+              : m_state{ std::move(state) }
+            {
+            }
+            ~ChannelAwaiter()
+            {
+                if (m_waiter->continuation) {
+                    m_waiter->continuation->cancel();
+                }
+                if (m_state) {
+                    std::scoped_lock lock{ m_state->mutex };
+                    if (m_waiter->linked) {
+                        m_state->waiters.remove(m_waiter);
+                    }
+                }
+            }
+            ChannelAwaiter(const ChannelAwaiter&) = delete;
+            auto operator=(const ChannelAwaiter&) -> ChannelAwaiter& = delete;
+            ChannelAwaiter(ChannelAwaiter&&) = delete;
+            auto operator=(ChannelAwaiter&&) -> ChannelAwaiter& = delete;
+
+            auto await_ready() -> bool
+            {
+                if (!m_state) {
+                    return true;
+                }
+                std::scoped_lock lock{ m_state->mutex };
+                return takeReady();
+            }
+            template<typename Promise>
+            auto await_suspend(std::coroutine_handle<Promise> handle) -> bool
+            {
+                std::scoped_lock lock{ m_state->mutex };
+                if (takeReady()) {
+                    return false;
+                }
+                m_waiter->continuation = std::make_shared<Continuation>(handle);
+                m_state->waiters.push_back(m_waiter);
+                m_waiter->linked = true;
+                return true;
+            }
+            auto await_resume() -> std::optional<T>
+            {
+                if (m_waiter->continuation) {
+                    m_waiter->continuation->rethrowError();
+                }
+                if (m_waiter->exception) {
+                    std::rethrow_exception(m_waiter->exception);
+                }
+                return std::move(m_waiter->result);
+            }
+
+          private:
+            auto takeReady() -> bool
+            {
+                if (!m_state->queue.empty()) {
+                    m_waiter->result.emplace(std::move(m_state->queue.front()));
+                    m_state->queue.pop_front();
+                    return true;
+                }
+                return m_state->closed;
+            }
+            std::shared_ptr<ChannelState<T>> m_state;
+            std::shared_ptr<ChannelWaiter<T>> m_waiter{ std::make_shared<ChannelWaiter<T>>() };
+        };
+
+        template<typename T>
+        auto push_channel(const std::shared_ptr<ChannelState<T>>& state, T value) -> void
+        {
+            if (!state) {
+                throw std::logic_error{ "Cannot push to a moved-from channel" };
+            }
+            std::list<std::shared_ptr<ChannelWaiter<T>>> ready;
+            {
+                std::scoped_lock lock{ state->mutex };
+                if (state->closed) {
+                    return;
+                }
+                if (state->waiters.empty()) {
+                    state->queue.push_back(std::move(value));
+                    return;
+                }
+                auto deliver = []<typename Value>(auto& waiter, Value&& message) {
+                    waiter->linked = false;
+                    try {
+                        waiter->result.emplace(std::forward<Value>(message));
+                    } catch (...) {
+                        waiter->exception = std::current_exception();
+                    }
+                };
+                if (!std::copy_constructible<T> || state->mode == ChannelMode::LoadBalancer) {
+                    ready.splice(ready.end(), state->waiters, state->waiters.begin());
+                    deliver(ready.front(), std::move(value));
+                }
+                else {
+                    ready.splice(ready.end(), state->waiters);
+                    if constexpr (std::copy_constructible<T>) {
+                        for (const auto& waiter : ready) {
+                            deliver(waiter, value);
+                        }
+                    }
+                }
+            }
+            for (const auto& waiter : ready) {
+                waiter->continuation->dispatch();
+            }
+        }
+
+        template<typename T>
+        auto close_channel(const std::shared_ptr<ChannelState<T>>& state) -> void
+        {
+            if (!state) {
+                return;
+            }
+            std::list<std::shared_ptr<ChannelWaiter<T>>> ready;
+            {
+                std::scoped_lock lock{ state->mutex };
+                if (state->closed) {
+                    return;
+                }
+                state->closed = true;
+                ready.splice(ready.end(), state->waiters);
+                for (const auto& waiter : ready) {
+                    waiter->linked = false;
+                }
+            }
+            for (const auto& waiter : ready) {
+                waiter->continuation->dispatch();
+            }
+        }
+
+        template<typename T>
+        auto read_channel(std::shared_ptr<ChannelState<T>> state) -> Task<std::optional<T>>
+        {
+            co_return co_await ChannelAwaiter<T>{ std::move(state) };
+        }
+
+        class RawBinaryAwaiter
+        {
+          public:
+            using Bytes = std::vector<std::byte>;
+            RawBinaryAwaiter(std::shared_ptr<ChannelState<Bytes>> state, std::optional<Bytes>& destination)
+              : m_awaiter{ std::move(state) }
+              , m_destination{ &destination }
+            {
+            }
+            auto await_ready() -> bool { return m_awaiter.await_ready(); }
+            template<typename Promise>
+            auto await_suspend(std::coroutine_handle<Promise> handle) -> bool
+            {
+                return m_awaiter.await_suspend(handle);
+            }
+            auto await_resume() -> void { *m_destination = m_awaiter.await_resume(); }
+
+          private:
+            ChannelAwaiter<Bytes> m_awaiter;
+            std::optional<Bytes>* m_destination;
+        };
+    }
+
+    template<typename T>
+    class Channel
+    {
+      public:
+        auto push(T value) -> void { detail::push_channel(m_state, std::move(value)); }
+        auto close() -> void { detail::close_channel(m_state); }
+        auto next() -> Task<std::optional<T>> { return detail::read_channel(m_state); }
+
+      private:
+        std::shared_ptr<detail::ChannelState<T>> m_state{ std::make_shared<detail::ChannelState<T>>() };
+    };
+
     class RawBinaryChannel
     {
       public:
         using Bytes = std::vector<std::byte>;
-
+        RawBinaryChannel() { m_state->mode = ChannelMode::Broadcast; }
         auto setMode(ChannelMode mode) -> void
         {
-            std::scoped_lock lock(m_state->mutex);
+            if (!m_state) {
+                throw std::logic_error{ "Cannot configure a moved-from channel" };
+            }
+            std::scoped_lock lock{ m_state->mutex };
             m_state->mode = mode;
         }
-
-        auto push(Bytes raw) -> void;
-        auto close() -> void;
-
-        auto next(std::optional<Bytes>& dest) -> detail::RawBinaryAwaiter;
-
-      protected:
-        struct Waiter
+        auto push(Bytes bytes) -> void { detail::push_channel(m_state, std::move(bytes)); }
+        auto close() -> void { detail::close_channel(m_state); }
+        auto next(std::optional<Bytes>& destination) -> detail::RawBinaryAwaiter
         {
-            std::coroutine_handle<> handle;
-            IExecutor* executor{ nullptr };
-            // For broadcast, we need a place to put the result
-            std::optional<Bytes>* result_dest{ nullptr };
-            std::weak_ptr<void> life_token;
-            detail::RawBinaryAwaiter* awaiter_ptr{ nullptr };
-        };
-
-        struct State
-        {
-            std::mutex mutex;
-            std::deque<Bytes> queue;
-            bool closed{ false };
-            std::list<Waiter> waiters;
-            ChannelMode mode{ ChannelMode::Broadcast };
-        };
+            return { m_state, destination };
+        }
 
       private:
-        std::shared_ptr<State> m_state{ std::make_shared<State>() };
-
-        friend struct detail::RawBinaryAwaiter;
+        std::shared_ptr<detail::ChannelState<Bytes>> m_state{
+            std::make_shared<detail::ChannelState<Bytes>>()
+        };
         template<typename T>
-            requires std::is_trivially_copyable_v<T>
+            requires(std::is_trivially_copyable_v<T> && !std::is_array_v<T>)
         friend class BinaryChannel;
     };
 
     template<typename T>
-        requires std::is_trivially_copyable_v<T>
+        requires(std::is_trivially_copyable_v<T> && !std::is_array_v<T>)
     class BinaryChannel
     {
       public:
         BinaryChannel() = default;
         BinaryChannel(const RawBinaryChannel& raw)
-          : m_state(raw.m_state)
+          : m_state{ raw.m_state }
         {
         }
-
         auto setMode(ChannelMode mode) -> void
         {
             if (m_state) {
-                std::scoped_lock lock(m_state->mutex);
+                std::scoped_lock lock{ m_state->mutex };
                 m_state->mode = mode;
             }
         }
-
-        auto next() -> Task<std::optional<T>>;
+        auto next() -> Task<std::optional<T>> { return read(m_state); }
 
       private:
-        std::shared_ptr<RawBinaryChannel::State> m_state;
+        static auto read(std::shared_ptr<detail::ChannelState<RawBinaryChannel::Bytes>> state)
+          -> Task<std::optional<T>>
+        {
+            auto bytes{ co_await detail::read_channel(std::move(state)) };
+            if (!bytes || bytes->size() != sizeof(T)) {
+                co_return std::nullopt;
+            }
+            std::array<std::byte, sizeof(T)> representation;
+            std::ranges::copy(*bytes, representation.begin());
+            co_return std::bit_cast<T>(representation);
+        }
+        std::shared_ptr<detail::ChannelState<RawBinaryChannel::Bytes>> m_state;
     };
-
-    template<typename T>
-    class Channel
-    {
-      private:
-        struct Waiter
-        {
-            std::coroutine_handle<> handle;
-            IExecutor* executor{ nullptr };
-            std::optional<T>* dest{ nullptr };
-            std::weak_ptr<void> life_token;
-        };
-
-        struct State
-        {
-            std::mutex mutex;
-            std::deque<T> queue;
-            std::list<Waiter> waiters;
-            bool closed{ false };
-        };
-
-        struct Awaiter
-        {
-            std::shared_ptr<State> state;
-            std::optional<T> result;
-
-            explicit Awaiter(std::shared_ptr<State> shared_state)
-              : state{ std::move(shared_state) }
-            {
-            }
-            Awaiter(const Awaiter&) = delete;
-            auto operator=(const Awaiter&) -> Awaiter& = delete;
-            Awaiter(Awaiter&&) = delete;
-            auto operator=(Awaiter&&) -> Awaiter& = delete;
-
-            ~Awaiter()
-            {
-                std::scoped_lock lock{ state->mutex };
-                std::erase_if(state->waiters, [this](const Waiter& waiter) { return waiter.dest == &result; });
-            }
-
-            auto await_ready() -> bool
-            {
-                std::scoped_lock lock(state->mutex);
-                if (!state->queue.empty()) {
-                    result = std::move(state->queue.front());
-                    state->queue.pop_front();
-                    return true;
-                }
-                return state->closed;
-            }
-
-            template<typename P>
-            auto await_suspend(std::coroutine_handle<P> h) -> bool
-            {
-                std::scoped_lock lock(state->mutex);
-                if (auto value{ utils::queue::pop(state->queue) }) {
-                    result.emplace(std::move(*value));
-                    return false;
-                }
-                if (state->closed) {
-                    return false;
-                }
-
-                IExecutor* ex = nullptr;
-                std::weak_ptr<void> token;
-                if constexpr (requires { h.promise().executor; }) {
-                    ex = h.promise().executor;
-                    if (ex) {
-                        token = ex->getLifeToken();
-                    }
-                }
-
-                state->waiters.push_back({ .handle = h,
-                                           .executor = ex,
-                                           .dest = &result,
-                                           .life_token = std::move(token) });
-                return true;
-            }
-
-            auto await_resume() -> std::optional<T> { return std::move(result); }
-        };
-
-      public:
-        auto push(T val) -> void
-        {
-            std::unique_lock lock(m_state->mutex);
-            if (m_state->closed) {
-                return;
-            }
-
-            if (m_state->waiters.empty()) {
-                m_state->queue.push_back(std::move(val));
-                return;
-            }
-
-            auto waiter = std::move(m_state->waiters.front());
-            m_state->waiters.pop_front();
-
-            if (waiter.dest) {
-                *waiter.dest = std::move(val);
-            }
-
-            lock.unlock();
-
-            if (waiter.executor) {
-                if (auto token = waiter.life_token.lock()) {
-                    waiter.executor->schedule(waiter.handle);
-                }
-            }
-            else {
-                waiter.handle.resume();
-            }
-        }
-
-        auto close() -> void
-        {
-            std::unique_lock lock(m_state->mutex);
-            if (m_state->closed) {
-                return;
-            }
-            m_state->closed = true;
-            auto waiters = std::move(m_state->waiters);
-            lock.unlock();
-
-            for (auto& w : waiters) {
-                if (w.executor) {
-                    if (auto token = w.life_token.lock()) {
-                        w.executor->schedule(w.handle);
-                    }
-                }
-                else {
-                    w.handle.resume();
-                }
-            }
-        }
-
-        auto next() -> Task<std::optional<T>> { co_return co_await Awaiter{ m_state }; }
-
-      private:
-        std::shared_ptr<State> m_state{ std::make_shared<State>() };
-    };
-
-    namespace detail
-    {
-        struct RawBinaryAwaiter
-        {
-            std::shared_ptr<RawBinaryChannel::State> state;
-            std::optional<RawBinaryChannel::Bytes>* dest;
-            std::optional<std::list<RawBinaryChannel::Waiter>::iterator> m_iterator;
-
-            RawBinaryAwaiter(std::shared_ptr<RawBinaryChannel::State> shared_state,
-                             std::optional<RawBinaryChannel::Bytes>& destination)
-              : state{ std::move(shared_state) }
-              , dest{ &destination }
-            {
-            }
-            RawBinaryAwaiter(const RawBinaryAwaiter&) = delete;
-            auto operator=(const RawBinaryAwaiter&) -> RawBinaryAwaiter& = delete;
-            RawBinaryAwaiter(RawBinaryAwaiter&&) = delete;
-            auto operator=(RawBinaryAwaiter&&) -> RawBinaryAwaiter& = delete;
-
-            ~RawBinaryAwaiter()
-            {
-                std::scoped_lock lock(state->mutex);
-                if (m_iterator) {
-                    state->waiters.erase(*m_iterator);
-                }
-            }
-
-            void unlink() { m_iterator = std::nullopt; }
-
-            auto await_ready() const -> bool
-            {
-                std::scoped_lock lock(state->mutex);
-                dest->reset();
-                if (auto raw{ utils::queue::pop(state->queue) }) {
-                    dest->emplace(std::move(*raw));
-                    return true;
-                }
-                return state->closed;
-            }
-
-            template<typename P>
-            auto await_suspend(std::coroutine_handle<P> handle) -> bool
-            {
-                std::scoped_lock lock(state->mutex);
-
-                if (auto raw{ utils::queue::pop(state->queue) }) {
-                    dest->emplace(std::move(*raw));
-                    return false;
-                }
-                if (state->closed) {
-                    return false;
-                }
-
-                IExecutor* executor{ nullptr };
-                std::weak_ptr<void> life_token;
-
-                if constexpr (requires { handle.promise().executor; }) {
-                    executor = handle.promise().executor;
-                    if (executor) {
-                        life_token = executor->getLifeToken();
-                    }
-                }
-
-                m_iterator = state->waiters.insert(state->waiters.end(),
-                                                   { .handle = handle,
-                                                     .executor = executor,
-                                                     .result_dest = dest,
-                                                     .life_token = std::move(life_token),
-                                                     .awaiter_ptr = this });
-                return true;
-            }
-
-            static auto await_resume() -> void
-            {
-                // Result is already in 'dest' or dest is nullopt (closed)
-                // If we resumed normally, 'unlink()' was already called by 'push'.
-            }
-        };
-
-        static auto resume_waiter(auto& waiter) -> void
-        {
-            if (waiter.executor) {
-                if (auto token = waiter.life_token.lock()) {
-                    waiter.executor->schedule(waiter.handle);
-                }
-            }
-            else {
-                waiter.handle.resume();
-            }
-        }
-    }
-
-    inline auto RawBinaryChannel::next(std::optional<Bytes>& dest) -> detail::RawBinaryAwaiter
-    {
-        return detail::RawBinaryAwaiter{ m_state, dest };
-    }
-
-    inline auto RawBinaryChannel::push(Bytes raw) -> void
-    {
-        std::unique_lock lock(m_state->mutex);
-        if (m_state->closed) {
-            return;
-        }
-
-        if (m_state->waiters.empty()) {
-            // store until new waiter spawns
-            m_state->queue.push_back(std::move(raw));
-            return;
-        }
-
-        if (m_state->mode == ChannelMode::LoadBalancer) {
-            auto waiter{ std::move(m_state->waiters.front()) };
-            m_state->waiters.pop_front();
-
-            // detach from awaiter so it doesnt try to erase itself on destruction
-            if (waiter.awaiter_ptr) {
-                waiter.awaiter_ptr->unlink();
-            }
-
-            if (waiter.result_dest) {
-                waiter.result_dest->emplace(std::move(raw));
-            }
-
-            lock.unlock();
-            detail::resume_waiter(waiter);
-        }
-        else {
-            auto to_resume{ std::move(m_state->waiters) };
-            m_state->waiters.clear();
-
-            for (auto& waiter : to_resume) {
-                // detach from awaiter so it doesnt try to erase itself on destruction
-                if (waiter.awaiter_ptr) {
-                    waiter.awaiter_ptr->unlink();
-                }
-
-                if (waiter.result_dest) {
-                    waiter.result_dest->emplace(raw);
-                }
-            }
-
-            lock.unlock();
-            for (auto& waiter : to_resume) {
-                detail::resume_waiter(waiter);
-            }
-        }
-    }
-
-    inline auto RawBinaryChannel::close() -> void
-    {
-        std::list<Waiter> to_resume;
-        {
-            std::scoped_lock lock(m_state->mutex);
-            if (m_state->closed) {
-                return;
-            }
-            m_state->closed = true;
-            to_resume = std::move(m_state->waiters);
-            for (auto& waiter : to_resume) {
-                if (waiter.awaiter_ptr) {
-                    waiter.awaiter_ptr->unlink();
-                }
-            }
-        }
-
-        for (auto& waiter : to_resume) {
-            detail::resume_waiter(waiter);
-        }
-    }
-
-    template<typename T>
-        requires std::is_trivially_copyable_v<T>
-    auto BinaryChannel<T>::next() -> Task<std::optional<T>>
-    {
-        if (!m_state) {
-            co_return std::nullopt;
-        }
-        RawBinaryChannel raw{};
-        raw.m_state = m_state;
-
-        std::optional<RawBinaryChannel::Bytes> result{};
-        co_await raw.next(result);
-
-        if (!result || result->size() != sizeof(T)) {
-            co_return std::nullopt;
-        }
-
-        T val{};
-        std::memcpy(&val, result->data(), sizeof(T));
-        co_return val;
-    }
-
-    // ---------- Spawn ----------
 
     namespace detail
     {
         template<typename Ex, typename Coro>
-        auto co_spawn_impl(Ex* ex, Coro coro) -> DetachedTask
+        auto co_spawn_impl(Ex* executor, Coro coro) -> DetachedTask
         {
-            co_await std::invoke(std::move(coro), *ex);
+            co_await std::invoke(std::move(coro), *executor);
         }
     }
 
     template<Executor Ex, std::invocable<Ex&> Coro>
-    auto co_spawn(Ex& ex, Coro&& coro) -> void
+    auto co_spawn(Ex& executor, Coro&& coro) -> void
     {
-        auto detached{ detail::co_spawn_impl(&ex, std::forward<Coro>(coro)) };
-        ex.schedule(detached.getHandle());
+        auto task{ detail::co_spawn_impl(&executor, std::forward<Coro>(coro)) };
+        task.getHandle().promise().executor = &executor;
+        task.getHandle().promise().scheduler = executor.getScheduler();
+        executor.scheduleOwned(std::move(task));
     }
 }

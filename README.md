@@ -160,7 +160,11 @@ cmake --build --preset gcc-debug --target coroutines_sample coroutines_tests
 ctest --preset gcc-debug -R Coroutines --output-on-failure
 ```
 
-Keep the context and referenced channels alive until their tasks finish, and keep tasks suspended in `runAsync` or `sleep` alive until the worker completes. These helpers use detached threads and can resume continuations on those threads; `Context::stop()` stops the event loop after its ready queue drains, without cancelling outstanding work.
+Tasks have one consumer and one result: await an unstarted task, or start it with `Task::resume()` and retrieve its result after completion. Invalid operations on empty, running, or already-consumed tasks throw `std::logic_error`. Raw handles from `getHandle()` are borrowed; callers must manage their lifetime and synchronization. A separately owned task awaited by reference must outlive the await.
+
+`co_spawn` transfers ownership to the context, which releases queued, unstarted frames if destroyed. Nested tasks inherit the executor, so async work, timers, and channel waits resume on a thread running that context. Unbound tasks can resume on the worker or channel producer thread. Keep the context alive until spawned work finishes. `Context::stop()` rejects new scheduling and drains already queued work; it does not cancel outstanding operations. A rejected continuation resumes inline to propagate the scheduling exception to its awaiting task.
+
+For the built-in async, timer, and channel waits, destroying a suspended `Task` disconnects its continuation safely, but detached workers and timers still run to completion. Any objects borrowed by worker callables must remain alive until the workers finish. Channel reads retain their shared state even when the original channel wrapper is moved or destroyed. Custom executors must outlive scheduling calls; the default `scheduleOwned` transfers frames to `schedule`, whose accepted work must eventually run. Executors that can abandon queued work should override `scheduleOwned` to retain and release that ownership.
 
 ### CMake Targets and Headers
 
