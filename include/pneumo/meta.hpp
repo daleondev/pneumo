@@ -34,6 +34,10 @@
 #pragma GCC diagnostic ignored "-Wunused-function"
 #endif
 
+#if __has_include(<stacktrace>)
+#include <stacktrace>
+#endif
+
 namespace pnm::meta
 {
     enum class Loop : uint8_t
@@ -1235,8 +1239,8 @@ namespace pnm::meta
                         return false;
                     }
 
-                    auto& stored_name = m_strings.emplace_back(std::move(file_name));
-                    auto& stored_code = m_strings.emplace_back(std::move(source_code));
+                    auto& stored_name{ m_strings.emplace_back(std::move(file_name)) };
+                    auto& stored_code{ m_strings.emplace_back(std::move(source_code)) };
 
                     auto [_, inserted] = m_entries.emplace(
                       stored_name, EmbeddedSource{ .file_name = stored_name, .source_code = stored_code });
@@ -1357,6 +1361,58 @@ namespace pnm::meta
 
             return snippet.str();
         }
+
+#if defined(__cpp_lib_stacktrace)
+        namespace detail
+        {
+            static auto append_stacktrace_excerpt(std::ostream& trace,
+                                                 std::string_view file_name,
+                                                 uint32_t line,
+                                                 size_t context_size) -> void
+            {
+                if (file_name.empty() || line == 0) {
+                    return;
+                }
+                if (auto result{ excerpt(file_name, line, context_size) }; result) {
+                    trace << *result << '\n';
+                }
+            }
+        }
+
+        static auto stacktrace(std::span<const std::stacktrace_entry> stacktrace,
+                               bool show_excerpts = false,
+                               size_t context_size = 0) -> Result<std::string>
+        {
+            std::ostringstream trace;
+            auto last_index{ stacktrace.empty() ? 0UZ : stacktrace.size() - 1UZ };
+            auto index_width{ static_cast<int>(std::to_string(last_index).size()) };
+            auto i{ 0UZ };
+            for (const auto& entry : stacktrace) {
+                std::filesystem::path file{ entry.source_file() };
+
+                auto func_name{ entry.description().empty() ? "<unknown>" : entry.description() };
+                auto file_name{ file.empty() ? "<unknown>" : file.filename().string() };
+                auto line{ entry.source_line() };
+
+                trace << '#' << std::setw(index_width) << (i++) << ' ' << func_name << " at "
+                      << file_name << ':' << line << '\n';
+
+                if (show_excerpts) {
+                    detail::append_stacktrace_excerpt(trace, file.string(), line, context_size);
+                }
+            }
+            return trace.str();
+        }
+
+        static auto stacktrace(const std::stacktrace& stacktrace,
+                               bool show_excerpts = false,
+                               size_t context_size = 0) -> Result<std::string>
+        {
+            return source::stacktrace(std::span<const std::stacktrace_entry>{ stacktrace },
+                                     show_excerpts,
+                                     context_size);
+        }
+#endif
     }
 }
 

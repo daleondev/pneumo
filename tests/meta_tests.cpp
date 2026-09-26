@@ -9,6 +9,7 @@
 #include <fstream>
 #include <functional>
 #include <ratio>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -855,3 +856,43 @@ TEST(SourceMetaTests, ExcerptRejectsOutOfRangeLine)
 
     EXPECT_FALSE(excerpt.has_value());
 }
+
+#if defined(__cpp_lib_stacktrace)
+TEST(SourceMetaTests, StacktraceMissingExcerptPreservesSurroundingFrames)
+{
+    const auto missing_path = next_temp_source_path();
+    std::filesystem::remove(missing_path);
+    const auto source = ScopedTempSourceFile("first line\nsecond line\n");
+    std::ostringstream trace;
+
+    trace << "#0 missing frame\n";
+    pnm::meta::source::detail::append_stacktrace_excerpt(trace, missing_path.string(), 1, 0);
+    EXPECT_EQ(trace.str(), "#0 missing frame\n");
+    trace << "#1 available frame\n";
+    pnm::meta::source::detail::append_stacktrace_excerpt(trace, source.string_path(), 2, 0);
+
+    EXPECT_EQ(trace.str(), "#0 missing frame\n#1 available frame\n> 2 | second line\n\n");
+}
+
+TEST(SourceMetaTests, StacktraceUnknownLineDoesNotShowStartOfFile)
+{
+    const auto source = ScopedTempSourceFile("unrelated first line\nsecond line\n");
+    std::ostringstream trace;
+    trace << "#0 unknown line\n";
+
+    pnm::meta::source::detail::append_stacktrace_excerpt(trace, source.string_path(), 0, 1);
+
+    EXPECT_EQ(trace.str(), "#0 unknown line\n");
+}
+
+TEST(SourceMetaTests, StacktraceInvalidLinePreservesFrame)
+{
+    const auto source = ScopedTempSourceFile("first line\n");
+    std::ostringstream trace;
+    trace << "#0 invalid line\n";
+
+    pnm::meta::source::detail::append_stacktrace_excerpt(trace, source.string_path(), 100, 1);
+
+    EXPECT_EQ(trace.str(), "#0 invalid line\n");
+}
+#endif

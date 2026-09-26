@@ -113,7 +113,11 @@ namespace pnm::log
         Function = utils::bit::get < 4,
         uint8_t>(),
         Excerpt = utils::bit::get < 5,
+        uint8_t>(),
+#if defined(__cpp_lib_stacktrace)
+        Stacktrace = utils::bit::get < 6,
         uint8_t>()
+#endif
     };
 
     struct SourceInfo
@@ -127,6 +131,10 @@ namespace pnm::log
 
         uint8_t fields{};
         size_t excerpt_context{};
+#if defined(__cpp_lib_stacktrace)
+        bool stacktrace_excerpts{};
+        size_t stacktrace_context{};
+#endif
     };
 
     template<typename... Args>
@@ -221,6 +229,16 @@ namespace pnm::log
             m_sourceInfo.excerpt_context = context_size;
             return static_cast<Sink&>(*this);
         }
+
+#if defined(__cpp_lib_stacktrace)
+        auto sourceStacktrace(bool show_excerpts = false, size_t context_size = 0) -> Sink&
+        {
+            m_sourceInfo.enable(SourceField::Stacktrace);
+            m_sourceInfo.stacktrace_excerpts = show_excerpts;
+            m_sourceInfo.stacktrace_context = context_size;
+            return static_cast<Sink&>(*this);
+        }
+#endif
 
         auto showLevel(bool show_level) -> Sink&
         {
@@ -675,6 +693,9 @@ namespace pnm::log
             std::chrono::system_clock::time_point timestamp;
             std::source_location source;
             std::optional<Color> color;
+#if defined(__cpp_lib_stacktrace)
+            std::stacktrace stacktrace{};
+#endif
         };
 
         struct LogEntry
@@ -725,6 +746,33 @@ namespace pnm::log
             return source;
         }
 
+#if defined(__cpp_lib_stacktrace)
+        inline auto is_logging_frame(std::string_view description, std::string_view file_name) -> bool
+        {
+            // Match the function's namespace, not logging types in an application's arguments.
+            if (description.starts_with("pnm::log::") || description.starts_with("void pnm::log::")) {
+                return true;
+            }
+            return !file_name.empty() &&
+                   std::filesystem::path{ file_name }.lexically_normal() ==
+                     std::filesystem::path{ __FILE__ }.lexically_normal();
+        }
+
+        inline auto format_stacktrace(const std::stacktrace& stacktrace, SourceInfo info) -> Result<std::string>
+        {
+            std::vector<std::stacktrace_entry> frames;
+            frames.reserve(stacktrace.size());
+            for (const auto& entry : stacktrace) {
+                if (!is_logging_frame(entry.description(), entry.source_file())) {
+                    frames.push_back(entry);
+                }
+            }
+            return meta::source::stacktrace(std::span<const std::stacktrace_entry>{ frames },
+                                           info.stacktrace_excerpts,
+                                           info.stacktrace_context);
+        }
+#endif
+
         inline auto format_record(const LogRecord& record, const ISink& sink) -> std::string
         {
             const auto source_info{ sink.getSourceInfo() };
@@ -760,6 +808,14 @@ namespace pnm::log
                     output += *excerpt;
                 }
             }
+
+#if defined(__cpp_lib_stacktrace)
+            if (source_info.contains(SourceField::Stacktrace)) {
+                if (auto trace{ format_stacktrace(record.stacktrace, source_info) }) {
+                    output += *trace;
+                }
+            }
+#endif
 
             return output;
         }
@@ -813,6 +869,21 @@ namespace pnm::log
                                             .source = source,
                                             .color = color },
                                 .sinks = std::move(sinks) };
+
+#if defined(__cpp_lib_stacktrace)
+                // Capture once on the producer thread, before handing the record to the worker.
+                for (const auto& target_sink : entry.sinks) {
+                    try {
+                        if (should_log(level, target_sink->getMinLevel()) &&
+                            target_sink->getSourceInfo().contains(SourceField::Stacktrace)) {
+                            entry.record.stacktrace = std::stacktrace::current();
+                            break;
+                        }
+                    } catch (...) {
+                        report_internal_error("pneumo logging: failed to query a sink's stacktrace settings");
+                    }
+                }
+#endif
 
                 if (sync) {
                     write(entry);

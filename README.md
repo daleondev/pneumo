@@ -135,7 +135,7 @@ The logging module provides:
 *   Asynchronous logging by default and the `pnm::log::immediate` tag for synchronous writes.
 *   Built-in stdout, stderr, and cached file sinks. The default route sends `Trace` through `Warn` to stdout and `Error` through `Critical` to stderr.
 *   Per-level default sinks, removable global sinks, per-call explicit sinks, minimum levels, and flush thresholds.
-*   Optional file name/path, line, column, function, and embedded source excerpts on each sink.
+*   Optional file name/path, line, column, function, embedded source excerpts, and stacktraces on each sink.
 *   Compile-time-checked per-sink timestamp formats and optional level labels.
 *   Default level colors, per-sink palettes, and per-message ANSI color overrides.
 *   User-defined sinks through `pnm::log::ISink` and `pnm::log::SinkBase`.
@@ -271,7 +271,7 @@ auto main() -> int
 
 Normal calls are queued to a background worker. Passing `pnm::log::immediate` performs the write before the call returns. An explicit per-call sink routes only to that sink; otherwise a record is sent to its level’s default sink and every registered global sink. The backend drains queued records and closes cached files during process shutdown.
 
-Immediate calls and the background worker share an output lock. Each record's sink operations, including partial writes and flushing, are serialized against logging from other threads. Immediate calls may overtake queued messages; they do not drain the queue. The lock permits a custom sink to log immediately to another sink on the same thread. Direct calls to sink methods and changes to sink configuration are outside this synchronization; configure sinks before logging starts.
+Immediate calls and the background worker share an output lock. Each record's output operations, including partial writes and flushing, are serialized against logging from other threads. Immediate calls may overtake queued messages; they do not drain the queue. The lock permits a custom sink to log immediately to another sink on the same thread. Direct calls to sink methods and changes to sink configuration are outside this synchronization; configure sinks before logging starts.
 
 Default routes can be changed per level or level range:
 
@@ -289,6 +289,28 @@ pnm::log::reset_default_sinks();
 ```
 
 Source excerpts require the translation unit to be registered with `PNM_META_SOURCE_EMBED_CURRENT`, `PNM_META_SOURCE_EMBED_BEGIN`/`PNM_META_SOURCE_EMBED_END`, or otherwise available to `pnm::meta::source::excerpt` at runtime.
+
+### Stacktraces
+
+On toolchains providing `std::stacktrace`, enable a calling-thread stacktrace for a sink:
+
+```cpp
+#if defined(__cpp_lib_stacktrace)
+pnm::log::std_err->sourceStacktrace();        // frame list only
+pnm::log::std_err->sourceStacktrace(true, 1); // excerpts with one surrounding line
+pnm::log::error("Operation failed");
+
+pnm::log::error(pnm::log::immediate,
+                pnm::log::file("errors.log").sourceStacktrace(true),
+                "Written synchronously with a stacktrace");
+#endif
+```
+
+`.sourceStacktrace(show_excerpts = false, context_size = 0)` enables stacktraces while preserving the sink's other source settings. `.sourceInfo(SourceField::Stacktrace)` selects the frame list alone. As with source excerpts, calling `.sourceInfo(...)` replaces all source settings; omit `Stacktrace` to disable it.
+
+A trace is captured once per message, on the calling thread, only if a routed sink accepts the level and requests a stacktrace. Async records retain that trace for the worker to format through `pnm::meta::source::stacktrace`. Each sink independently chooses whether to show frames and excerpts. The trace follows the message and any single-call-site excerpt, outside the colored header. Logger implementation frames are filtered using their function names or source locations, and the remaining frames are numbered from zero. Unidentified frames are retained.
+
+Frame names and source locations depend on the toolchain and available debug information; optimized or inlined calls may appear differently or be absent. Build with debug information (for example, GCC's `-g`) for source excerpts, and embed or retain the corresponding source files. Unavailable excerpts are skipped while frames remain visible; an empty capture leaves the message intact. These settings are available only when `__cpp_lib_stacktrace` is defined; the currently supported Clang/libc++ toolchain does not provide them.
 
 ### Colors
 

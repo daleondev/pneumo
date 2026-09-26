@@ -48,6 +48,9 @@ int main()
     pnm::log::std_err
       ->sourceInfo(
         pnm::log::SourceField::FileName, pnm::log::SourceField::Line, pnm::log::SourceField::Function)
+#if defined(__cpp_lib_stacktrace)
+      .sourceStacktrace(true, 1)
+#endif
       .showLevel(false);
 
     // These are the built-in defaults and can be replaced with any user-defined sink.

@@ -77,3 +77,7 @@ target_link_libraries(
     pneumo::compiler_warnings
     $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:stdc++exp>
 )
+
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(logging_sample PRIVATE -g -fno-optimize-sibling-calls)
+endif()
