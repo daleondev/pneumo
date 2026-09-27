@@ -13,7 +13,7 @@
 
 #define PNM_DISTANCE_UNITS(X, XX, ctx)                                                                       \
     X(ctx, nm, std::nano)                                                                                    \
-    X(ctx, um, std::micro, 0.0, "\xC2\xB5m")                                                                 \
+    X(ctx, um, std::micro, 0.0, "µm")                                                                        \
     X(ctx, mm, std::milli)                                                                                   \
     X(ctx, cm, std::centi)                                                                                   \
     X(ctx, dm, std::deci)                                                                                    \
@@ -23,17 +23,17 @@
 // ---------- Area ----------
 
 #define PNM_AREA_UNITS(X, XX, ctx)                                                                           \
-    X(ctx, mm2, std::micro, 0.0, "mm\xC2\xB2")                                                               \
-    X(ctx, cm2, std::ratio<1Z, 10'000Z>, 0.0, "cm\xC2\xB2")                                                  \
-    X(ctx, dm2, std::centi, 0.0, "dm\xC2\xB2")                                                               \
-    XX(ctx, m2, "m\xC2\xB2")                                                                                 \
-    X(ctx, km2, std::mega, 0.0, "km\xC2\xB2")
+    X(ctx, mm2, std::micro, 0.0, "mm²")                                                                      \
+    X(ctx, cm2, std::ratio<1Z, 10'000Z>, 0.0, "cm²")                                                         \
+    X(ctx, dm2, std::centi, 0.0, "dm²")                                                                      \
+    XX(ctx, m2, "m²")                                                                                        \
+    X(ctx, km2, std::mega, 0.0, "km²")
 
 // ---------- Time ----------
 
 #define PNM_TIME_UNITS(X, XX, ctx)                                                                           \
     X(ctx, ns, std::nano)                                                                                    \
-    X(ctx, us, std::micro, 0.0, "\xC2\xB5s")                                                                 \
+    X(ctx, us, std::micro, 0.0, "µs")                                                                        \
     X(ctx, ms, std::milli)                                                                                   \
     XX(ctx, s)                                                                                               \
     X(ctx, min, std::ratio<60Z>)                                                                             \
@@ -65,12 +65,7 @@
 // ---------- Current ----------
 
 #define PNM_CURRENT_UNITS(X, XX, ctx)                                                                        \
-    X(ctx,                                                                                                   \
-      uA,                                                                                                    \
-      std::micro,                                                                                            \
-      0.0,                                                                                                   \
-      "\xC2\xB5"                                                                                             \
-      "A")                                                                                                   \
+    X(ctx, uA, std::micro, 0.0, "µA")                                                                        \
     X(ctx, mA, std::milli)                                                                                   \
     XX(ctx, A)                                                                                               \
     X(ctx, kA, std::kilo)
@@ -148,9 +143,9 @@
 // ---------- Acceleration ----------
 
 #define PNM_ACCELERATION_UNITS(X, XX, ctx)                                                                   \
-    X(ctx, mm_s2, std::milli, 0.0, "mm/s\xC2\xB2")                                                           \
-    XX(ctx, m_s2, "mm/s\xC2\xB2")                                                                            \
-    X(ctx, km_h2, std::ratio<1000Z, 3600Z * 3600Z>, 0.0, "km/h\xC2\xB2")
+    X(ctx, mm_s2, std::milli, 0.0, "mm/s²")                                                                  \
+    XX(ctx, m_s2, "m/s²")                                                                                    \
+    X(ctx, km_h2, std::ratio<1000Z, 3600Z * 3600Z>, 0.0, "km/h²")
 
 // ---------- Angle ----------
 
@@ -610,13 +605,14 @@ namespace pnm::units
             return indices;
         }
 
-        static consteval auto make_unit_suffixes()
+        static consteval auto makeUnitSuffixes()
         {
+            using UnitTypes = typename UnitsMeta::NestedTypes;
             return []<size_t... Is>(std::index_sequence<Is...>) -> auto {
                 return std::array<std::string_view, sizeof...(Is)>{
-                    meta::tuple::at_t<Is, typename UnitsMeta::NestedTypes>::SUFFIX...
+                    meta::tuple::at_t<Is, UnitTypes>::SUFFIX...
                 };
-            }(std::make_index_sequence<meta::tuple::count<typename UnitsMeta::NestedTypes>()>{});
+            }(std::make_index_sequence<meta::tuple::count<UnitTypes>()>{});
         }
 
         static constexpr auto isPrintableUnitIndex(size_t index) -> bool
@@ -650,7 +646,7 @@ namespace pnm::units
         static constexpr auto SORTED_UNIT_INDICES{ QuantityBase::makeSortedUnitIndices() };
         static constexpr auto UNIT_FACTORS{ QuantityBase::makeUnitFactors() };
         static constexpr auto UNIT_OFFSETS{ QuantityBase::makeUnitOffsets() };
-        static constexpr auto UNIT_SUFFIXES{ QuantityBase::make_unit_suffixes() };
+        static constexpr auto UNIT_SUFFIXES{ QuantityBase::makeUnitSuffixes() };
 
         QuantityBase() = default;
         QuantityBase(const QuantityBase&) = default;

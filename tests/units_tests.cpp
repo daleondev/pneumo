@@ -403,32 +403,42 @@ TEST(UnitsTests, AccelerationConversionsUseMetersPerSecondSquaredAsBase)
 
 TEST(UnitsTests, StreamInsertionPrintsSelectedUnits)
 {
-    EXPECT_EQ(stream_to_string(2.0_h), "2h");
-    EXPECT_EQ(stream_to_string(1536.0_bytes), "1.5KB");
-    EXPECT_EQ(stream_to_string(1500.0_m), "1.5km");
-    EXPECT_EQ(stream_to_string(-1500.0_m), "-1.5km");
-    EXPECT_EQ(stream_to_string(0.0_m), "0m");
-    EXPECT_EQ(stream_to_string(1500.0_kg), "1.5t");
-    EXPECT_EQ(stream_to_string(2.0_kWh), "2kWh");
-    EXPECT_EQ(stream_to_string(101325.0_Pa), "1atm");
-    EXPECT_EQ(stream_to_string(1.0_mbar), "1mbar");
-    EXPECT_EQ(stream_to_string(30.0_C), "30C");
-    EXPECT_EQ(stream_to_string(295.5_K), "22.35C");
-    EXPECT_EQ(stream_to_string(86.0_F), "30C");
-    EXPECT_EQ(stream_to_string(2000.0_Hz), "2kHz");
+    EXPECT_EQ(stream_to_string(2.0_h), "2 h");
+    EXPECT_EQ(stream_to_string(1536.0_bytes), "1.5 KB");
+    EXPECT_EQ(stream_to_string(1500.0_m), "1.5 km");
+    EXPECT_EQ(stream_to_string(-1500.0_m), "-1.5 km");
+    EXPECT_EQ(stream_to_string(0.0_m), "0 m");
+    EXPECT_EQ(stream_to_string(1500.0_kg), "1.5 t");
+    EXPECT_EQ(stream_to_string(2.0_kWh), "2 kWh");
+    EXPECT_EQ(stream_to_string(101325.0_Pa), "1 atm");
+    EXPECT_EQ(stream_to_string(1.0_mbar), "1 mbar");
+    EXPECT_EQ(stream_to_string(30.0_C), "30 °C");
+    EXPECT_EQ(stream_to_string(295.5_K), "22.35 °C");
+    EXPECT_EQ(stream_to_string(86.0_F), "30 °C");
+    EXPECT_EQ(stream_to_string(2000.0_Hz), "2 kHz");
 }
 
 TEST(UnitsTests, StreamInsertionUsesCorrectSuffixWhenUnitOrderDiffersFromScaleOrder)
 {
-    EXPECT_EQ(stream_to_string(0.5_m_s), "1.8km/h");
-    EXPECT_EQ(stream_to_string(0.5_m_s2), "500mm/s2");
+    EXPECT_EQ(stream_to_string(0.5_m_s), "1.8 km/h");
+    EXPECT_EQ(stream_to_string(0.5_m_s2), "500 mm/s²");
 }
 
 TEST(UnitsTests, StreamInsertionDisplaysCompoundUnitsWithSlashes)
 {
-    EXPECT_EQ(stream_to_string(20.0_m_s), "20m/s");
-    EXPECT_EQ(stream_to_string(9.81_m_s2), "9.81m/s2");
-    EXPECT_EQ(stream_to_string(3.0_MB_s), "3MB/s");
+    EXPECT_EQ(stream_to_string(20.0_m_s), "20 m/s");
+    EXPECT_EQ(stream_to_string(9.81_m_s2), "9.81 m/s²");
+    EXPECT_EQ(stream_to_string(3.0_MB_s), "3 MB/s");
+}
+
+TEST(UnitsTests, StreamInsertionPrintsUnicodeSuffixes)
+{
+    EXPECT_EQ(stream_to_string(2_um), "2 µm");
+    EXPECT_EQ(stream_to_string(2_us), "2 µs");
+    EXPECT_EQ(stream_to_string(2_uA), "2 µA");
+    EXPECT_EQ(stream_to_string(2_mm2), "2 mm²");
+    EXPECT_EQ(stream_to_string(2_m2), "2 m²");
+    EXPECT_EQ(stream_to_string(45_deg), "45 °");
 }
 
 TEST(UnitsTests, TimeLiteralsUnaryPlusAndMinus)
@@ -1192,11 +1202,11 @@ TEST(UnitsTests, AngularRelationsSupportChronoDurations)
 
 TEST(UnitsTests, RatioAndRotationalUnitsUseAutomaticStreamUnitSelection)
 {
-    EXPECT_EQ(stream_to_string(50_percent), "50percent");
-    EXPECT_EQ(stream_to_string(100_percent), "1fraction");
-    EXPECT_EQ(stream_to_string(0_percent), "0fraction");
-    EXPECT_EQ(stream_to_string(360_deg), "1rev");
-    EXPECT_EQ(stream_to_string(1_rpm), "1rpm");
-    EXPECT_EQ(stream_to_string(1_rad_s), "1rad/s");
-    EXPECT_EQ(stream_to_string(0_rpm), "0rad/s");
+    EXPECT_EQ(stream_to_string(50_percent), "50 %");
+    EXPECT_EQ(stream_to_string(100_percent), "1");
+    EXPECT_EQ(stream_to_string(0_percent), "0");
+    EXPECT_EQ(stream_to_string(360_deg), "1 rev");
+    EXPECT_EQ(stream_to_string(1_rpm), "1 rpm");
+    EXPECT_EQ(stream_to_string(1_rad_s), "1 rad/s");
+    EXPECT_EQ(stream_to_string(0_rpm), "0 rad/s");
 }
