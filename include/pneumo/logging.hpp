@@ -1069,6 +1069,10 @@ namespace pnm::log
 
         inline auto backend() -> Backend&
         {
+            // The async worker formats source/stacktrace excerpts while it
+            // drains at shutdown. Construct their cache first, so it is
+            // destroyed only after the backend has joined the worker.
+            (void)meta::source::detail::Registry::instance();
             static Backend instance{};
             return instance;
         }
