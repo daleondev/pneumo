@@ -41,6 +41,8 @@ using pnm::units::Temperature;
 using pnm::units::TemperatureUnits;
 using pnm::units::Time;
 using pnm::units::TimeUnits;
+using pnm::units::Unitless;
+using pnm::units::UnitlessUnits;
 using pnm::units::Velocity;
 using pnm::units::VelocityUnits;
 using pnm::units::Voltage;
@@ -69,6 +71,18 @@ static_assert(std::is_same_v<decltype(12.0_V), Voltage>);
 static_assert(std::is_same_v<decltype(50_percent), Ratio>);
 static_assert(std::is_same_v<decltype(0.5_percent), Ratio>);
 static_assert(std::is_same_v<decltype(1_fraction), Ratio>);
+static_assert(std::is_same_v<decltype(2_unitless), Unitless>);
+static_assert(std::is_same_v<decltype(0.5_unitless), Unitless>);
+static_assert(pnm::units::IsQuantity<Unitless>);
+static_assert(!std::is_same_v<Unitless, Ratio>);
+static_assert(!std::is_convertible_v<Unitless, double>);
+static_assert(!std::is_constructible_v<Unitless, double>);
+static_assert(!std::is_convertible_v<Ratio, Unitless>);
+static_assert(!std::is_convertible_v<Unitless, Ratio>);
+static_assert((2_unitless * 0.5_unitless).get() == 1.0);
+static_assert((50_percent * 2_unitless).get() == 1.0);
+static_assert((2_unitless / 4_s).get() == 0.5);
+static_assert((2_unitless / 4_Hz).get() == 0.5);
 static_assert(std::is_same_v<decltype(1_rev), Angle>);
 static_assert(std::is_same_v<decltype(60_rpm), AngularVelocity>);
 static_assert(std::is_same_v<decltype(1.0_rad_s), AngularVelocity>);
@@ -1018,6 +1032,111 @@ TEST(UnitsTests, RatioCompoundScalingReturnsQuantityReference)
     EXPECT_EQ(ratio, 25_percent);
     EXPECT_EQ(&(ratio /= ratio), &ratio);
     EXPECT_EQ(ratio, 1_fraction);
+}
+
+TEST(UnitsTests, UnitlessValuesSupportExplicitConstructionAndBaseUnitAccess)
+{
+    EXPECT_DOUBLE_EQ(Unitless{}.get(), 0.0);
+    EXPECT_DOUBLE_EQ((2_unitless).get<UnitlessUnits::unitless>(), 2.0);
+    EXPECT_EQ(Unitless::create(0.5), 0.5_unitless);
+    EXPECT_EQ(Unitless::create<UnitlessUnits::unitless>(-3.0), -3_unitless);
+    EXPECT_EQ(Unitless::create(6_m / 3_m), 2_unitless);
+    EXPECT_EQ(Unitless::create((50_percent).get()), 0.5_unitless);
+    EXPECT_EQ(Ratio::create((0.5_unitless).get()), 50_percent);
+}
+
+TEST(UnitsTests, UnitlessArithmeticPreservesExistingSameTypeDivisionConvention)
+{
+    static_assert(std::is_same_v<decltype(2_unitless * 3_unitless), Unitless>);
+    static_assert(std::is_same_v<decltype(2_unitless / 3_unitless), double>);
+    static_assert(std::is_same_v<decltype(1.0 / 2_unitless), Unitless>);
+    EXPECT_EQ(2_unitless + 0.5_unitless, 2.5_unitless);
+    EXPECT_EQ(2_unitless - 0.5_unitless, 1.5_unitless);
+    EXPECT_LT(-2_unitless, 0_unitless);
+    EXPECT_EQ(2_unitless * -0.5_unitless, -1_unitless);
+    EXPECT_DOUBLE_EQ(2_unitless / 0.5_unitless, 4.0);
+    EXPECT_EQ(2_unitless * 3.0, 6_unitless);
+    EXPECT_EQ(3.0 * 2_unitless, 6_unitless);
+    EXPECT_EQ(2_unitless / 4.0, 0.5_unitless);
+    EXPECT_EQ(1.0 / 2_unitless, 0.5_unitless);
+
+    auto value = 2_unitless;
+    EXPECT_EQ(&(value *= value), &value);
+    EXPECT_EQ(value, 4_unitless);
+    EXPECT_EQ(&(value /= value), &value);
+    EXPECT_EQ(value, 1_unitless);
+}
+
+TEST(UnitsTests, UnitlessValuesScaleQuantitiesInBothMultiplicationOrders)
+{
+    static_assert(std::is_same_v<decltype(1.5_unitless * 8_V), Voltage>);
+    static_assert(std::is_same_v<decltype(8_V * 1.5_unitless), Voltage>);
+    static_assert(std::is_same_v<decltype(8_V / 2_unitless), Voltage>);
+    EXPECT_EQ(1.5_unitless * 8_V, 12_V);
+    EXPECT_EQ(8_V * 1.5_unitless, 12_V);
+    EXPECT_EQ(8_V / 2_unitless, 4_V);
+    EXPECT_EQ(4_m * 0_unitless, 0_m);
+    EXPECT_EQ(-0.5_unitless * 4_m, -2_m);
+
+    auto distance = 4_m;
+    EXPECT_EQ(&(distance *= 1.5_unitless), &distance);
+    EXPECT_EQ(distance, 6_m);
+    EXPECT_EQ(&(distance /= 2_unitless), &distance);
+    EXPECT_EQ(distance, 3_m);
+}
+
+TEST(UnitsTests, RatiosScaleUnitlessValuesInBothMultiplicationOrders)
+{
+    static_assert(std::is_same_v<decltype(50_percent * 2_unitless), Unitless>);
+    static_assert(std::is_same_v<decltype(2_unitless * 50_percent), Unitless>);
+    static_assert(std::is_same_v<decltype(2_unitless / 50_percent), Unitless>);
+    static_assert(std::is_same_v<decltype(50_percent / 2_unitless), Ratio>);
+    EXPECT_EQ(50_percent * 2_unitless, 1_unitless);
+    EXPECT_EQ(2_unitless * 50_percent, 1_unitless);
+    EXPECT_EQ(2_unitless / 50_percent, 4_unitless);
+    EXPECT_EQ(50_percent / 2_unitless, 25_percent);
+
+    auto value = 2_unitless;
+    EXPECT_EQ(&(value *= 50_percent), &value);
+    EXPECT_EQ(value, 1_unitless);
+    EXPECT_EQ(&(value /= 25_percent), &value);
+    EXPECT_EQ(value, 4_unitless);
+
+    auto ratio = 50_percent;
+    EXPECT_EQ(&(ratio *= 2_unitless), &ratio);
+    EXPECT_EQ(ratio, 1_fraction);
+    EXPECT_EQ(&(ratio /= 4_unitless), &ratio);
+    EXPECT_EQ(ratio, 25_percent);
+}
+
+TEST(UnitsTests, UnitlessValuesSupportTimeAndFrequencyRelations)
+{
+    static_assert(std::is_same_v<decltype(4_unitless / 2_s), Frequency>);
+    static_assert(std::is_same_v<decltype(4_unitless / 2_Hz), Time>);
+    EXPECT_EQ(4_unitless / 2_s, 2_Hz);
+    EXPECT_EQ(4_unitless / 2_Hz, 2_s);
+    EXPECT_EQ(1_unitless / 250_ms, 4_Hz);
+    EXPECT_EQ(1_unitless / 1_kHz, 1_ms);
+}
+
+TEST(UnitsTests, UnitlessValuesSupportChronoDurations)
+{
+    static_assert(std::is_same_v<decltype(1.5_unitless * 500ms), Time>);
+    static_assert(std::is_same_v<decltype(500ms * 1.5_unitless), Time>);
+    static_assert(std::is_same_v<decltype(500ms / 2_unitless), Time>);
+    static_assert(std::is_same_v<decltype(2_unitless / 500ms), Frequency>);
+    EXPECT_EQ(1.5_unitless * 500ms, 750_ms);
+    EXPECT_EQ(500ms * 1.5_unitless, 750_ms);
+    EXPECT_EQ(500ms / 2_unitless, 250_ms);
+    EXPECT_EQ(2_unitless / 500ms, 4_Hz);
+}
+
+TEST(UnitsTests, UnitlessStreamOutputHasNoUnitSuffix)
+{
+    EXPECT_EQ(stream_to_string(0_unitless), "0");
+    EXPECT_EQ(stream_to_string(0.5_unitless), "0.5");
+    EXPECT_EQ(stream_to_string(-2_unitless), "-2");
+    EXPECT_EQ(stream_to_string(1000_unitless), "1000");
 }
 
 TEST(UnitsTests, RevolutionsConvertToRadiansAndDegrees)

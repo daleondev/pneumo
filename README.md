@@ -91,6 +91,7 @@ The current built-in quantity types are:
 *   `Angle`
 *   `AngularVelocity`
 *   `Ratio`
+*   `Unitless`
 
 The current built-in cross-quantity operations include:
 
@@ -105,6 +106,11 @@ The current built-in cross-quantity operations include:
 *   `AngularVelocity * Time -> Angle` (also in reverse order)
 *   `Quantity * Ratio -> Quantity` (also in reverse order, including `Ratio * Ratio`)
 *   `Quantity / Ratio -> Quantity` (same-type division, including `Ratio / Ratio`, returns `double`)
+*   `Quantity * Unitless -> Quantity` (also in reverse order; mixed `Ratio`/`Unitless` products produce `Unitless`)
+*   `Quantity / Unitless -> Quantity` (`Unitless / Unitless` returns `double`)
+*   `1 / Unitless -> Unitless`
+*   `Unitless / Time -> Frequency` (also accepts chrono durations)
+*   `Unitless / Frequency -> Time`
 *   `Mass * Acceleration -> Force`
 *   `Force / Mass -> Acceleration`
 *   `Force * Distance -> Energy`
@@ -126,7 +132,9 @@ The current built-in cross-quantity operations include:
 
 Temperature uses Celsius as its base unit and provides affine conversions to Kelvin and Fahrenheit. Angles use radians as their base unit and convert to and from degrees and revolutions (`rev`). Angular velocity uses radians per second (`rad_s`) as its base unit, with `60_rpm` equal to `2π rad/s`. It is distinct from `Frequency`.
 
-Ratios use `one` as their base unit: `100_percent == 1_one`, and `(50_percent).get()` is `0.5`. Ratios support quantity scaling with `*`, `/`, `*=`, and `/=` without implicit conversion to `double`. Use `Ratio::create(value)` to construct a ratio from a normalized scalar, including the result of same-type quantity division. Percentages can be negative or exceed 100.
+Ratios use `fraction` as their base unit: `100_percent == 1_fraction`, and `(50_percent).get()` is `0.5`. Ratios support quantity scaling with `*`, `/`, `*=`, and `/=` without implicit conversion to `double`. Use `Ratio::create(value)` to construct a ratio from a normalized scalar, including the result of same-type quantity division. Percentages can be negative or exceed 100.
+
+`Unitless` represents generic dimensionless values, such as gains and counts, and streams as a bare number. Construct one with `1.5_unitless` or `Unitless::create(value)` and read it with `.get()`. It supports scalar arithmetic and quantity scaling with `*`, `/`, `*=`, and `/=`. Chrono durations can also be multiplied or divided by `Unitless`. For example, `1.5_unitless * 8_V == 12_V` and `50_percent * 2_unitless == 1_unitless`. Same-type quantity division still returns `double`; wrap its result explicitly with `Unitless::create(6_m / 3_m)`. `Unitless` and `Ratio` remain distinct types with no implicit conversion to each other or to `double`.
 
 ### `pneumo::logging`
 
