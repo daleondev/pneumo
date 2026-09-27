@@ -369,11 +369,18 @@ namespace pnm::units
         {
         };
 
-        template<typename T>
-        concept IsUnit = is_unit<std::remove_cvref_t<T>>::value;
+        // NOLINTEND(readability-identifier-naming)
+    }
 
-        template<typename T>
-        concept IsQuantity = requires { typename std::remove_cvref_t<T>::UnitsMeta::Type; };
+    template<typename T>
+    concept IsUnit = detail::is_unit<std::remove_cvref_t<T>>::value;
+
+    template<typename T>
+    concept IsQuantity = requires { typename std::remove_cvref_t<T>::UnitsMeta::Type; };
+
+    namespace detail
+    {
+        // NOLINTBEGIN(readability-identifier-naming)
 
         template<typename T>
         struct is_chrono_duration : std::false_type
@@ -447,7 +454,7 @@ namespace pnm::units
 
     // ---------- Operators between quantities ----------
 
-    template<detail::IsQuantity Lhs, detail::IsQuantity Rhs>
+    template<IsQuantity Lhs, IsQuantity Rhs>
         requires detail::HasMultiplyResult<detail::units_t<Lhs>, detail::units_t<Rhs>>
     constexpr auto operator*(const Lhs& lhs, const Rhs& rhs)
       -> detail::multiply_result_t<detail::units_t<Lhs>, detail::units_t<Rhs>>
@@ -475,7 +482,7 @@ namespace pnm::units
         }
     }
 
-    template<detail::IsQuantity Lhs, detail::IsQuantity Rhs>
+    template<IsQuantity Lhs, IsQuantity Rhs>
         requires detail::HasDivideResult<detail::units_t<Lhs>, detail::units_t<Rhs>>
     constexpr auto operator/(const Lhs& lhs, const Rhs& rhs)
       -> detail::divide_result_t<detail::units_t<Lhs>, detail::units_t<Rhs>>
@@ -503,8 +510,8 @@ namespace pnm::units
         }
     }
 
-    template<typename Scalar, detail::IsQuantity Rhs>
-        requires std::convertible_to<Scalar, double> && (!detail::IsQuantity<Scalar>) &&
+    template<typename Scalar, IsQuantity Rhs>
+        requires std::convertible_to<Scalar, double> && (!IsQuantity<Scalar>) &&
                  detail::HasReciprocalResult<detail::units_t<Rhs>>
     constexpr auto operator/(Scalar lhs, const Rhs& rhs) -> detail::reciprocal_result_t<detail::units_t<Rhs>>
     {
@@ -535,7 +542,7 @@ namespace pnm::units
             auto index{ std::numeric_limits<size_t>::max() };
             meta::tuple::for_each<typename UnitsMeta::NestedTypes>([&index](auto i) {
                 using T = meta::tuple::at_t<i, typename UnitsMeta::NestedTypes>;
-                if constexpr (!detail::IsUnit<T>) {
+                if constexpr (!IsUnit<T>) {
                     throw std::logic_error("Not a unit: " + std::string(meta::type::name<T>()));
                 }
                 if constexpr (T::IS_BASE) {
@@ -708,7 +715,7 @@ namespace pnm::units
             return os;
         }
 
-        template<detail::IsUnit Unit>
+        template<IsUnit Unit>
         static constexpr auto create(double value) -> Quantity
         {
             return Quantity{ static_cast<double>((value + Unit::OFFSET) * Unit::FACTOR) };
@@ -716,7 +723,7 @@ namespace pnm::units
 
         static constexpr auto create(double value) -> Quantity { return Quantity{ value }; }
 
-        template<detail::IsUnit Unit>
+        template<IsUnit Unit>
         constexpr auto get() const -> double
         {
             return static_cast<double>((value / Unit::FACTOR) - Unit::OFFSET);
@@ -810,33 +817,33 @@ namespace pnm::units
     PNM_DEFINE_QUANTITY_RECIPROCAL_RELATION(Time, s, Frequency, Hz)
     PNM_DEFINE_QUANTITY_DIVIDE_RESULT_WITH_UNITS(Ratio, fraction, Time, s, Frequency, Hz)
 
-    template<detail::IsQuantity Quantity, std::same_as<Ratio> Scale>
+    template<IsQuantity Quantity, std::same_as<Ratio> Scale>
     constexpr auto operator*(const Quantity& quantity, const Scale& ratio) -> Quantity
     {
         return quantity * ratio.get();
     }
 
-    template<detail::IsQuantity Quantity, std::same_as<Ratio> Scale>
+    template<IsQuantity Quantity, std::same_as<Ratio> Scale>
         requires(!std::same_as<Quantity, Ratio>)
     constexpr auto operator*(const Scale& ratio, const Quantity& quantity) -> Quantity
     {
         return quantity * ratio.get();
     }
 
-    template<detail::IsQuantity Quantity, std::same_as<Ratio> Scale>
+    template<IsQuantity Quantity, std::same_as<Ratio> Scale>
         requires(!std::same_as<Quantity, Ratio>)
     constexpr auto operator/(const Quantity& quantity, const Scale& ratio) -> Quantity
     {
         return quantity / ratio.get();
     }
 
-    template<detail::IsQuantity Quantity, std::same_as<Ratio> Scale>
+    template<IsQuantity Quantity, std::same_as<Ratio> Scale>
     constexpr auto operator*=(Quantity& quantity, const Scale& ratio) -> Quantity&
     {
         return quantity *= ratio.get();
     }
 
-    template<detail::IsQuantity Quantity, std::same_as<Ratio> Scale>
+    template<IsQuantity Quantity, std::same_as<Ratio> Scale>
     constexpr auto operator/=(Quantity& quantity, const Scale& ratio) -> Quantity&
     {
         return quantity /= ratio.get();
@@ -910,7 +917,7 @@ namespace pnm::units
         return Time{ lhs } <=> rhs;
     }
 
-    template<detail::IsQuantity Lhs, detail::ChronoDuration Rhs>
+    template<IsQuantity Lhs, detail::ChronoDuration Rhs>
         requires detail::HasMultiplyResult<detail::units_t<Lhs>, detail::units_t<Time>>
     constexpr auto operator*(const Lhs& lhs, Rhs rhs)
       -> detail::multiply_result_t<detail::units_t<Lhs>, detail::units_t<Time>>
@@ -918,7 +925,7 @@ namespace pnm::units
         return lhs * Time{ rhs };
     }
 
-    template<detail::ChronoDuration Lhs, detail::IsQuantity Rhs>
+    template<detail::ChronoDuration Lhs, IsQuantity Rhs>
         requires detail::HasMultiplyResult<detail::units_t<Time>, detail::units_t<Rhs>>
     constexpr auto operator*(Lhs lhs, const Rhs& rhs)
       -> detail::multiply_result_t<detail::units_t<Time>, detail::units_t<Rhs>>
@@ -926,7 +933,7 @@ namespace pnm::units
         return Time{ lhs } * rhs;
     }
 
-    template<detail::IsQuantity Lhs, detail::ChronoDuration Rhs>
+    template<IsQuantity Lhs, detail::ChronoDuration Rhs>
         requires detail::HasDivideResult<detail::units_t<Lhs>, detail::units_t<Time>>
     constexpr auto operator/(const Lhs& lhs, Rhs rhs)
       -> detail::divide_result_t<detail::units_t<Lhs>, detail::units_t<Time>>
@@ -934,7 +941,7 @@ namespace pnm::units
         return lhs / Time{ rhs };
     }
 
-    template<detail::ChronoDuration Lhs, detail::IsQuantity Rhs>
+    template<detail::ChronoDuration Lhs, IsQuantity Rhs>
         requires detail::HasDivideResult<detail::units_t<Time>, detail::units_t<Rhs>>
     constexpr auto operator/(Lhs lhs, const Rhs& rhs)
       -> detail::divide_result_t<detail::units_t<Time>, detail::units_t<Rhs>>
