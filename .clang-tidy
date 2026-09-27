@@ -37,6 +37,9 @@ CheckOptions:
     value: lower_case
   - key: readability-identifier-naming.MethodCase
     value: camelBack
+  # Coroutine protocol member names are prescribed by the C++ language.
+  - key: readability-identifier-naming.MethodIgnoredRegexp
+    value: '^(await_(ready|suspend|resume|transform)|initial_suspend|final_suspend|get_return_object|return_(value|void)|unhandled_exception)$'
 
   - key: readability-identifier-naming.ClassCase
     value: CamelCase

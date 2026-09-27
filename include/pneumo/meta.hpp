@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <charconv>
 #include <concepts>
 #include <deque>
@@ -1312,9 +1313,11 @@ namespace pnm::meta
             static consteval auto current_source_code()
             {
 #line 1 __BASE_FILE__
-                return string::FixedString{ std::to_array<char>({
+                constexpr auto bytes = std::to_array<unsigned char>({
 #embed __BASE_FILE__ // NOLINT(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
-                  , 0U }) };
+                  , 0U });
+                // #embed produces byte values up to 255, even when plain char is signed.
+                return string::FixedString{ std::bit_cast<std::array<char, bytes.size()>>(bytes) };
             }
         }
 

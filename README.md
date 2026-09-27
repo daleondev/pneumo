@@ -18,15 +18,16 @@
 
 # Pneumo
 
-**pneumo** is a header-only C++26 utility library with five module targets and one umbrella target:
+**pneumo** is a header-only C++26 utility library with six module targets and one umbrella target:
 
 *   **`pneumo::common`** for shared result, assertion, memory, queue, and bit helpers.
 *   **`pneumo::meta`** for compile-time reflection and metaprogramming utilities built on C++26 static reflection.
 *   **`pneumo::formatting`** for reflection-aware std::format extensions.
 *   **`pneumo::units`** for strongly typed quantities, literals, conversions, and dimensional operations.
 *   **`pneumo::logging`** for asynchronous structured logging, configurable routing, source metadata, files, and custom sinks.
+*   **`pneumo::coroutines`** for lazy tasks, executor contexts, asynchronous work, timers, and channels.
 
-`pneumo::pneumo` links all five modules, and `pneumo/pneumo.hpp` is the matching umbrella header.
+`pneumo::pneumo` links all six modules, and `pneumo/pneumo.hpp` is the matching umbrella header.
 
 ## Module Overview
 
@@ -140,6 +141,42 @@ The logging module provides:
 *   Default level colors, per-sink palettes, and per-message ANSI color overrides.
 *   User-defined sinks through `pnm::log::ISink` and `pnm::log::SinkBase`.
 
+### `pneumo::coroutines`
+
+Link `pneumo::coroutines` and include `<pneumo/coroutines.hpp>` to use the `pnm::coro` namespace. The target supplies the common module and platform thread dependency; it is also included by `pneumo::pneumo`.
+
+*   `Task<T>` and `Task<void>` are lazy, move-only coroutine results with exception propagation.
+*   `Context` runs scheduled coroutine handles; `co_spawn(context, callable)` starts a task whose callable accepts the executor by reference.
+*   `runAsync<T>(callable)` runs work on a detached thread and delivers its result or exception to the awaiting task.
+*   `sleep(duration)` suspends for positive durations; nonpositive durations complete immediately.
+*   `sleep(context, duration, stop_token)` uses a context timer and returns `false` when cancelled. Oversized positive durations saturate to the clock's maximum deadline; NaN durations throw `std::invalid_argument`.
+*   `Context::poll(limit)` processes ready work without waiting, with a default limit of 64 callbacks or resumptions. Due timers and queued tasks alternate when both are ready, preserving deadline order and queue order respectively. `scheduleAt(deadline, callback)` returns a timer whose destruction cancels its queued callback.
+*   `Channel<T>` queues values for individual consumers. Closing a channel wakes waiting consumers and allows buffered values to drain before `next()` returns `std::nullopt`.
+*   `RawBinaryChannel` supports broadcast and load-balancing delivery; `BinaryChannel<T>` decodes same-process, trivially copyable payloads of the expected size.
+
+See [`samples/coroutines_sample.cpp`](samples/coroutines_sample.cpp) for a producer/consumer example using task composition, async work, a timer, and channel closure. Build and run it with:
+
+```bash
+cmake --build --preset gcc-debug --target coroutines_sample coroutines_tests
+./build/gcc-debug/samples/coroutines_sample
+ctest --preset gcc-debug -R Coroutines --output-on-failure
+```
+
+The larger [`samples/coroutines_pipeline_sample.cpp`](samples/coroutines_pipeline_sample.cpp) processes nine jobs with three workers. It demonstrates move-only jobs, application-level backpressure with channel permits, nested async calculations, timed retries, per-job error handling, and broadcast results consumed by independent dashboard and metrics observers. Acknowledgements ensure both observers receive every broadcast; a completion channel joins all seven pipeline tasks before stopping the context.
+
+```bash
+cmake --build --preset gcc-debug --target coroutines_pipeline_sample
+./build/gcc-debug/samples/coroutines_pipeline_sample
+```
+
+Job 3 deliberately fails once and retries; job 6 is rejected permanently. Completion order varies, but the final summary is always `8 succeeded, 1 failed, 1 retried; checksum=3344`. The example uses one context thread for continuations and separate threads for blocking calculations.
+
+Tasks have one consumer and one result: await an unstarted task, or start it with `Task::resume()` and retrieve its result after completion. Invalid operations on empty, running, or already-consumed tasks throw `std::logic_error`. Raw handles from `getHandle()` are borrowed; callers must manage their lifetime and synchronization. A separately owned task awaited by reference must outlive the await.
+
+`co_spawn` transfers ownership to the context, which releases queued, unstarted frames if destroyed. Nested tasks inherit the executor, so async work, timers, and channel waits resume on a thread running that context. Unbound tasks can resume on the worker or channel producer thread. Keep the context alive until spawned work finishes. `Context::stop()` rejects new scheduling and drains already queued work; it does not cancel outstanding operations. A rejected continuation resumes inline to propagate the scheduling exception to its awaiting task.
+
+For the built-in async, timer, and channel waits, destroying a suspended `Task` disconnects its continuation safely. Detached workers and thread-based sleeps still run to completion; destroying a context-backed sleep cancels its queued timer. Any objects borrowed by worker callables must remain alive until the workers finish. Channel reads retain their shared state even when the original channel wrapper is moved or destroyed. Custom executors must outlive scheduling calls; the default `scheduleOwned` transfers frames to `schedule`, whose accepted work must eventually run. Executors that can abandon queued work should override `scheduleOwned` to retain and release that ownership.
+
 ### CMake Targets and Headers
 
 | Target | Header(s) | Purpose |
@@ -149,6 +186,7 @@ The logging module provides:
 | `pneumo::formatting` | `pneumo/formatting.hpp` | Reflection-based formatting and optional serialization |
 | `pneumo::units` | `pneumo/units.hpp` | Strong quantity types, literals, conversions, and derived operations |
 | `pneumo::logging` | `pneumo/logging.hpp` | Asynchronous logging, routing, metadata, files, and custom sinks |
+| `pneumo::coroutines` | `pneumo/coroutines.hpp` | Lazy tasks, executors, asynchronous work, timers, and channels |
 | `pneumo::pneumo` | `pneumo/pneumo.hpp` | Convenience target and umbrella header for all modules |
 
 ## Requirements
@@ -298,6 +336,7 @@ On toolchains providing `std::stacktrace`, enable a calling-thread stacktrace fo
 #if defined(__cpp_lib_stacktrace)
 pnm::log::std_err->sourceStacktrace();        // frame list only
 pnm::log::std_err->sourceStacktrace(true, 1); // excerpts with one surrounding line
+pnm::log::std_err->sourceStacktrace(pnm::log::Level::Error); // only Error and Critical
 pnm::log::error("Operation failed");
 
 pnm::log::error(pnm::log::immediate,
@@ -308,7 +347,9 @@ pnm::log::error(pnm::log::immediate,
 
 `.sourceStacktrace(show_excerpts = false, context_size = 0)` enables stacktraces while preserving the sink's other source settings. `.sourceInfo(SourceField::Stacktrace)` selects the frame list alone. As with source excerpts, calling `.sourceInfo(...)` replaces all source settings; omit `Stacktrace` to disable it.
 
-A trace is captured once per message, on the calling thread, only if a routed sink accepts the level and requests a stacktrace. Async records retain that trace for the worker to format through `pnm::meta::source::stacktrace`. Each sink independently chooses whether to show frames and excerpts. The trace follows the message and any single-call-site excerpt, outside the colored header. Logger implementation frames are filtered using their function names or source locations, and the remaining frames are numbered from zero. Unidentified frames are retained.
+Use `.sourceStacktrace(min_level, show_excerpts = false, context_size = 0)` to set a separate stacktrace threshold on the same sink. For example, `.minLevel(Level::Trace).sourceStacktrace(Level::Error, true, 1)` accepts every log level but adds stacktraces and excerpts only for Error and Critical. `Level::Off` disables stacktraces without suppressing messages or other source information. The original overload and `.sourceInfo(SourceField::Stacktrace)` use `Level::Trace`, preserving stacktraces for all accepted levels. Calling `.sourceInfo(...)` also resets the stacktrace threshold. Like other sink configuration, set these options before concurrent logging starts.
+
+A trace is captured once per message, on the calling thread, only if a routed sink accepts the level, enables stacktraces, and its stacktrace threshold accepts the level. Lower levels incur no stack capture unless another routed sink requests it. Async records retain that trace for the worker to format through `pnm::meta::source::stacktrace`. Each sink independently applies its stacktrace threshold when formatting and chooses whether to show frames and excerpts. The trace follows the message and any single-call-site excerpt, outside the colored header. Logger implementation frames are filtered using their function names or source locations, and the remaining frames are numbered from zero. Unidentified frames are retained.
 
 Frame names and source locations depend on the toolchain and available debug information; optimized or inlined calls may appear differently or be absent. Build with debug information (for example, GCC's `-g`) for source excerpts, and embed or retain the corresponding source files. Unavailable excerpts are skipped while frames remain visible; an empty capture leaves the message intact. These settings are available only when `__cpp_lib_stacktrace` is defined; the currently supported Clang/libc++ toolchain does not provide them.
 
@@ -1106,6 +1147,9 @@ cmake --build --preset clang-release
 
 # Logging sample
 ./build/clang-release/samples/logging_sample
+
+# Coroutines sample
+./build/clang-release/samples/coroutines_sample
 ```
 
 ### Run the tests:

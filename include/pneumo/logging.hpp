@@ -134,6 +134,7 @@ namespace pnm::log
 #if defined(__cpp_lib_stacktrace)
         bool stacktrace_excerpts{};
         size_t stacktrace_context{};
+        Level stacktrace_min_level{ Level::Trace };
 #endif
     };
 
@@ -233,9 +234,15 @@ namespace pnm::log
 #if defined(__cpp_lib_stacktrace)
         auto sourceStacktrace(bool show_excerpts = false, size_t context_size = 0) -> Sink&
         {
+            return sourceStacktrace(Level::Trace, show_excerpts, context_size);
+        }
+
+        auto sourceStacktrace(Level min_level, bool show_excerpts = false, size_t context_size = 0) -> Sink&
+        {
             m_sourceInfo.enable(SourceField::Stacktrace);
             m_sourceInfo.stacktrace_excerpts = show_excerpts;
             m_sourceInfo.stacktrace_context = context_size;
+            m_sourceInfo.stacktrace_min_level = min_level;
             return static_cast<Sink&>(*this);
         }
 #endif
@@ -810,7 +817,8 @@ namespace pnm::log
             }
 
 #if defined(__cpp_lib_stacktrace)
-            if (source_info.contains(SourceField::Stacktrace)) {
+            if (source_info.contains(SourceField::Stacktrace) &&
+                should_log(record.level, source_info.stacktrace_min_level)) {
                 if (auto trace{ format_stacktrace(record.stacktrace, source_info) }) {
                     output += *trace;
                 }
@@ -874,8 +882,12 @@ namespace pnm::log
                 // Capture once on the producer thread, before handing the record to the worker.
                 for (const auto& target_sink : entry.sinks) {
                     try {
-                        if (should_log(level, target_sink->getMinLevel()) &&
-                            target_sink->getSourceInfo().contains(SourceField::Stacktrace)) {
+                        if (!should_log(level, target_sink->getMinLevel())) {
+                            continue;
+                        }
+                        const auto source_info{ target_sink->getSourceInfo() };
+                        if (source_info.contains(SourceField::Stacktrace) &&
+                            should_log(level, source_info.stacktrace_min_level)) {
                             entry.record.stacktrace = std::stacktrace::current();
                             break;
                         }
@@ -1057,6 +1069,10 @@ namespace pnm::log
 
         inline auto backend() -> Backend&
         {
+            // The async worker formats source/stacktrace excerpts while it
+            // drains at shutdown. Construct their cache first, so it is
+            // destroyed only after the backend has joined the worker.
+            (void)meta::source::detail::Registry::instance();
             static Backend instance{};
             return instance;
         }
