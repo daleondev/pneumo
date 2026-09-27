@@ -582,6 +582,13 @@ namespace pnm::units
             }(std::make_index_sequence<UnitsMeta::numNestedTypes()>{});
         }
 
+        static consteval auto makeUnitSuffixes()
+        {
+            return []<size_t... Is>(std::index_sequence<Is...>) {
+                return std::array{ meta::tuple::at_t<Is, typename UnitsMeta::NestedTypes>::SUFFIX... };
+            }(std::make_index_sequence<UnitsMeta::numNestedTypes()>{});
+        }
+
         static consteval auto makeSortedUnitIndices()
         {
             auto indices{ []<size_t... Is>(std::index_sequence<Is...>) {
@@ -603,16 +610,6 @@ namespace pnm::units
                 return factors[lhs] < factors[rhs];
             });
             return indices;
-        }
-
-        static consteval auto makeUnitSuffixes()
-        {
-            using UnitTypes = typename UnitsMeta::NestedTypes;
-            return []<size_t... Is>(std::index_sequence<Is...>) -> auto {
-                return std::array<std::string_view, sizeof...(Is)>{
-                    meta::tuple::at_t<Is, UnitTypes>::SUFFIX...
-                };
-            }(std::make_index_sequence<meta::tuple::count<UnitTypes>()>{});
         }
 
         static constexpr auto isPrintableUnitIndex(size_t index) -> bool
