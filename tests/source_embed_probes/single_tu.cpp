@@ -7,7 +7,8 @@ PNM_META_SOURCE_EMBED_CURRENT
 
 namespace
 {
-    constexpr auto MARKER = std::string_view{ "single-tu-source-embed-marker" };
+    // Exercise non-ASCII bytes on targets where plain char is signed, too.
+    constexpr auto MARKER = std::string_view{ "single-tu-source-embed-marker-50 °C" };
 }
 
 auto main() -> int
