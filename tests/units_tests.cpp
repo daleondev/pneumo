@@ -41,6 +41,8 @@ using pnm::units::Temperature;
 using pnm::units::TemperatureUnits;
 using pnm::units::Time;
 using pnm::units::TimeUnits;
+using pnm::units::Unitless;
+using pnm::units::UnitlessUnits;
 using pnm::units::Velocity;
 using pnm::units::VelocityUnits;
 using pnm::units::Voltage;
@@ -69,6 +71,18 @@ static_assert(std::is_same_v<decltype(12.0_V), Voltage>);
 static_assert(std::is_same_v<decltype(50_percent), Ratio>);
 static_assert(std::is_same_v<decltype(0.5_percent), Ratio>);
 static_assert(std::is_same_v<decltype(1_fraction), Ratio>);
+static_assert(std::is_same_v<decltype(2_unitless), Unitless>);
+static_assert(std::is_same_v<decltype(0.5_unitless), Unitless>);
+static_assert(pnm::units::IsQuantity<Unitless>);
+static_assert(!std::is_same_v<Unitless, Ratio>);
+static_assert(!std::is_convertible_v<Unitless, double>);
+static_assert(!std::is_constructible_v<Unitless, double>);
+static_assert(!std::is_convertible_v<Ratio, Unitless>);
+static_assert(!std::is_convertible_v<Unitless, Ratio>);
+static_assert((2_unitless * 0.5_unitless).get() == 1.0);
+static_assert((50_percent * 2_unitless).get() == 1.0);
+static_assert((2_unitless / 4_s).get() == 0.5);
+static_assert((2_unitless / 4_Hz).get() == 0.5);
 static_assert(std::is_same_v<decltype(1_rev), Angle>);
 static_assert(std::is_same_v<decltype(60_rpm), AngularVelocity>);
 static_assert(std::is_same_v<decltype(1.0_rad_s), AngularVelocity>);
@@ -389,32 +403,42 @@ TEST(UnitsTests, AccelerationConversionsUseMetersPerSecondSquaredAsBase)
 
 TEST(UnitsTests, StreamInsertionPrintsSelectedUnits)
 {
-    EXPECT_EQ(stream_to_string(2.0_h), "2h");
-    EXPECT_EQ(stream_to_string(1536.0_bytes), "1.5KB");
-    EXPECT_EQ(stream_to_string(1500.0_m), "1.5km");
-    EXPECT_EQ(stream_to_string(-1500.0_m), "-1.5km");
-    EXPECT_EQ(stream_to_string(0.0_m), "0m");
-    EXPECT_EQ(stream_to_string(1500.0_kg), "1.5t");
-    EXPECT_EQ(stream_to_string(2.0_kWh), "2kWh");
-    EXPECT_EQ(stream_to_string(101325.0_Pa), "1atm");
-    EXPECT_EQ(stream_to_string(1.0_mbar), "1mbar");
-    EXPECT_EQ(stream_to_string(30.0_C), "30C");
-    EXPECT_EQ(stream_to_string(295.5_K), "22.35C");
-    EXPECT_EQ(stream_to_string(86.0_F), "30C");
-    EXPECT_EQ(stream_to_string(2000.0_Hz), "2kHz");
+    EXPECT_EQ(stream_to_string(2.0_h), "2 h");
+    EXPECT_EQ(stream_to_string(1536.0_bytes), "1.5 KB");
+    EXPECT_EQ(stream_to_string(1500.0_m), "1.5 km");
+    EXPECT_EQ(stream_to_string(-1500.0_m), "-1.5 km");
+    EXPECT_EQ(stream_to_string(0.0_m), "0 m");
+    EXPECT_EQ(stream_to_string(1500.0_kg), "1.5 t");
+    EXPECT_EQ(stream_to_string(2.0_kWh), "2 kWh");
+    EXPECT_EQ(stream_to_string(101325.0_Pa), "1 atm");
+    EXPECT_EQ(stream_to_string(1.0_mbar), "1 mbar");
+    EXPECT_EQ(stream_to_string(30.0_C), "30 °C");
+    EXPECT_EQ(stream_to_string(295.5_K), "22.35 °C");
+    EXPECT_EQ(stream_to_string(86.0_F), "30 °C");
+    EXPECT_EQ(stream_to_string(2000.0_Hz), "2 kHz");
 }
 
 TEST(UnitsTests, StreamInsertionUsesCorrectSuffixWhenUnitOrderDiffersFromScaleOrder)
 {
-    EXPECT_EQ(stream_to_string(0.5_m_s), "1.8km/h");
-    EXPECT_EQ(stream_to_string(0.5_m_s2), "500mm/s2");
+    EXPECT_EQ(stream_to_string(0.5_m_s), "1.8 km/h");
+    EXPECT_EQ(stream_to_string(0.5_m_s2), "500 mm/s²");
 }
 
 TEST(UnitsTests, StreamInsertionDisplaysCompoundUnitsWithSlashes)
 {
-    EXPECT_EQ(stream_to_string(20.0_m_s), "20m/s");
-    EXPECT_EQ(stream_to_string(9.81_m_s2), "9.81m/s2");
-    EXPECT_EQ(stream_to_string(3.0_MB_s), "3MB/s");
+    EXPECT_EQ(stream_to_string(20.0_m_s), "20 m/s");
+    EXPECT_EQ(stream_to_string(9.81_m_s2), "9.81 m/s²");
+    EXPECT_EQ(stream_to_string(3.0_MB_s), "3 MB/s");
+}
+
+TEST(UnitsTests, StreamInsertionPrintsUnicodeSuffixes)
+{
+    EXPECT_EQ(stream_to_string(2_um), "2 µm");
+    EXPECT_EQ(stream_to_string(2_us), "2 µs");
+    EXPECT_EQ(stream_to_string(2_uA), "2 µA");
+    EXPECT_EQ(stream_to_string(2_mm2), "2 mm²");
+    EXPECT_EQ(stream_to_string(2_m2), "2 m²");
+    EXPECT_EQ(stream_to_string(45_deg), "45 °");
 }
 
 TEST(UnitsTests, TimeLiteralsUnaryPlusAndMinus)
@@ -1020,6 +1044,111 @@ TEST(UnitsTests, RatioCompoundScalingReturnsQuantityReference)
     EXPECT_EQ(ratio, 1_fraction);
 }
 
+TEST(UnitsTests, UnitlessValuesSupportExplicitConstructionAndBaseUnitAccess)
+{
+    EXPECT_DOUBLE_EQ(Unitless{}.get(), 0.0);
+    EXPECT_DOUBLE_EQ((2_unitless).get<UnitlessUnits::unitless>(), 2.0);
+    EXPECT_EQ(Unitless::create(0.5), 0.5_unitless);
+    EXPECT_EQ(Unitless::create<UnitlessUnits::unitless>(-3.0), -3_unitless);
+    EXPECT_EQ(Unitless::create(6_m / 3_m), 2_unitless);
+    EXPECT_EQ(Unitless::create((50_percent).get()), 0.5_unitless);
+    EXPECT_EQ(Ratio::create((0.5_unitless).get()), 50_percent);
+}
+
+TEST(UnitsTests, UnitlessArithmeticPreservesExistingSameTypeDivisionConvention)
+{
+    static_assert(std::is_same_v<decltype(2_unitless * 3_unitless), Unitless>);
+    static_assert(std::is_same_v<decltype(2_unitless / 3_unitless), double>);
+    static_assert(std::is_same_v<decltype(1.0 / 2_unitless), Unitless>);
+    EXPECT_EQ(2_unitless + 0.5_unitless, 2.5_unitless);
+    EXPECT_EQ(2_unitless - 0.5_unitless, 1.5_unitless);
+    EXPECT_LT(-2_unitless, 0_unitless);
+    EXPECT_EQ(2_unitless * -0.5_unitless, -1_unitless);
+    EXPECT_DOUBLE_EQ(2_unitless / 0.5_unitless, 4.0);
+    EXPECT_EQ(2_unitless * 3.0, 6_unitless);
+    EXPECT_EQ(3.0 * 2_unitless, 6_unitless);
+    EXPECT_EQ(2_unitless / 4.0, 0.5_unitless);
+    EXPECT_EQ(1.0 / 2_unitless, 0.5_unitless);
+
+    auto value = 2_unitless;
+    EXPECT_EQ(&(value *= value), &value);
+    EXPECT_EQ(value, 4_unitless);
+    EXPECT_EQ(&(value /= value), &value);
+    EXPECT_EQ(value, 1_unitless);
+}
+
+TEST(UnitsTests, UnitlessValuesScaleQuantitiesInBothMultiplicationOrders)
+{
+    static_assert(std::is_same_v<decltype(1.5_unitless * 8_V), Voltage>);
+    static_assert(std::is_same_v<decltype(8_V * 1.5_unitless), Voltage>);
+    static_assert(std::is_same_v<decltype(8_V / 2_unitless), Voltage>);
+    EXPECT_EQ(1.5_unitless * 8_V, 12_V);
+    EXPECT_EQ(8_V * 1.5_unitless, 12_V);
+    EXPECT_EQ(8_V / 2_unitless, 4_V);
+    EXPECT_EQ(4_m * 0_unitless, 0_m);
+    EXPECT_EQ(-0.5_unitless * 4_m, -2_m);
+
+    auto distance = 4_m;
+    EXPECT_EQ(&(distance *= 1.5_unitless), &distance);
+    EXPECT_EQ(distance, 6_m);
+    EXPECT_EQ(&(distance /= 2_unitless), &distance);
+    EXPECT_EQ(distance, 3_m);
+}
+
+TEST(UnitsTests, RatiosScaleUnitlessValuesInBothMultiplicationOrders)
+{
+    static_assert(std::is_same_v<decltype(50_percent * 2_unitless), Unitless>);
+    static_assert(std::is_same_v<decltype(2_unitless * 50_percent), Unitless>);
+    static_assert(std::is_same_v<decltype(2_unitless / 50_percent), Unitless>);
+    static_assert(std::is_same_v<decltype(50_percent / 2_unitless), Ratio>);
+    EXPECT_EQ(50_percent * 2_unitless, 1_unitless);
+    EXPECT_EQ(2_unitless * 50_percent, 1_unitless);
+    EXPECT_EQ(2_unitless / 50_percent, 4_unitless);
+    EXPECT_EQ(50_percent / 2_unitless, 25_percent);
+
+    auto value = 2_unitless;
+    EXPECT_EQ(&(value *= 50_percent), &value);
+    EXPECT_EQ(value, 1_unitless);
+    EXPECT_EQ(&(value /= 25_percent), &value);
+    EXPECT_EQ(value, 4_unitless);
+
+    auto ratio = 50_percent;
+    EXPECT_EQ(&(ratio *= 2_unitless), &ratio);
+    EXPECT_EQ(ratio, 1_fraction);
+    EXPECT_EQ(&(ratio /= 4_unitless), &ratio);
+    EXPECT_EQ(ratio, 25_percent);
+}
+
+TEST(UnitsTests, UnitlessValuesSupportTimeAndFrequencyRelations)
+{
+    static_assert(std::is_same_v<decltype(4_unitless / 2_s), Frequency>);
+    static_assert(std::is_same_v<decltype(4_unitless / 2_Hz), Time>);
+    EXPECT_EQ(4_unitless / 2_s, 2_Hz);
+    EXPECT_EQ(4_unitless / 2_Hz, 2_s);
+    EXPECT_EQ(1_unitless / 250_ms, 4_Hz);
+    EXPECT_EQ(1_unitless / 1_kHz, 1_ms);
+}
+
+TEST(UnitsTests, UnitlessValuesSupportChronoDurations)
+{
+    static_assert(std::is_same_v<decltype(1.5_unitless * 500ms), Time>);
+    static_assert(std::is_same_v<decltype(500ms * 1.5_unitless), Time>);
+    static_assert(std::is_same_v<decltype(500ms / 2_unitless), Time>);
+    static_assert(std::is_same_v<decltype(2_unitless / 500ms), Frequency>);
+    EXPECT_EQ(1.5_unitless * 500ms, 750_ms);
+    EXPECT_EQ(500ms * 1.5_unitless, 750_ms);
+    EXPECT_EQ(500ms / 2_unitless, 250_ms);
+    EXPECT_EQ(2_unitless / 500ms, 4_Hz);
+}
+
+TEST(UnitsTests, UnitlessStreamOutputHasNoUnitSuffix)
+{
+    EXPECT_EQ(stream_to_string(0_unitless), "0");
+    EXPECT_EQ(stream_to_string(0.5_unitless), "0.5");
+    EXPECT_EQ(stream_to_string(-2_unitless), "-2");
+    EXPECT_EQ(stream_to_string(1000_unitless), "1000");
+}
+
 TEST(UnitsTests, RevolutionsConvertToRadiansAndDegrees)
 {
     EXPECT_DOUBLE_EQ((1_rev).get(), 2.0 * std::numbers::pi);
@@ -1073,11 +1202,11 @@ TEST(UnitsTests, AngularRelationsSupportChronoDurations)
 
 TEST(UnitsTests, RatioAndRotationalUnitsUseAutomaticStreamUnitSelection)
 {
-    EXPECT_EQ(stream_to_string(50_percent), "50percent");
-    EXPECT_EQ(stream_to_string(100_percent), "1fraction");
-    EXPECT_EQ(stream_to_string(0_percent), "0fraction");
-    EXPECT_EQ(stream_to_string(360_deg), "1rev");
-    EXPECT_EQ(stream_to_string(1_rpm), "1rpm");
-    EXPECT_EQ(stream_to_string(1_rad_s), "1rad/s");
-    EXPECT_EQ(stream_to_string(0_rpm), "0rad/s");
+    EXPECT_EQ(stream_to_string(50_percent), "50 %");
+    EXPECT_EQ(stream_to_string(100_percent), "1");
+    EXPECT_EQ(stream_to_string(0_percent), "0");
+    EXPECT_EQ(stream_to_string(360_deg), "1 rev");
+    EXPECT_EQ(stream_to_string(1_rpm), "1 rpm");
+    EXPECT_EQ(stream_to_string(1_rad_s), "1 rad/s");
+    EXPECT_EQ(stream_to_string(0_rpm), "0 rad/s");
 }

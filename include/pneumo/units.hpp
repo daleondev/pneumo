@@ -13,7 +13,7 @@
 
 #define PNM_DISTANCE_UNITS(X, XX, ctx)                                                                       \
     X(ctx, nm, std::nano)                                                                                    \
-    X(ctx, um, std::micro)                                                                                   \
+    X(ctx, um, std::micro, 0.0, "µm")                                                                        \
     X(ctx, mm, std::milli)                                                                                   \
     X(ctx, cm, std::centi)                                                                                   \
     X(ctx, dm, std::deci)                                                                                    \
@@ -23,17 +23,17 @@
 // ---------- Area ----------
 
 #define PNM_AREA_UNITS(X, XX, ctx)                                                                           \
-    X(ctx, mm2, std::micro)                                                                                  \
-    X(ctx, cm2, std::ratio<1Z, 10'000Z>)                                                                     \
-    X(ctx, dm2, std::centi)                                                                                  \
-    XX(ctx, m2)                                                                                              \
-    X(ctx, km2, std::mega)
+    X(ctx, mm2, std::micro, 0.0, "mm²")                                                                      \
+    X(ctx, cm2, std::ratio<1Z, 10'000Z>, 0.0, "cm²")                                                         \
+    X(ctx, dm2, std::centi, 0.0, "dm²")                                                                      \
+    XX(ctx, m2, "m²")                                                                                        \
+    X(ctx, km2, std::mega, 0.0, "km²")
 
 // ---------- Time ----------
 
 #define PNM_TIME_UNITS(X, XX, ctx)                                                                           \
     X(ctx, ns, std::nano)                                                                                    \
-    X(ctx, us, std::micro)                                                                                   \
+    X(ctx, us, std::micro, 0.0, "µs")                                                                        \
     X(ctx, ms, std::milli)                                                                                   \
     XX(ctx, s)                                                                                               \
     X(ctx, min, std::ratio<60Z>)                                                                             \
@@ -58,14 +58,14 @@
 // ---------- Temperature ----------
 
 #define PNM_TEMPERATURE_UNITS(X, XX, ctx)                                                                    \
-    XX(ctx, C)                                                                                               \
+    XX(ctx, C, "°C")                                                                                         \
     X(ctx, K, detail::factor<1.0>, -273.15)                                                                  \
-    X(ctx, F, std::ratio<5Z, 9Z>, -32.0)
+    X(ctx, F, std::ratio<5Z, 9Z>, -32.0, "°F")
 
 // ---------- Current ----------
 
 #define PNM_CURRENT_UNITS(X, XX, ctx)                                                                        \
-    X(ctx, uA, std::micro)                                                                                   \
+    X(ctx, uA, std::micro, 0.0, "µA")                                                                        \
     X(ctx, mA, std::milli)                                                                                   \
     XX(ctx, A)                                                                                               \
     X(ctx, kA, std::kilo)
@@ -143,15 +143,15 @@
 // ---------- Acceleration ----------
 
 #define PNM_ACCELERATION_UNITS(X, XX, ctx)                                                                   \
-    X(ctx, mm_s2, std::milli)                                                                                \
-    XX(ctx, m_s2)                                                                                            \
-    X(ctx, km_h2, std::ratio<1000Z, 3600Z * 3600Z>)
+    X(ctx, mm_s2, std::milli, 0.0, "mm/s²")                                                                  \
+    XX(ctx, m_s2, "m/s²")                                                                                    \
+    X(ctx, km_h2, std::ratio<1000Z, 3600Z * 3600Z>, 0.0, "km/h²")
 
 // ---------- Angle ----------
 
 #define PNM_ANGLE_UNITS(X, XX, ctx)                                                                          \
     XX(ctx, rad)                                                                                             \
-    X(ctx, deg, detail::factor<std::numbers::pi / 180.0>)                                                    \
+    X(ctx, deg, detail::factor<std::numbers::pi / 180.0>, 0.0, "°")                                          \
     X(ctx, rev, detail::factor<2.0 * std::numbers::pi>)
 
 // ---------- Angular Velocity ----------
@@ -163,8 +163,12 @@
 // ---------- Ratio ----------
 
 #define PNM_RATIO_UNITS(X, XX, ctx)                                                                          \
-    XX(ctx, fraction)                                                                                        \
-    X(ctx, percent, std::centi)
+    XX(ctx, fraction, "")                                                                                    \
+    X(ctx, percent, std::centi, 0.0, "%")
+
+// ---------- Unitless ----------
+
+#define PNM_UNITLESS_UNITS(X, XX, ctx) XX(ctx, unitless, "")
 
 // ---------- Helper Macros ----------
 
@@ -184,7 +188,7 @@
     }
 
 #define PNM_DEFINE_UNIT(_, unit_suffix, ...) using unit_suffix = ::pnm::units::Unit<__VA_ARGS__>;
-#define PNM_DEFINE_BASE_UNIT(_, unit_suffix) using unit_suffix = ::pnm::units::BaseUnit;
+#define PNM_DEFINE_BASE_UNIT(_, unit_suffix, ...) using unit_suffix = ::pnm::units::BaseUnit<__VA_ARGS__>;
 
 #define PNM_DEFINE_QUANTITY(quantity_name, unit_list)                                                        \
     struct quantity_name##Units                                                                              \
@@ -345,16 +349,21 @@ namespace pnm::units
         // NOLINTEND(readability-identifier-naming)
     }
 
-    template<detail::FactorProvider Factor, double Offset = 0.0, bool IsBase = false>
+    template<detail::FactorProvider Factor,
+             double Offset = 0.0,
+             meta::string::FixedString Suffix = "n/a",
+             bool IsBase = false>
     struct Unit
     {
         static constexpr auto FACTOR{ detail::extractFactor<Factor>() };
         static constexpr auto OFFSET{ Offset };
+        static constexpr auto SUFFIX{ static_cast<std::string_view>(Suffix) };
         static constexpr auto IS_BASE{ IsBase };
         static_assert(!IsBase || FACTOR == 1.0);
     };
 
-    using BaseUnit = Unit<detail::factor<1.0>, 0.0, true>;
+    template<meta::string::FixedString Suffix = "n/a">
+    using BaseUnit = Unit<detail::factor<1.0>, 0.0, Suffix, true>;
 
     namespace detail
     {
@@ -364,16 +373,23 @@ namespace pnm::units
         {
         };
 
-        template<typename Ratio, double Offset, bool IsBase>
-        struct is_unit<Unit<Ratio, Offset, IsBase>> : std::true_type
+        template<typename Ratio, double Offset, meta::string::FixedString Suffix, bool IsBase>
+        struct is_unit<Unit<Ratio, Offset, Suffix, IsBase>> : std::true_type
         {
         };
 
-        template<typename T>
-        concept IsUnit = is_unit<std::remove_cvref_t<T>>::value;
+        // NOLINTEND(readability-identifier-naming)
+    }
 
-        template<typename T>
-        concept IsQuantity = requires { typename std::remove_cvref_t<T>::UnitsMeta::Type; };
+    template<typename T>
+    concept IsUnit = detail::is_unit<std::remove_cvref_t<T>>::value;
+
+    template<typename T>
+    concept IsQuantity = requires { typename std::remove_cvref_t<T>::UnitsMeta::Type; };
+
+    namespace detail
+    {
+        // NOLINTBEGIN(readability-identifier-naming)
 
         template<typename T>
         struct is_chrono_duration : std::false_type
@@ -447,7 +463,7 @@ namespace pnm::units
 
     // ---------- Operators between quantities ----------
 
-    template<detail::IsQuantity Lhs, detail::IsQuantity Rhs>
+    template<IsQuantity Lhs, IsQuantity Rhs>
         requires detail::HasMultiplyResult<detail::units_t<Lhs>, detail::units_t<Rhs>>
     constexpr auto operator*(const Lhs& lhs, const Rhs& rhs)
       -> detail::multiply_result_t<detail::units_t<Lhs>, detail::units_t<Rhs>>
@@ -475,7 +491,7 @@ namespace pnm::units
         }
     }
 
-    template<detail::IsQuantity Lhs, detail::IsQuantity Rhs>
+    template<IsQuantity Lhs, IsQuantity Rhs>
         requires detail::HasDivideResult<detail::units_t<Lhs>, detail::units_t<Rhs>>
     constexpr auto operator/(const Lhs& lhs, const Rhs& rhs)
       -> detail::divide_result_t<detail::units_t<Lhs>, detail::units_t<Rhs>>
@@ -503,8 +519,8 @@ namespace pnm::units
         }
     }
 
-    template<typename Scalar, detail::IsQuantity Rhs>
-        requires std::convertible_to<Scalar, double> && (!detail::IsQuantity<Scalar>) &&
+    template<typename Scalar, IsQuantity Rhs>
+        requires std::convertible_to<Scalar, double> && (!IsQuantity<Scalar>) &&
                  detail::HasReciprocalResult<detail::units_t<Rhs>>
     constexpr auto operator/(Scalar lhs, const Rhs& rhs) -> detail::reciprocal_result_t<detail::units_t<Rhs>>
     {
@@ -535,7 +551,7 @@ namespace pnm::units
             auto index{ std::numeric_limits<size_t>::max() };
             meta::tuple::for_each<typename UnitsMeta::NestedTypes>([&index](auto i) {
                 using T = meta::tuple::at_t<i, typename UnitsMeta::NestedTypes>;
-                if constexpr (!detail::IsUnit<T>) {
+                if constexpr (!IsUnit<T>) {
                     throw std::logic_error("Not a unit: " + std::string(meta::type::name<T>()));
                 }
                 if constexpr (T::IS_BASE) {
@@ -563,6 +579,13 @@ namespace pnm::units
         {
             return []<size_t... Is>(std::index_sequence<Is...>) {
                 return std::array{ meta::tuple::at_t<Is, typename UnitsMeta::NestedTypes>::OFFSET... };
+            }(std::make_index_sequence<UnitsMeta::numNestedTypes()>{});
+        }
+
+        static consteval auto makeUnitSuffixes()
+        {
+            return []<size_t... Is>(std::index_sequence<Is...>) {
+                return std::array{ meta::tuple::at_t<Is, typename UnitsMeta::NestedTypes>::SUFFIX... };
             }(std::make_index_sequence<UnitsMeta::numNestedTypes()>{});
         }
 
@@ -620,6 +643,7 @@ namespace pnm::units
         static constexpr auto SORTED_UNIT_INDICES{ QuantityBase::makeSortedUnitIndices() };
         static constexpr auto UNIT_FACTORS{ QuantityBase::makeUnitFactors() };
         static constexpr auto UNIT_OFFSETS{ QuantityBase::makeUnitOffsets() };
+        static constexpr auto UNIT_SUFFIXES{ QuantityBase::makeUnitSuffixes() };
 
         QuantityBase() = default;
         QuantityBase(const QuantityBase&) = default;
@@ -700,15 +724,24 @@ namespace pnm::units
         friend std::ostream& operator<<(std::ostream& os, const QuantityBase& quantity)
         {
             auto index{ quantity.determinePrintUnitIndex() };
-            auto suffix{ UnitsMeta::NESTED_TYPE_NAMES[index] };
             os << (quantity.value / UNIT_FACTORS[index]);
-            for (auto ch : suffix) {
-                os << (ch == '_' ? '/' : ch);
+
+            auto suffix{ UNIT_SUFFIXES[index] };
+            if (suffix == "n/a") {
+                suffix = UnitsMeta::NESTED_TYPE_NAMES[index];
+                os << ' ';
+                for (auto ch : suffix) {
+                    os << (ch == '_' ? '/' : ch);
+                }
             }
+            else if (!suffix.empty()) {
+                os << ' ' << suffix;
+            }
+
             return os;
         }
 
-        template<detail::IsUnit Unit>
+        template<IsUnit Unit>
         static constexpr auto create(double value) -> Quantity
         {
             return Quantity{ static_cast<double>((value + Unit::OFFSET) * Unit::FACTOR) };
@@ -716,7 +749,7 @@ namespace pnm::units
 
         static constexpr auto create(double value) -> Quantity { return Quantity{ value }; }
 
-        template<detail::IsUnit Unit>
+        template<IsUnit Unit>
         constexpr auto get() const -> double
         {
             return static_cast<double>((value / Unit::FACTOR) - Unit::OFFSET);
@@ -796,6 +829,7 @@ namespace pnm::units
     PNM_DEFINE_QUANTITY(Angle, PNM_ANGLE_UNITS)
     PNM_DEFINE_QUANTITY(AngularVelocity, PNM_ANGULAR_VELOCITY_UNITS)
     PNM_DEFINE_QUANTITY(Ratio, PNM_RATIO_UNITS)
+    PNM_DEFINE_QUANTITY(Unitless, PNM_UNITLESS_UNITS)
 
     PNM_DEFINE_QUANTITY_SQUARE_RELATION(Distance, m, Area, m2)
     PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(ByteSize, bytes, Time, s, DataRate, bytes_s)
@@ -809,55 +843,75 @@ namespace pnm::units
     PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(Power, W, Voltage, V, Current, A)
     PNM_DEFINE_QUANTITY_RECIPROCAL_RELATION(Time, s, Frequency, Hz)
     PNM_DEFINE_QUANTITY_DIVIDE_RESULT_WITH_UNITS(Ratio, fraction, Time, s, Frequency, Hz)
+    PNM_DEFINE_QUANTITY_DIVIDE_RESULT_WITH_UNITS(Unitless, unitless, Time, s, Frequency, Hz)
+    PNM_DEFINE_QUANTITY_DIVIDE_RESULT_WITH_UNITS(Unitless, unitless, Frequency, Hz, Time, s)
 
-    template<detail::IsQuantity Quantity, std::same_as<Ratio> Scale>
-    constexpr auto operator*(const Quantity& quantity, const Scale& ratio) -> Quantity
+    namespace detail
     {
-        return quantity * ratio.get();
+        template<typename T>
+        concept Dimensionless = std::same_as<T, Ratio> || std::same_as<T, Unitless>;
+
+        template<>
+        struct reciprocal_result<UnitlessUnits>
+        {
+            using type = Unitless;
+        };
     }
 
-    template<detail::IsQuantity Quantity, std::same_as<Ratio> Scale>
-        requires(!std::same_as<Quantity, Ratio>)
-    constexpr auto operator*(const Scale& ratio, const Quantity& quantity) -> Quantity
+    template<IsQuantity Quantity, detail::Dimensionless Scale>
+    constexpr auto operator*(const Quantity& quantity, const Scale& scale)
     {
-        return quantity * ratio.get();
+        if constexpr (std::same_as<Quantity, Ratio> && std::same_as<Scale, Unitless>) {
+            // A percentage scales a generic unitless value in either multiplication order.
+            return scale * quantity.get();
+        }
+        else {
+            return quantity * scale.get();
+        }
     }
 
-    template<detail::IsQuantity Quantity, std::same_as<Ratio> Scale>
-        requires(!std::same_as<Quantity, Ratio>)
-    constexpr auto operator/(const Quantity& quantity, const Scale& ratio) -> Quantity
+    template<IsQuantity Quantity, detail::Dimensionless Scale>
+        requires(!detail::Dimensionless<Quantity>)
+    constexpr auto operator*(const Scale& scale, const Quantity& quantity) -> Quantity
     {
-        return quantity / ratio.get();
+        return quantity * scale.get();
     }
 
-    template<detail::IsQuantity Quantity, std::same_as<Ratio> Scale>
-    constexpr auto operator*=(Quantity& quantity, const Scale& ratio) -> Quantity&
+    template<IsQuantity Quantity, detail::Dimensionless Scale>
+        requires(!std::same_as<Quantity, Scale>)
+    constexpr auto operator/(const Quantity& quantity, const Scale& scale) -> Quantity
     {
-        return quantity *= ratio.get();
+        return quantity / scale.get();
     }
 
-    template<detail::IsQuantity Quantity, std::same_as<Ratio> Scale>
-    constexpr auto operator/=(Quantity& quantity, const Scale& ratio) -> Quantity&
+    template<IsQuantity Quantity, detail::Dimensionless Scale>
+    constexpr auto operator*=(Quantity& quantity, const Scale& scale) -> Quantity&
     {
-        return quantity /= ratio.get();
+        return quantity *= scale.get();
+    }
+
+    template<IsQuantity Quantity, detail::Dimensionless Scale>
+    constexpr auto operator/=(Quantity& quantity, const Scale& scale) -> Quantity&
+    {
+        return quantity /= scale.get();
     }
 
     // ---------- Chrono interoperability ----------
 
-    template<detail::ChronoDuration Duration>
-    constexpr auto operator*(Duration lhs, const Ratio& rhs) -> Time
+    template<detail::ChronoDuration Duration, detail::Dimensionless Scale>
+    constexpr auto operator*(Duration lhs, const Scale& rhs) -> Time
     {
         return Time{ lhs } * rhs.get();
     }
 
-    template<detail::ChronoDuration Duration>
-    constexpr auto operator*(const Ratio& lhs, Duration rhs) -> Time
+    template<detail::ChronoDuration Duration, detail::Dimensionless Scale>
+    constexpr auto operator*(const Scale& lhs, Duration rhs) -> Time
     {
         return lhs.get() * Time{ rhs };
     }
 
-    template<detail::ChronoDuration Duration>
-    constexpr auto operator/(Duration lhs, const Ratio& rhs) -> Time
+    template<detail::ChronoDuration Duration, detail::Dimensionless Scale>
+    constexpr auto operator/(Duration lhs, const Scale& rhs) -> Time
     {
         return Time{ lhs } / rhs.get();
     }
@@ -910,7 +964,7 @@ namespace pnm::units
         return Time{ lhs } <=> rhs;
     }
 
-    template<detail::IsQuantity Lhs, detail::ChronoDuration Rhs>
+    template<IsQuantity Lhs, detail::ChronoDuration Rhs>
         requires detail::HasMultiplyResult<detail::units_t<Lhs>, detail::units_t<Time>>
     constexpr auto operator*(const Lhs& lhs, Rhs rhs)
       -> detail::multiply_result_t<detail::units_t<Lhs>, detail::units_t<Time>>
@@ -918,7 +972,7 @@ namespace pnm::units
         return lhs * Time{ rhs };
     }
 
-    template<detail::ChronoDuration Lhs, detail::IsQuantity Rhs>
+    template<detail::ChronoDuration Lhs, IsQuantity Rhs>
         requires detail::HasMultiplyResult<detail::units_t<Time>, detail::units_t<Rhs>>
     constexpr auto operator*(Lhs lhs, const Rhs& rhs)
       -> detail::multiply_result_t<detail::units_t<Time>, detail::units_t<Rhs>>
@@ -926,7 +980,7 @@ namespace pnm::units
         return Time{ lhs } * rhs;
     }
 
-    template<detail::IsQuantity Lhs, detail::ChronoDuration Rhs>
+    template<IsQuantity Lhs, detail::ChronoDuration Rhs>
         requires detail::HasDivideResult<detail::units_t<Lhs>, detail::units_t<Time>>
     constexpr auto operator/(const Lhs& lhs, Rhs rhs)
       -> detail::divide_result_t<detail::units_t<Lhs>, detail::units_t<Time>>
@@ -934,7 +988,7 @@ namespace pnm::units
         return lhs / Time{ rhs };
     }
 
-    template<detail::ChronoDuration Lhs, detail::IsQuantity Rhs>
+    template<detail::ChronoDuration Lhs, IsQuantity Rhs>
         requires detail::HasDivideResult<detail::units_t<Time>, detail::units_t<Rhs>>
     constexpr auto operator/(Lhs lhs, const Rhs& rhs)
       -> detail::divide_result_t<detail::units_t<Time>, detail::units_t<Rhs>>
@@ -987,3 +1041,4 @@ namespace pnm::units
 #undef PNM_ANGLE_UNITS
 #undef PNM_ANGULAR_VELOCITY_UNITS
 #undef PNM_RATIO_UNITS
+#undef PNM_UNITLESS_UNITS

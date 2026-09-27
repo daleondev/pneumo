@@ -57,6 +57,24 @@ namespace
         std::cout << zero_to_hundred << std::endl;
     }
 
+    auto print_unitless_example() -> void
+    {
+        using namespace pnm::units::literals;
+
+        const auto gain = 1.5_unitless;
+        const auto output_voltage = gain * 8_V;
+        const auto reduced_gain = 50_percent * gain;
+        const auto scale = pnm::units::Unitless::create(6_m / 3_m);
+        const auto event_rate = 4_unitless / 2_s;
+
+        std::cout << "Unitless values\n";
+        std::cout << "  gain: " << gain << "\n";
+        std::cout << "  output voltage: " << output_voltage << "\n";
+        std::cout << "  gain at 50%: " << reduced_gain << "\n";
+        std::cout << "  scale from distances: " << scale << "\n";
+        std::cout << "  rate of 4 events in 2 seconds: " << event_rate << "\n\n";
+    }
+
     auto print_rotation_example() -> void
     {
         using namespace pnm::units::literals;
@@ -95,6 +113,20 @@ namespace
         std::cout << "  hydraulic pressure: " << hydraulic_pressure.get<pnm::units::PressureUnits::bar>()
                   << " bar\n\n";
     }
+
+    auto print_variety_example() -> void
+    {
+        using namespace pnm::units::literals;
+
+        const auto temperature = 50.2_C;
+        const auto distance = 24.43_us;
+        const auto acceleration = 5_mm_s2;
+
+        std::cout << "Variety\n";
+        std::cout << "  temperature: " << temperature << "\n";
+        std::cout << "  distance: " << distance << "\n";
+        std::cout << "  acceleration: " << acceleration << "\n\n";
+    }
 }
 
 auto main() -> int
@@ -104,6 +136,8 @@ auto main() -> int
     print_acceleration_example();
     print_mechanics_example();
     print_rotation_example();
+    print_unitless_example();
+    print_variety_example();
 
     return 0;
 }
