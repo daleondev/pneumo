@@ -336,6 +336,7 @@ On toolchains providing `std::stacktrace`, enable a calling-thread stacktrace fo
 #if defined(__cpp_lib_stacktrace)
 pnm::log::std_err->sourceStacktrace();        // frame list only
 pnm::log::std_err->sourceStacktrace(true, 1); // excerpts with one surrounding line
+pnm::log::std_err->sourceStacktrace(pnm::log::Level::Error); // only Error and Critical
 pnm::log::error("Operation failed");
 
 pnm::log::error(pnm::log::immediate,
@@ -346,7 +347,9 @@ pnm::log::error(pnm::log::immediate,
 
 `.sourceStacktrace(show_excerpts = false, context_size = 0)` enables stacktraces while preserving the sink's other source settings. `.sourceInfo(SourceField::Stacktrace)` selects the frame list alone. As with source excerpts, calling `.sourceInfo(...)` replaces all source settings; omit `Stacktrace` to disable it.
 
-A trace is captured once per message, on the calling thread, only if a routed sink accepts the level and requests a stacktrace. Async records retain that trace for the worker to format through `pnm::meta::source::stacktrace`. Each sink independently chooses whether to show frames and excerpts. The trace follows the message and any single-call-site excerpt, outside the colored header. Logger implementation frames are filtered using their function names or source locations, and the remaining frames are numbered from zero. Unidentified frames are retained.
+Use `.sourceStacktrace(min_level, show_excerpts = false, context_size = 0)` to set a separate stacktrace threshold on the same sink. For example, `.minLevel(Level::Trace).sourceStacktrace(Level::Error, true, 1)` accepts every log level but adds stacktraces and excerpts only for Error and Critical. `Level::Off` disables stacktraces without suppressing messages or other source information. The original overload and `.sourceInfo(SourceField::Stacktrace)` use `Level::Trace`, preserving stacktraces for all accepted levels. Calling `.sourceInfo(...)` also resets the stacktrace threshold. Like other sink configuration, set these options before concurrent logging starts.
+
+A trace is captured once per message, on the calling thread, only if a routed sink accepts the level, enables stacktraces, and its stacktrace threshold accepts the level. Lower levels incur no stack capture unless another routed sink requests it. Async records retain that trace for the worker to format through `pnm::meta::source::stacktrace`. Each sink independently applies its stacktrace threshold when formatting and chooses whether to show frames and excerpts. The trace follows the message and any single-call-site excerpt, outside the colored header. Logger implementation frames are filtered using their function names or source locations, and the remaining frames are numbered from zero. Unidentified frames are retained.
 
 Frame names and source locations depend on the toolchain and available debug information; optimized or inlined calls may appear differently or be absent. Build with debug information (for example, GCC's `-g`) for source excerpts, and embed or retain the corresponding source files. Unavailable excerpts are skipped while frames remain visible; an empty capture leaves the message intact. These settings are available only when `__cpp_lib_stacktrace` is defined; the currently supported Clang/libc++ toolchain does not provide them.
 

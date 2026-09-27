@@ -723,6 +723,117 @@ TEST(LoggingTests, StacktraceExcerptsIncludeRequestedContext)
     EXPECT_NE(output.find("// Context after the producer's stacktrace probe."), std::string::npos);
 }
 
+TEST(LoggingTests, StacktraceThresholdKeepsLowerSeverityMessages)
+{
+    auto sink{ std::make_shared<RecordingSink>() };
+    sink->minLevel(pnm::log::Level::Trace).sourceStacktrace(pnm::log::Level::Error);
+
+    pnm::log::trace(pnm::log::immediate, sink, "trace message");
+    pnm::log::debug(pnm::log::immediate, sink, "debug message");
+    pnm::log::info(pnm::log::immediate, sink, "info message");
+    pnm::log::warn(pnm::log::immediate, sink, "warn message");
+    pnm::log::error(pnm::log::immediate, sink, "error message");
+    pnm::log::critical(pnm::log::immediate, sink, "critical message");
+
+    ASSERT_EQ(sink->writes.size(), 6);
+    const std::array messages{ "trace message", "debug message", "info message",
+                               "warn message", "error message", "critical message" };
+    for (size_t index{}; index < messages.size(); ++index) {
+        EXPECT_NE(sink->writes[index].find(messages[index]), std::string::npos);
+        if (index < 4) {
+            EXPECT_EQ(sink->writes[index].find("\n#"), std::string::npos);
+        }
+        else {
+            check_user_stacktrace(sink->writes[index]);
+        }
+    }
+}
+
+TEST(LoggingTests, AsyncStacktraceThresholdRetainsOnlyRequestedTraces)
+{
+    auto sink{ std::make_shared<ConcurrentPartialWriteSink>() };
+    sink->sourceStacktrace(pnm::log::Level::Error).flushOn(pnm::log::Level::Trace);
+
+    std::jthread producer{ [sink] {
+        pnm::log::info(sink, "info message");
+        pnm::log::warn(sink, "warn message");
+        log_stacktrace_from_producer(sink, false);
+        pnm::log::critical(sink, "critical message");
+    } };
+    producer.join();
+
+    ASSERT_TRUE(sink->waitForRecords(4));
+    const auto records{ sink->records() };
+    ASSERT_EQ(records.size(), 4);
+    EXPECT_TRUE(records[0].ends_with("info message\n"));
+    EXPECT_TRUE(records[1].ends_with("warn message\n"));
+    EXPECT_NE(records[2].find("log_stacktrace_from_producer"), std::string::npos);
+    check_user_stacktrace(records[2]);
+    check_user_stacktrace(records[3]);
+}
+
+TEST(LoggingTests, StacktraceThresholdsAreIndependentForEachSink)
+{
+    auto warn_sink{ std::make_shared<RecordingSink>() };
+    auto critical_sink{ std::make_shared<RecordingSink>() };
+    auto off_sink{ std::make_shared<RecordingSink>() };
+    warn_sink->sourceStacktrace(pnm::log::Level::Warn);
+    critical_sink->sourceStacktrace(pnm::log::Level::Critical);
+    off_sink->sourceStacktrace(pnm::log::Level::Off);
+    const auto previous_warn{ pnm::log::get_default_sink(pnm::log::Level::Warn) };
+    const auto previous_critical{ pnm::log::get_default_sink(pnm::log::Level::Critical) };
+    pnm::log::set_default_sink(pnm::log::Level::Warn, warn_sink);
+    pnm::log::set_default_sink(pnm::log::Level::Critical, warn_sink);
+    const auto critical_handle{ pnm::log::add_global_sink(critical_sink) };
+    const auto off_handle{ pnm::log::add_global_sink(off_sink) };
+
+    pnm::log::warn(pnm::log::immediate, "warn message");
+    pnm::log::critical(pnm::log::immediate, "critical message");
+
+    pnm::log::remove_global_sink(critical_handle);
+    pnm::log::remove_global_sink(off_handle);
+    pnm::log::set_default_sink(pnm::log::Level::Warn, previous_warn);
+    pnm::log::set_default_sink(pnm::log::Level::Critical, previous_critical);
+    ASSERT_EQ(warn_sink->writes.size(), 2);
+    ASSERT_EQ(critical_sink->writes.size(), 2);
+    ASSERT_EQ(off_sink->writes.size(), 2);
+    check_user_stacktrace(warn_sink->writes[0]);
+    check_user_stacktrace(warn_sink->writes[1]);
+    // A trace captured for another sink must not leak into these messages.
+    EXPECT_TRUE(critical_sink->writes[0].ends_with("warn message\n"));
+    check_user_stacktrace(critical_sink->writes[1]);
+    EXPECT_TRUE(off_sink->writes[0].ends_with("warn message\n"));
+    EXPECT_TRUE(off_sink->writes[1].ends_with("critical message\n"));
+}
+
+TEST(LoggingTests, StacktraceThresholdSupportsExcerptsOffAndLegacyReset)
+{
+    auto sink{ std::make_shared<RecordingSink>() };
+    sink->sourceInfo(pnm::log::SourceField::FileName).sourceStacktrace(pnm::log::Level::Error, true, 1);
+    log_stacktrace_from_producer(sink, true);
+    ASSERT_EQ(sink->writes.size(), 1);
+    EXPECT_NE(sink->writes.back().find("[logging_tests.cpp]"), std::string::npos);
+    EXPECT_NE(sink->writes.back().find("// Context before the producer's stacktrace probe."), std::string::npos);
+
+    sink->sourceStacktrace(pnm::log::Level::Off);
+    pnm::log::critical(pnm::log::immediate, sink, "without trace");
+    ASSERT_EQ(sink->writes.size(), 2);
+    EXPECT_NE(sink->writes.back().find("[logging_tests.cpp]"), std::string::npos);
+    EXPECT_TRUE(sink->writes.back().ends_with("without trace\n"));
+
+    sink->sourceStacktrace();
+    pnm::log::trace(pnm::log::immediate, sink, "legacy trace");
+    ASSERT_EQ(sink->writes.size(), 3);
+    check_user_stacktrace(sink->writes.back());
+
+    sink->sourceStacktrace(pnm::log::Level::Off).sourceInfo(pnm::log::SourceField::Stacktrace);
+    pnm::log::trace(pnm::log::immediate, sink, "reset trace");
+    ASSERT_EQ(sink->writes.size(), 4);
+    check_user_stacktrace(sink->writes.back());
+    EXPECT_EQ(sink->getSourceInfo().stacktrace_min_level, pnm::log::Level::Trace);
+    EXPECT_FALSE(sink->getSourceInfo().stacktrace_excerpts);
+}
+
 TEST(LoggingTests, StacktraceSettingsAreIndependentForEachSink)
 {
     auto plain_sink{ std::make_shared<RecordingSink>() };

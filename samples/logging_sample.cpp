@@ -49,7 +49,7 @@ int main()
       ->sourceInfo(
         pnm::log::SourceField::FileName, pnm::log::SourceField::Line, pnm::log::SourceField::Function)
 #if defined(__cpp_lib_stacktrace)
-      .sourceStacktrace(true, 1)
+      .sourceStacktrace(pnm::log::Level::Error, true, 1)
 #endif
       .showLevel(false);
 
