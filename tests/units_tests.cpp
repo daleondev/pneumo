@@ -401,6 +401,34 @@ TEST(UnitsTests, AccelerationConversionsUseMetersPerSecondSquaredAsBase)
     EXPECT_DOUBLE_EQ(acceleration.get<AccelerationUnits::km_h2>(), 127137.6);
 }
 
+TEST(UnitsTests, SuffixReturnsTheRequestedUnitsName)
+{
+    EXPECT_EQ(Distance::suffix<DistanceUnits::m>(), "m");
+    EXPECT_EQ(Time::suffix<TimeUnits::s>(), "s");
+    EXPECT_EQ(Distance::suffix<const DistanceUnits::mm&>(), "mm");
+    EXPECT_EQ(Pressure::suffix<PressureUnits::hPa>(), "hPa");
+    EXPECT_EQ(Pressure::suffix<PressureUnits::mbar>(), "mbar");
+    EXPECT_EQ((1500_m).suffix<DistanceUnits::m>(), "m");
+    EXPECT_EQ((1500_m).suffix<DistanceUnits::km>(), "km");
+    EXPECT_EQ(Velocity::suffix<VelocityUnits::m_s>(), "m/s");
+    EXPECT_EQ(Velocity::suffix<VelocityUnits::km_h>(), "km/h");
+    EXPECT_EQ(DataRate::suffix<DataRateUnits::MB_s>(), "MB/s");
+}
+
+TEST(UnitsTests, SuffixPreservesCustomSymbolsAndEmptySuffixes)
+{
+    EXPECT_EQ(Distance::suffix<DistanceUnits::um>(), "µm");
+    EXPECT_EQ(Current::suffix<CurrentUnits::uA>(), "µA");
+    EXPECT_EQ(Area::suffix<AreaUnits::m2>(), "m²");
+    EXPECT_EQ(Acceleration::suffix<AccelerationUnits::m_s2>(), "m/s²");
+    EXPECT_EQ(Temperature::suffix<TemperatureUnits::C>(), "°C");
+    EXPECT_EQ(Temperature::suffix<TemperatureUnits::F>(), "°F");
+    EXPECT_EQ(Angle::suffix<AngleUnits::deg>(), "°");
+    EXPECT_EQ(Ratio::suffix<RatioUnits::percent>(), "%");
+    EXPECT_TRUE(Ratio::suffix<RatioUnits::fraction>().empty());
+    EXPECT_TRUE(Unitless::suffix<UnitlessUnits::unitless>().empty());
+}
+
 TEST(UnitsTests, StreamInsertionPrintsSelectedUnits)
 {
     EXPECT_EQ(stream_to_string(2.0_h), "2 h");
