@@ -756,12 +756,12 @@ namespace pnm::units
                 meta::tuple::for_each<typename UnitsMeta::NestedTypes>([&result](auto i) {
                     if constexpr (std::same_as<std::remove_cvref_t<U>,
                                                meta::tuple::at_t<i, typename UnitsMeta::NestedTypes>>) {
-                        result = static_cast<ssize_t>(i);
+                        result = i;
                     }
                 });
                 return result;
             }() };
-            static_assert(index >= 0UZ && "Invalid Unit provided");
+            static_assert(index >= 0Z && "Invalid Unit provided");
 
             return suffix(index);
         }
