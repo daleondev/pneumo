@@ -13,7 +13,7 @@
 
 #define PNM_DISTANCE_UNITS(X, XX, ctx)                                                                       \
     X(ctx, nm, std::nano)                                                                                    \
-    X(ctx, um, std::micro, 0.0, "µm")                                                                        \
+    X(ctx, um, std::micro)                                                                                   \
     X(ctx, mm, std::milli)                                                                                   \
     X(ctx, cm, std::centi)                                                                                   \
     X(ctx, dm, std::deci)                                                                                    \
@@ -23,17 +23,17 @@
 // ---------- Area ----------
 
 #define PNM_AREA_UNITS(X, XX, ctx)                                                                           \
-    X(ctx, mm2, std::micro, 0.0, "mm²")                                                                      \
-    X(ctx, cm2, std::ratio<1Z, 10'000Z>, 0.0, "cm²")                                                         \
-    X(ctx, dm2, std::centi, 0.0, "dm²")                                                                      \
-    XX(ctx, m2, "m²")                                                                                        \
-    X(ctx, km2, std::mega, 0.0, "km²")
+    X(ctx, mm2, std::micro)                                                                                  \
+    X(ctx, cm2, std::ratio<1Z, 10'000Z>)                                                                     \
+    X(ctx, dm2, std::centi)                                                                                  \
+    XX(ctx, m2)                                                                                              \
+    X(ctx, km2, std::mega)
 
 // ---------- Time ----------
 
 #define PNM_TIME_UNITS(X, XX, ctx)                                                                           \
     X(ctx, ns, std::nano)                                                                                    \
-    X(ctx, us, std::micro, 0.0, "µs")                                                                        \
+    X(ctx, us, std::micro)                                                                                   \
     X(ctx, ms, std::milli)                                                                                   \
     XX(ctx, s)                                                                                               \
     X(ctx, min, std::ratio<60Z>)                                                                             \
@@ -65,7 +65,7 @@
 // ---------- Current ----------
 
 #define PNM_CURRENT_UNITS(X, XX, ctx)                                                                        \
-    X(ctx, uA, std::micro, 0.0, "µA")                                                                        \
+    X(ctx, uA, std::micro)                                                                                   \
     X(ctx, mA, std::milli)                                                                                   \
     XX(ctx, A)                                                                                               \
     X(ctx, kA, std::kilo)
@@ -143,9 +143,9 @@
 // ---------- Acceleration ----------
 
 #define PNM_ACCELERATION_UNITS(X, XX, ctx)                                                                   \
-    X(ctx, mm_s2, std::milli, 0.0, "mm/s²")                                                                  \
+    X(ctx, mm_s2, std::milli)                                                                                \
     XX(ctx, m_s2, "m/s²")                                                                                    \
-    X(ctx, km_h2, std::ratio<1000Z, 3600Z * 3600Z>, 0.0, "km/h²")
+    X(ctx, km_h2, std::ratio<1000Z, 3600Z * 3600Z>)
 
 // ---------- Angle ----------
 
@@ -639,6 +639,32 @@ namespace pnm::units
             return BASE_UNIT_INDEX;
         }
 
+        static auto suffix(size_t index) -> std::string
+        {
+            std::string result{ UNIT_SUFFIXES[index] };
+            if (result == "n/a") {
+                std::stringstream ss;
+                auto i{ 0UZ };
+                for (const auto c : UnitsMeta::NESTED_TYPE_NAMES[index]) {
+                    if (i == 0 && c == 'u') {
+                        ss << "µ";
+                    }
+                    else if (c == '_') {
+                        ss << '/';
+                    }
+                    else if (i == UnitsMeta::NESTED_TYPE_NAMES[index].size() - 1 && c == '2') {
+                        ss << "²";
+                    }
+                    else {
+                        ss << c;
+                    }
+                    ++i;
+                }
+                result = ss.str();
+            }
+            return result;
+        }
+
         static constexpr auto BASE_UNIT_INDEX{ QuantityBase::determineBaseUnitIndex() };
         static constexpr auto SORTED_UNIT_INDICES{ QuantityBase::makeSortedUnitIndices() };
         static constexpr auto UNIT_FACTORS{ QuantityBase::makeUnitFactors() };
@@ -721,21 +747,33 @@ namespace pnm::units
             return static_cast<Quantity&>(*this);
         }
 
+        template<IsUnit U>
+            requires meta::tuple::ContainsType<typename UnitsMeta::NestedTypes, U>
+        static auto suffix() -> std::string
+        {
+            constexpr auto index{ [] consteval {
+                auto result{ -1Z };
+                meta::tuple::for_each<typename UnitsMeta::NestedTypes>([&result](auto i) {
+                    if constexpr (std::same_as<std::remove_cvref_t<U>,
+                                               meta::tuple::at_t<i, typename UnitsMeta::NestedTypes>>) {
+                        result = static_cast<ssize_t>(i);
+                    }
+                });
+                return result;
+            }() };
+            static_assert(index >= 0UZ && "Invalid Unit provided");
+
+            return suffix(index);
+        }
+
         friend std::ostream& operator<<(std::ostream& os, const QuantityBase& quantity)
         {
             auto index{ quantity.determinePrintUnitIndex() };
             os << (quantity.value / UNIT_FACTORS[index]);
 
-            auto suffix{ UNIT_SUFFIXES[index] };
-            if (suffix == "n/a") {
-                suffix = UnitsMeta::NESTED_TYPE_NAMES[index];
-                os << ' ';
-                for (auto ch : suffix) {
-                    os << (ch == '_' ? '/' : ch);
-                }
-            }
-            else if (!suffix.empty()) {
-                os << ' ' << suffix;
+            auto suf{ suffix(index) };
+            if (!suf.empty()) {
+                os << ' ' << suf;
             }
 
             return os;
