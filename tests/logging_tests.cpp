@@ -266,6 +266,31 @@ struct std::formatter<ThrowingLogValue>
     }
 };
 
+struct InvalidLogFormat {};
+template<> struct std::formatter<InvalidLogFormat>
+{
+    constexpr auto parse(std::format_parse_context& ctx) { return ctx.begin(); }
+    auto format(const InvalidLogFormat&, std::format_context&) const -> std::format_context::iterator
+    {
+        throw std::format_error{"injected serialization diagnostic"};
+    }
+};
+
+TEST(LoggingTests, FormattingFailureReportsReasonWithoutReenteringFormatter)
+{
+    auto sink{std::make_shared<RecordingSink>()};
+    testing::internal::CaptureStderr();
+    pnm::log::info(pnm::log::immediate, "{}", InvalidLogFormat{});
+    pnm::log::info(pnm::log::immediate, sink, "{}", InvalidLogFormat{});
+    const auto diagnostic{testing::internal::GetCapturedStderr()};
+    EXPECT_NE(diagnostic.find("message formatting failed: injected serialization diagnostic"), std::string::npos);
+    EXPECT_NE(diagnostic.find("routed message formatting failed: injected serialization diagnostic"), std::string::npos);
+    EXPECT_TRUE(sink->writes.empty());
+    pnm::log::info(pnm::log::immediate, sink, "next message works");
+    ASSERT_EQ(sink->writes.size(), 1);
+    EXPECT_NE(sink->writes.front().find("next message works"), std::string::npos);
+}
+
 PNM_META_SOURCE_EMBED_CURRENT
 
 int main(int argc, char* argv[])

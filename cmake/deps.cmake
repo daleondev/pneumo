@@ -8,6 +8,7 @@ if(PFMT_ENABLE_JSON OR PFMT_ENABLE_YAML OR PFMT_ENABLE_TOML)
         GIT_SHALLOW     TRUE
     )
     FetchContent_MakeAvailable(glaze)
+    include(${CMAKE_CURRENT_LIST_DIR}/GlazeCompatibility.cmake)
 
     add_library(glaze_defines INTERFACE)
     target_compile_definitions(glaze_defines INTERFACE PFMT_ENABLE_GLAZE)

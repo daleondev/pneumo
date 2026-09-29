@@ -643,6 +643,18 @@ namespace pnm::fmt
 
         template<typename T>
         concept HasGlazeMeta = requires { glz::meta<std::remove_cvref_t<T>>::value; };
+
+        // Formatting must never turn a serialization failure into a success
+        // containing a placeholder string. Keep the underlying diagnostic.
+        template<typename Result>
+        auto serialized_value(Result&& result, std::string_view format) -> std::string
+        {
+            if (!result) {
+                throw std::format_error(std::string{ format } + " serialization failed: " +
+                                        glz::format_error(result.error()));
+            }
+            return std::move(*result);
+        }
 #endif
 
         // ---------- Format Opts ----------
@@ -710,9 +722,9 @@ namespace pnm::fmt
             if (fmt_opts.json) {
                 if constexpr (GlazeSerializable<T, GlazeFormat::Json>) {
 
-                    auto json_str{ (fmt_opts.pretty ? glz::write<glz::opts{ .prettify = true }>(t)
-                                                    : glz::write_json(t))
-                                     .value_or("JSON Error") };
+                    auto json_str{ serialized_value(
+                      fmt_opts.pretty ? glz::write<glz::opts{ .prettify = true }>(t) : glz::write_json(t),
+                      "JSON") };
                     return std::format_to(ctx.out(), "{}", json_str);
                 }
                 else {
@@ -724,7 +736,7 @@ namespace pnm::fmt
             if (fmt_opts.yaml) {
                 if constexpr (GlazeSerializable<T, GlazeFormat::Yaml> && HasGlazeMeta<T>) {
 
-                    auto yaml_str{ glz::write_yaml(t).value_or("YAML Error") };
+                    auto yaml_str{ serialized_value(glz::write_yaml(t), "YAML") };
                     return std::format_to(ctx.out(), "{}", yaml_str);
                 }
                 else {
@@ -736,7 +748,7 @@ namespace pnm::fmt
             if (fmt_opts.toml) {
                 if constexpr (GlazeSerializable<T, GlazeFormat::Toml>) {
 
-                    auto toml_str{ glz::write_toml(t).value_or("TOML Error") };
+                    auto toml_str{ serialized_value(glz::write_toml(t), "TOML") };
                     return std::format_to(ctx.out(), "{}", toml_str);
                 }
                 else {

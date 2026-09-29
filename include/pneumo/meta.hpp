@@ -1052,6 +1052,22 @@ namespace pnm::meta
             }(std::make_index_sequence<detail::method_reflections<std::remove_cvref_t<T>>().size()>{});
         }
 
+        template<size_t Index, typename T>
+        consteval auto method_annotations()
+        {
+            constexpr auto methods{ detail::method_reflections<std::remove_cvref_t<T>>() };
+            static_assert(Index < methods.size());
+            return std::meta::annotations_of(methods[Index]);
+        }
+
+        template<Class T>
+        constexpr auto methods_annotations()
+        {
+            return []<size_t... Is>(std::index_sequence<Is...>) -> auto {
+                return std::array{ method_annotations<Is, T>()... };
+            }(std::make_index_sequence<detail::method_reflections<std::remove_cvref_t<T>>().size()>{});
+        }
+
         template<size_t Index, Class T>
         using method_type_t = typename decltype(detail::method_type<Index, T>())::type;
 
@@ -1369,9 +1385,9 @@ namespace pnm::meta
         namespace detail
         {
             static auto append_stacktrace_excerpt(std::ostream& trace,
-                                                 std::string_view file_name,
-                                                 uint32_t line,
-                                                 size_t context_size) -> void
+                                                  std::string_view file_name,
+                                                  uint32_t line,
+                                                  size_t context_size) -> void
             {
                 if (file_name.empty() || line == 0) {
                     return;
@@ -1397,8 +1413,8 @@ namespace pnm::meta
                 auto file_name{ file.empty() ? "<unknown>" : file.filename().string() };
                 auto line{ entry.source_line() };
 
-                trace << '#' << std::setw(index_width) << (i++) << ' ' << func_name << " at "
-                      << file_name << ':' << line << '\n';
+                trace << '#' << std::setw(index_width) << (i++) << ' ' << func_name << " at " << file_name
+                      << ':' << line << '\n';
 
                 if (show_excerpts) {
                     detail::append_stacktrace_excerpt(trace, file.string(), line, context_size);
@@ -1411,9 +1427,8 @@ namespace pnm::meta
                                bool show_excerpts = false,
                                size_t context_size = 0) -> Result<std::string>
         {
-            return source::stacktrace(std::span<const std::stacktrace_entry>{ stacktrace },
-                                     show_excerpts,
-                                     context_size);
+            return source::stacktrace(
+              std::span<const std::stacktrace_entry>{ stacktrace }, show_excerpts, context_size);
         }
 #endif
     }
