@@ -4,11 +4,10 @@ if(PFMT_ENABLE_JSON OR PFMT_ENABLE_YAML OR PFMT_ENABLE_TOML)
     FetchContent_Declare(
         glaze
         GIT_REPOSITORY  https://github.com/stephenberry/glaze.git
-        GIT_TAG         v7.0.2
+        GIT_TAG         v9.0.0
         GIT_SHALLOW     TRUE
     )
     FetchContent_MakeAvailable(glaze)
-    include(${CMAKE_CURRENT_LIST_DIR}/GlazeCompatibility.cmake)
 
     add_library(glaze_defines INTERFACE)
     target_compile_definitions(glaze_defines INTERFACE PFMT_ENABLE_GLAZE)

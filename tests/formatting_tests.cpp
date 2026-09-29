@@ -350,7 +350,7 @@ TEST(FormatTests, JSON_Pretty)
 TEST(FormatTests, YAML_Basic)
 {
     std::string result = std::format("{:y}", ClassWithAdapter{ 100, "TestObj" });
-    std::string expected = "id:\n100name:\nTestObj";
+    std::string expected = "id: 100\nname: TestObj\n";
     EXPECT_EQ(result, expected);
 }
 #endif
