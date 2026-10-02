@@ -188,8 +188,6 @@ target_compile_features(
 add_library(pneumo_coroutines INTERFACE)
 add_library(pneumo::coroutines ALIAS pneumo_coroutines)
 
-find_package(Threads REQUIRED)
-
 target_sources(
     pneumo_coroutines
     INTERFACE
@@ -202,8 +200,16 @@ target_link_libraries(
     pneumo_coroutines
     INTERFACE
     pneumo::common
-    Threads::Threads
 )
+
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Generic")
+    find_package(Threads REQUIRED)
+    target_link_libraries(
+        pneumo_coroutines
+        INTERFACE
+        Threads::Threads
+    )
+endif()
 
 target_compile_features(
     pneumo_coroutines
