@@ -377,9 +377,13 @@ namespace pnm::log
             return next.fetch_add(1, std::memory_order_relaxed);
         }
 
-        inline auto report_internal_error(std::string_view message) noexcept -> void
+        inline auto report_internal_error(std::string_view message, std::string_view reason = {}) noexcept -> void
         {
             static_cast<void>(std::fwrite(message.data(), sizeof(char), message.size(), stderr));
+            if (!reason.empty()) {
+                static_cast<void>(std::fwrite(": ", sizeof(char), 2, stderr));
+                static_cast<void>(std::fwrite(reason.data(), sizeof(char), reason.size(), stderr));
+            }
             static_cast<void>(std::fputc('\n', stderr));
             static_cast<void>(std::fflush(stderr));
         }
@@ -1093,6 +1097,8 @@ namespace pnm::log
                                Sync,
                                nullptr,
                                color);
+            } catch (const std::format_error& error) {
+                report_internal_error("pneumo logging: message formatting failed", error.what());
             } catch (...) {
                 report_internal_error("pneumo logging: dropped a message after an internal exception");
             }
@@ -1116,6 +1122,8 @@ namespace pnm::log
                                Sync,
                                std::move(sink),
                                color);
+            } catch (const std::format_error& error) {
+                report_internal_error("pneumo logging: routed message formatting failed", error.what());
             } catch (...) {
                 report_internal_error("pneumo logging: dropped a routed message after an internal exception");
             }

@@ -51,6 +51,7 @@ target_compile_options(
     INTERFACE
     -freflection
     $<$<CXX_COMPILER_ID:Clang>:-fexpansion-statements>
+    $<$<CXX_COMPILER_ID:Clang>:-fannotation-attributes>
     $<$<CXX_COMPILER_ID:Clang>:-Wno-c23-extensions>
 )
 

@@ -255,6 +255,78 @@ TEST(FormatTests, Pointer_Null)
 // Test Suite: Serialization (JSON / TOML)
 // -----------------------------------------------------------------------------
 
+#ifdef PFMT_ENABLE_GLAZE
+struct SerializationFailure { int value{}; };
+template<> struct glz::meta<SerializationFailure>
+{
+    static constexpr auto value = glz::object("value", &SerializationFailure::value);
+};
+struct FailingSerializationWriter
+{
+    template<auto Opts>
+    static void op(const SerializationFailure&, auto& ctx, auto&&...)
+    {
+        ctx.error = glz::error_code::syntax_error;
+        ctx.custom_error_message = "injected serialization failure";
+    }
+};
+#ifdef PFMT_ENABLE_JSON
+template<> struct glz::to<glz::JSON, SerializationFailure> : FailingSerializationWriter {};
+#endif
+#ifdef PFMT_ENABLE_YAML
+template<> struct glz::to<glz::YAML, SerializationFailure> : FailingSerializationWriter {};
+#endif
+#ifdef PFMT_ENABLE_TOML
+template<> struct glz::to<glz::TOML, SerializationFailure> : FailingSerializationWriter {};
+#endif
+
+template<typename Action>
+void expectSerializationFailure(Action action, std::string_view format)
+{
+    try {
+        action();
+        FAIL() << "Serialization unexpectedly succeeded";
+    } catch (const std::format_error& error) {
+        const std::string_view message{error.what()};
+        EXPECT_NE(message.find(format), std::string_view::npos);
+        EXPECT_NE(message.find("injected serialization failure"), std::string_view::npos);
+    }
+}
+#endif
+
+#ifdef PFMT_ENABLE_JSON
+TEST(FormatTests, JSON_FailureIsFormatError)
+{
+    expectSerializationFailure([] { static_cast<void>(std::format("{:j}", SerializationFailure{})); }, "JSON");
+    expectSerializationFailure([] { static_cast<void>(std::format("{:pj}", SerializationFailure{})); }, "JSON");
+}
+
+TEST(FormatTests, JSON_OptionalRemainsNullableInCpp26)
+{
+    std::optional<int> value{42};
+    const auto encoded{glz::write_json(value)};
+    ASSERT_TRUE(encoded);
+    EXPECT_EQ(*encoded, "42");
+    ASSERT_FALSE(glz::read_json(value, "null"));
+    EXPECT_FALSE(value);
+    ASSERT_FALSE(glz::read_json(value, "17"));
+    ASSERT_TRUE(value);
+    EXPECT_EQ(*value, 17);
+}
+#endif
+#ifdef PFMT_ENABLE_YAML
+TEST(FormatTests, YAML_FailureIsFormatError)
+{
+    expectSerializationFailure([] { static_cast<void>(std::format("{:y}", SerializationFailure{})); }, "YAML");
+}
+#endif
+#ifdef PFMT_ENABLE_TOML
+TEST(FormatTests, TOML_FailureIsFormatError)
+{
+    expectSerializationFailure([] { static_cast<void>(std::format("{:t}", SerializationFailure{})); }, "TOML");
+}
+#endif
+
 #ifdef PFMT_ENABLE_JSON
 TEST(FormatTests, JSON_Compact)
 {
@@ -278,7 +350,7 @@ TEST(FormatTests, JSON_Pretty)
 TEST(FormatTests, YAML_Basic)
 {
     std::string result = std::format("{:y}", ClassWithAdapter{ 100, "TestObj" });
-    std::string expected = "id:\n100name:\nTestObj";
+    std::string expected = "id: 100\nname: TestObj\n";
     EXPECT_EQ(result, expected);
 }
 #endif
