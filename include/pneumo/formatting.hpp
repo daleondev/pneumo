@@ -653,7 +653,7 @@ namespace pnm::fmt
                 throw std::format_error(std::string{ format } + " serialization failed: " +
                                         glz::format_error(result.error()));
             }
-            return std::move(*result);
+            return *std::forward<Result>(result);
         }
 #endif
 

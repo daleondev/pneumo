@@ -89,6 +89,13 @@ class MethodProbe
     double m_ratio;
 };
 
+struct AnnotationProbe
+{
+    [[ = 7, = 11 ]] constexpr auto annotated() const -> int { return 1; }
+    constexpr auto plain() const -> int { return 2; }
+    [[= 13]] static constexpr auto staticAnnotated() -> int { return 3; }
+};
+
 namespace
 {
     using TupleA = std::tuple<int, double>;
@@ -632,6 +639,27 @@ TEST(StructMetaTests, PublicMethodInvoke)
     EXPECT_EQ(pnm::meta::structural::invoke_method<2>(value), 7);
     EXPECT_EQ(pnm::meta::structural::invoke_method<3>(const_value, 12), 12);
     EXPECT_EQ((pnm::meta::structural::invoke_static_method<5, MethodProbe>()), 99);
+}
+
+TEST(StructMetaTests, PublicMethodAnnotations)
+{
+    static_assert([] consteval {
+        const auto annotations = pnm::meta::structural::method_annotations<0, AnnotationProbe>();
+        return annotations.size() == 2 && std::meta::extract<int>(annotations[0]) == 7 &&
+               std::meta::extract<int>(annotations[1]) == 11;
+    }());
+    static_assert(pnm::meta::structural::method_annotations<1, AnnotationProbe>().empty());
+    SUCCEED();
+}
+
+TEST(StructMetaTests, AllPublicMethodAnnotations)
+{
+    static_assert([] consteval {
+        const auto annotations = pnm::meta::structural::methods_annotations<const AnnotationProbe&>();
+        return annotations.size() == 3 && annotations[0].size() == 2 && annotations[1].empty() &&
+               annotations[2].size() == 1 && std::meta::extract<int>(annotations[2][0]) == 13;
+    }());
+    SUCCEED();
 }
 
 TEST(StructMetaTests, PublicConstGetterSubsetUsesMethods)
