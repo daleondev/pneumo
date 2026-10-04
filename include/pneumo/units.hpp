@@ -795,6 +795,10 @@ namespace pnm::units
 
         constexpr auto get() const -> double { return value; }
 
+        constexpr auto isFinite() const -> bool { return std::isfinite(value); }
+        constexpr auto isInf() const -> bool { return std::isinf(value); }
+        constexpr auto isNaN() const -> bool { return std::isnan(value); }
+
         double value{};
     };
 
