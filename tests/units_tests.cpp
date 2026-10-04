@@ -1238,3 +1238,17 @@ TEST(UnitsTests, RatioAndRotationalUnitsUseAutomaticStreamUnitSelection)
     EXPECT_EQ(stream_to_string(1_rad_s), "1 rad/s");
     EXPECT_EQ(stream_to_string(0_rpm), "0 rad/s");
 }
+
+TEST(UnitsTests, MotionDynamics)
+{
+    using namespace pnm::units;
+    static_assert(std::is_same_v<decltype(1_m_s2 / 1_s), Jerk>);
+    static_assert(std::is_same_v<decltype(1_rad_s / 1_s), AngularAcceleration>);
+    static_assert(std::is_same_v<decltype(1_rad_s2 / 1_s), AngularJerk>);
+    static_assert(std::is_same_v<decltype(1_rad_s3 * 1_s), AngularAcceleration>);
+    static_assert(std::is_same_v<decltype(1_rad_s2 * 1_s), AngularVelocity>);
+    EXPECT_NEAR((180_deg_s2).get<AngularAccelerationUnits::rad_s2>(), std::numbers::pi, 1e-12);
+    EXPECT_NEAR((180_deg_s3).get<AngularJerkUnits::rad_s3>(), std::numbers::pi, 1e-12);
+    EXPECT_NEAR((1000_mm_s3).get<JerkUnits::m_s3>(), 1.0, 1e-12);
+    EXPECT_NEAR((90_deg_s2 * 2_s).get<AngularVelocityUnits::rpm>(), 30.0, 1e-12);
+}
