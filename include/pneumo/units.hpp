@@ -147,6 +147,12 @@
     XX(ctx, m_s2, "m/s²")                                                                                    \
     X(ctx, km_h2, std::ratio<1000Z, 3600Z * 3600Z>)
 
+// ---------- Jerk ----------
+
+#define PNM_JERK_UNITS(X, XX, ctx)                                                                           \
+    X(ctx, mm_s3, std::milli)                                                                                \
+    XX(ctx, m_s3)
+
 // ---------- Angle ----------
 
 #define PNM_ANGLE_UNITS(X, XX, ctx)                                                                          \
@@ -159,6 +165,18 @@
 #define PNM_ANGULAR_VELOCITY_UNITS(X, XX, ctx)                                                               \
     XX(ctx, rad_s)                                                                                           \
     X(ctx, rpm, detail::factor<2.0 * std::numbers::pi / 60.0>)
+
+// ---------- Angular Acceleration ----------
+
+#define PNM_ANGULAR_ACCELERATION_UNITS(X, XX, ctx)                                                           \
+    XX(ctx, rad_s2)                                                                                          \
+    X(ctx, deg_s2, detail::factor<std::numbers::pi / 180.0>)
+
+// ---------- Angular Jerk ----------
+
+#define PNM_ANGULAR_JERK_UNITS(X, XX, ctx)                                                                   \
+    XX(ctx, rad_s3)                                                                                          \
+    X(ctx, deg_s3, detail::factor<std::numbers::pi / 180.0>)
 
 // ---------- Ratio ----------
 
@@ -868,8 +886,11 @@ namespace pnm::units
     PNM_DEFINE_QUANTITY(DataRate, PNM_DATA_RATE_UNITS)
     PNM_DEFINE_QUANTITY(Velocity, PNM_VELOCITY_UNITS)
     PNM_DEFINE_QUANTITY(Acceleration, PNM_ACCELERATION_UNITS)
+    PNM_DEFINE_QUANTITY(Jerk, PNM_JERK_UNITS)
     PNM_DEFINE_QUANTITY(Angle, PNM_ANGLE_UNITS)
     PNM_DEFINE_QUANTITY(AngularVelocity, PNM_ANGULAR_VELOCITY_UNITS)
+    PNM_DEFINE_QUANTITY(AngularAcceleration, PNM_ANGULAR_ACCELERATION_UNITS)
+    PNM_DEFINE_QUANTITY(AngularJerk, PNM_ANGULAR_JERK_UNITS)
     PNM_DEFINE_QUANTITY(Ratio, PNM_RATIO_UNITS)
     PNM_DEFINE_QUANTITY(Unitless, PNM_UNITLESS_UNITS)
 
@@ -877,7 +898,10 @@ namespace pnm::units
     PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(ByteSize, bytes, Time, s, DataRate, bytes_s)
     PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(Distance, m, Time, s, Velocity, m_s)
     PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(Velocity, m_s, Time, s, Acceleration, m_s2)
+    PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(Acceleration, m_s2, Time, s, Jerk, m_s3)
     PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(Angle, rad, Time, s, AngularVelocity, rad_s)
+    PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(AngularVelocity, rad_s, Time, s, AngularAcceleration, rad_s2)
+    PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(AngularAcceleration, rad_s2, Time, s, AngularJerk, rad_s3)
     PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(Force, N, Mass, kg, Acceleration, m_s2)
     PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(Energy, J, Force, N, Distance, m)
     PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(Energy, J, Time, s, Power, W)
@@ -1080,7 +1104,10 @@ namespace pnm::units
 #undef PNM_DATA_RATE_UNITS
 #undef PNM_VELOCITY_UNITS
 #undef PNM_ACCELERATION_UNITS
+#undef PNM_JERK_UNITS
 #undef PNM_ANGLE_UNITS
 #undef PNM_ANGULAR_VELOCITY_UNITS
+#undef PNM_ANGULAR_ACCELERATION_UNITS
+#undef PNM_ANGULAR_JERK_UNITS
 #undef PNM_RATIO_UNITS
 #undef PNM_UNITLESS_UNITS

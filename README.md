@@ -88,8 +88,11 @@ The current built-in quantity types are:
 *   `DataRate`
 *   `Velocity`
 *   `Acceleration`
+*   `Jerk`
 *   `Angle`
 *   `AngularVelocity`
+*   `AngularAcceleration`
+*   `AngularJerk`
 *   `Ratio`
 *   `Unitless`
 
@@ -101,6 +104,9 @@ The current built-in cross-quantity operations include:
 *   `Distance / Velocity -> Time`
 *   `Velocity / Time -> Acceleration`
 *   `Velocity / Acceleration -> Time`
+*   `Acceleration / Time -> Jerk`
+*   `AngularVelocity / Time -> AngularAcceleration`
+*   `AngularAcceleration / Time -> AngularJerk`
 *   `Angle / Time -> AngularVelocity`
 *   `Angle / AngularVelocity -> Time`
 *   `AngularVelocity * Time -> Angle` (also in reverse order)
