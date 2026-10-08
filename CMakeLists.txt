@@ -49,10 +49,10 @@ target_compile_features(
 target_compile_options(
     pneumo_common
     INTERFACE
-    -freflection
-    $<$<CXX_COMPILER_ID:Clang>:-fexpansion-statements>
-    $<$<CXX_COMPILER_ID:Clang>:-fannotation-attributes>
-    $<$<CXX_COMPILER_ID:Clang>:-Wno-c23-extensions>
+    $<$<COMPILE_LANGUAGE:CXX>:-freflection>
+    $<$<COMPILE_LANG_AND_ID:CXX,Clang>:-fexpansion-statements>
+    $<$<COMPILE_LANG_AND_ID:CXX,Clang>:-fannotation-attributes>
+    $<$<COMPILE_LANG_AND_ID:CXX,Clang>:-Wno-c23-extensions>
 )
 
 target_compile_definitions(
