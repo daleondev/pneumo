@@ -38,62 +38,57 @@ namespace serialization_tests
     {
     };
 
-    struct IncompleteAdapter
+    struct IncompleteAdapter : Payload
     {
-        std::vector<std::byte> bytes;
     };
 
-    struct InvalidAdapter
+    struct InvalidAdapter : Payload
     {
-        std::vector<std::byte> bytes;
     };
 
-    struct MixedMessage
+    struct AutoMessage
     {
         double value;
         Payload payload;
-        std::uint32_t sequence;
-    };
-
-    struct AdaptedBaseMessage : Payload
-    {
-        double value;
-    };
-
-    struct OversizedPayload
-    {
-    };
-
-    struct NestedMessage
-    {
-        MixedMessage message;
-        std::array<Payload, 2> additional;
         EncodedValue code;
     };
 
-    class PrivateMessage : private MixedMessage
+    struct NestedAutoMessage
     {
-      public:
-        PrivateMessage() = default;
-        explicit PrivateMessage(MixedMessage message, EncodedValue code)
-          : MixedMessage{ std::move(message) }
-          , m_code{ code }
-        {
-        }
-        auto message() const -> const MixedMessage& { return *this; }
-        auto code() const -> std::uint32_t { return m_code.value; }
-
-      private:
-        EncodedValue m_code{};
+        AutoMessage message;
+        std::array<Payload, 2> additional;
+        Payload values[2];
     };
 
-    struct PaddedMessage
+    struct NonTrivialValue
+    {
+        double value{};
+        ~NonTrivialValue() {} // Deliberately non-trivial, despite having a plain value member.
+    };
+
+    struct TrivialEnvelope
     {
         std::uint8_t tag;
-        double value;
+        EncodedValue code;
     };
 
-    struct BitFieldMessage
+    class PrivateAutoMessage : private Payload
+    {
+      public:
+        PrivateAutoMessage() = default;
+        explicit PrivateAutoMessage(Payload payload, double value)
+          : Payload{ std::move(payload) }
+          , m_value{ value }
+        {
+        }
+        auto payload() const -> const Payload& { return *this; }
+        auto value() const -> double { return m_value; }
+
+      private:
+        double m_value{};
+    };
+
+    struct BitFieldAutoMessage
     {
         unsigned enabled : 1;
         unsigned : 3;
@@ -101,39 +96,35 @@ namespace serialization_tests
         Payload payload;
     };
 
-    struct ConstMember
-    {
-        const double value;
-    };
-
-    struct UnsafeMixedMessage
+    struct UnsafeAutoMessage
     {
         Payload payload;
         int* pointer;
     };
 
-    union AdaptedUnion {
-        EncodedValue code;
-        std::uint32_t raw;
+    struct ReferenceAutoMessage
+    {
+        Payload payload;
+        Payload& reference;
+    };
+
+    struct ConstAutoMessage
+    {
+        Payload payload;
+        const double value;
+    };
+
+    struct ExplicitAutoMessage : AutoMessage
+    {
+    };
+
+    struct OversizedPayload
+    {
     };
 }
 
 namespace pnm::utils::memory
 {
-    template<>
-    struct SerializationAdapter<serialization_tests::OversizedPayload>
-    {
-        static auto bufferSize(const serialization_tests::OversizedPayload&) -> std::size_t
-        {
-            return std::numeric_limits<std::size_t>::max();
-        }
-        static auto serialize(const serialization_tests::OversizedPayload&, std::span<std::byte>) -> void
-        {
-            ADD_FAILURE() << "Overflow must be rejected before calling the adapter";
-        }
-        static auto deserialize(std::span<const std::byte>, serialization_tests::OversizedPayload&) -> void {}
-    };
-
     template<>
     struct SerializationAdapter<serialization_tests::EncodedValue>
     {
@@ -210,6 +201,36 @@ namespace pnm::utils::memory
         static auto serialize(const serialization_tests::InvalidAdapter&, std::span<std::byte>) -> bool;
         static auto deserialize(std::span<const std::byte>, serialization_tests::InvalidAdapter&) -> void;
     };
+
+    template<>
+    struct SerializationAdapter<serialization_tests::ExplicitAutoMessage>
+    {
+        static auto bufferSize(const serialization_tests::ExplicitAutoMessage&) -> std::size_t { return 1; }
+        static auto serialize(const serialization_tests::ExplicitAutoMessage& src, std::span<std::byte> dest)
+          -> void
+        {
+            SerializationAdapter<serialization_tests::EncodedValue>::serialize(src.code, dest);
+        }
+        static auto deserialize(std::span<const std::byte> src,
+                                serialization_tests::ExplicitAutoMessage& dest) -> void
+        {
+            SerializationAdapter<serialization_tests::EncodedValue>::deserialize(src, dest.code);
+        }
+    };
+
+    template<>
+    struct SerializationAdapter<serialization_tests::OversizedPayload>
+    {
+        static auto bufferSize(const serialization_tests::OversizedPayload&) -> std::size_t
+        {
+            return std::numeric_limits<std::size_t>::max();
+        }
+        static auto serialize(const serialization_tests::OversizedPayload&, std::span<std::byte>) -> void
+        {
+            ADD_FAILURE() << "Size overflow must be rejected before calling the adapter";
+        }
+        static auto deserialize(std::span<const std::byte>, serialization_tests::OversizedPayload&) -> void {}
+    };
 }
 
 namespace
@@ -221,10 +242,6 @@ namespace
     concept CanCopy =
       requires(Destination& destination, const Source& source) { memory::copy(destination, source); };
 
-    template<typename T>
-    concept CanDeserialize =
-      requires(T& destination, std::span<const std::byte> bytes) { memory::deserialize(bytes, destination); };
-
     static_assert(memory::Serializable<Payload>);
     static_assert(memory::Serializable<const Payload>);
     static_assert(memory::Serializable<EncodedValue>);
@@ -234,17 +251,17 @@ namespace
     static_assert(CanCopy<EncodedValue, Payload>);
     static_assert(!CanCopy<std::uint32_t, std::vector<int>>);
     static_assert(!CanCopy<std::vector<int>, std::uint32_t>);
-    static_assert(!CanCopy<const Payload, Payload>);
-    static_assert(!CanDeserialize<const Payload>);
-    static_assert(CanDeserialize<Payload>);
-    static_assert(memory::Serializable<MixedMessage>);
-    static_assert(memory::Serializable<const MixedMessage>);
-    static_assert(memory::Serializable<NestedMessage>);
-    static_assert(memory::Serializable<PrivateMessage>);
-    static_assert(memory::Serializable<BitFieldMessage>);
-    static_assert(!memory::Serializable<ConstMember>);
-    static_assert(!memory::Serializable<UnsafeMixedMessage>);
-    static_assert(!memory::Serializable<AdaptedUnion>);
+    static_assert(!std::is_trivially_copyable_v<AutoMessage>);
+    static_assert(memory::detail::HasSerializationAdapter<AutoMessage>);
+    static_assert(memory::detail::HasSerializationAdapter<NonTrivialValue>);
+    static_assert(memory::detail::HasSerializationAdapter<NestedAutoMessage>);
+    static_assert(memory::Serializable<AutoMessage>);
+    static_assert(memory::Serializable<const AutoMessage>);
+    static_assert(memory::Serializable<PrivateAutoMessage>);
+    static_assert(!memory::detail::HasSerializationAdapter<TrivialEnvelope>);
+    static_assert(!memory::Serializable<UnsafeAutoMessage>);
+    static_assert(!memory::Serializable<ReferenceAutoMessage>);
+    static_assert(!memory::Serializable<ConstAutoMessage>);
 }
 
 TEST(CommonSerializationTests, RawValueRoundTripsThroughOwnedBuffer)
@@ -450,93 +467,163 @@ TEST(CommonSerializationTests, MemberAdapterDoesNotEnableRawCopyOfReferences)
     EXPECT_FALSE((memory::Serializable<std::array<ReferenceEnvelope, 2>>));
 }
 
-TEST(CommonSerializationTests, MixedMembersRoundTripIndividually)
+TEST(CommonSerializationTests, GeneratedAdapterSerializesMixedMembers)
 {
-    const MixedMessage source{ 21.5, { { std::byte{ 1 }, std::byte{ 2 }, std::byte{ 3 } } }, 42 };
-    MixedMessage destination{};
+    const AutoMessage source{ 21.5, { { std::byte{ 1 }, std::byte{ 2 }, std::byte{ 3 } } }, { 42 } };
+    AutoMessage destination{};
+    using Adapter = memory::SerializationAdapter<AutoMessage>;
 
     const auto bytes = memory::serialize(source);
-    EXPECT_EQ(bytes.size(),
-              sizeof(double) + sizeof(std::size_t) + source.payload.bytes.size() + sizeof(std::uint32_t));
+    EXPECT_EQ(bytes.size(), sizeof(double) + 2 * sizeof(std::size_t) + source.payload.bytes.size() + 1);
+    EXPECT_EQ(bytes.size(), Adapter::bufferSize(source));
     ASSERT_TRUE(memory::deserialize(bytes, destination));
     EXPECT_EQ(destination.value, source.value);
     EXPECT_EQ(destination.payload.bytes, source.payload.bytes);
-    EXPECT_EQ(destination.sequence, source.sequence);
+    EXPECT_EQ(destination.code.value, source.code.value);
 }
 
-TEST(CommonSerializationTests, NestedMembersAndVariableSizeArraysRoundTrip)
+TEST(CommonSerializationTests, GeneratedAdapterSupportsNestedAdaptersAndArrays)
 {
-    const NestedMessage source{ { 7.25, { { std::byte{ 9 } } }, 12 },
-                                { Payload{}, Payload{ { std::byte{ 1 }, std::byte{ 2 } } } },
-                                { 42 } };
-    NestedMessage destination{};
+    const NestedAutoMessage source{ { 7.25, { { std::byte{ 9 } } }, { 42 } },
+                                    { Payload{}, Payload{ { std::byte{ 1 }, std::byte{ 2 } } } },
+                                    { Payload{ { std::byte{ 3 } } }, Payload{} } };
+    NestedAutoMessage destination{};
 
     ASSERT_TRUE(memory::copy(destination, source));
     EXPECT_EQ(destination.message.value, source.message.value);
     EXPECT_EQ(destination.message.payload.bytes, source.message.payload.bytes);
-    EXPECT_EQ(destination.message.sequence, source.message.sequence);
-    EXPECT_TRUE(destination.additional[0].bytes.empty());
-    EXPECT_EQ(destination.additional[1].bytes, source.additional[1].bytes);
-    EXPECT_EQ(destination.code.value, 42U);
-}
-
-TEST(CommonSerializationTests, ArraysOfAdapterBackedObjectsRoundTrip)
-{
-    const Payload source[]{ { { std::byte{ 1 } } }, {}, { { std::byte{ 2 }, std::byte{ 3 } } } };
-    Payload destination[3];
-
-    ASSERT_TRUE(memory::deserialize(memory::serialize(source), destination));
-    for (std::size_t i{}; i < 3; ++i) {
-        EXPECT_EQ(destination[i].bytes, source[i].bytes);
+    EXPECT_EQ(destination.message.code.value, source.message.code.value);
+    for (std::size_t i{}; i < 2; ++i) {
+        EXPECT_EQ(destination.additional[i].bytes, source.additional[i].bytes);
+        EXPECT_EQ(destination.values[i].bytes, source.values[i].bytes);
     }
 }
 
-TEST(CommonSerializationTests, NestedAdapterOverridesTrivialObjectRepresentation)
+TEST(CommonSerializationTests, GeneratedAdapterWorksDirectlyForNonTrivialClassWithPlainMember)
 {
-    struct Message
-    {
-        double value;
-        EncodedValue code;
-    };
-    const Message source{ 2.5, { 42 } };
-    Message destination{};
+    const NonTrivialValue source{ 12.5 };
+    NonTrivialValue destination;
+    using Adapter = memory::SerializationAdapter<NonTrivialValue>;
+    std::array<std::byte, sizeof(double)> bytes{};
 
-    const auto bytes = memory::serialize(source);
-    EXPECT_EQ(bytes.size(), sizeof(double) + sizeof(std::size_t) + 1);
-    ASSERT_TRUE(memory::deserialize(bytes, destination));
+    EXPECT_EQ(Adapter::bufferSize(source), sizeof(double));
+    Adapter::serialize(source, bytes);
+    Adapter::deserialize(bytes, destination);
     EXPECT_EQ(destination.value, source.value);
-    EXPECT_EQ(destination.code.value, 42U);
 }
 
-TEST(CommonSerializationTests, PrivateBaseAndPrivateMembersRoundTrip)
+TEST(CommonSerializationTests, GeneratedAdapterSupportsEmptyNonTrivialClass)
 {
-    const PrivateMessage source{ { 12.5, { { std::byte{ 42 } } }, 17 }, { 9 } };
-    PrivateMessage destination;
+    struct Empty
+    {
+        ~Empty() {}
+    };
+    Empty source;
+    Empty destination;
+
+    static_assert(memory::detail::HasSerializationAdapter<Empty>);
+    EXPECT_TRUE(memory::serialize(source).empty());
+    EXPECT_TRUE(memory::serialize(source, {}));
+    EXPECT_TRUE(memory::deserialize({}, destination));
+}
+
+TEST(CommonSerializationTests, TriviallyCopyableClassKeepsRawRepresentation)
+{
+    const TrivialEnvelope source{ 7, { 42 } };
+    TrivialEnvelope destination{};
+
+    const auto bytes = memory::serialize(source);
+    EXPECT_EQ(bytes.size(), sizeof(source));
+    ASSERT_TRUE(memory::deserialize(bytes, destination));
+    EXPECT_EQ(destination.tag, source.tag);
+    EXPECT_EQ(destination.code.value, source.code.value);
+}
+
+TEST(CommonSerializationTests, ExplicitAdapterOverridesGeneratedFallback)
+{
+    const ExplicitAutoMessage source{ { 21.5, { { std::byte{ 1 }, std::byte{ 2 } } }, { 42 } } };
+    ExplicitAutoMessage destination{};
+
+    const auto bytes = memory::serialize(source);
+    EXPECT_EQ(bytes, (std::vector{ std::byte{ 42 } }));
+    ASSERT_TRUE(memory::deserialize(bytes, destination));
+    EXPECT_EQ(destination.code.value, source.code.value);
+    EXPECT_EQ(destination.value, 0.0);
+    EXPECT_TRUE(destination.payload.bytes.empty());
+}
+
+TEST(CommonSerializationTests, GeneratedAdapterHandlesPrivateBaseAndMembers)
+{
+    const PrivateAutoMessage source{ { { std::byte{ 42 } } }, 21.5 };
+    PrivateAutoMessage destination;
 
     ASSERT_TRUE(memory::copy(destination, source));
-    EXPECT_EQ(destination.message().value, source.message().value);
-    EXPECT_EQ(destination.message().payload.bytes, source.message().payload.bytes);
-    EXPECT_EQ(destination.message().sequence, source.message().sequence);
-    EXPECT_EQ(destination.code(), source.code());
+    EXPECT_EQ(destination.payload().bytes, source.payload().bytes);
+    EXPECT_EQ(destination.value(), source.value());
 }
 
-TEST(CommonSerializationTests, BaseClassAdapterIsApplied)
+TEST(CommonSerializationTests, GeneratedAdapterHandlesBitFields)
 {
-    const AdaptedBaseMessage source{ { { std::byte{ 1 }, std::byte{ 2 } } }, 12.5 };
-    AdaptedBaseMessage destination{};
+    const BitFieldAutoMessage source{ 1, 13, { { std::byte{ 42 } } } };
+    BitFieldAutoMessage destination{};
 
-    const auto bytes = memory::serialize(source);
-    EXPECT_EQ(bytes.size(), sizeof(std::size_t) + source.bytes.size() + sizeof(double));
-    ASSERT_TRUE(memory::deserialize(bytes, destination));
-    EXPECT_EQ(destination.bytes, source.bytes);
-    EXPECT_EQ(destination.value, source.value);
+    ASSERT_TRUE(memory::copy(destination, source));
+    EXPECT_EQ(destination.enabled, source.enabled);
+    EXPECT_EQ(destination.count, source.count);
+    EXPECT_EQ(destination.payload.bytes, source.payload.bytes);
 }
 
-TEST(CommonSerializationTests, NestedAdapterSizeOverflowIsRejectedBeforeWriting)
+TEST(CommonSerializationTests, GeneratedAdapterChecksOutputCapacity)
+{
+    const AutoMessage source{ 21.5, { { std::byte{ 1 }, std::byte{ 2 } } }, { 42 } };
+    const auto expected = memory::serialize(source);
+    std::vector<std::byte> bytes(expected.size() + 2, std::byte{ 0xAA });
+    const auto original = bytes;
+    using Adapter = memory::SerializationAdapter<AutoMessage>;
+    auto too_small = std::span{ bytes }.first(expected.size() - 1);
+
+    EXPECT_FALSE(memory::serialize(source, too_small));
+    EXPECT_THROW(Adapter::serialize(source, too_small), std::length_error);
+    EXPECT_EQ(bytes, original);
+    ASSERT_TRUE(memory::serialize(source, bytes));
+    EXPECT_TRUE(std::ranges::equal(std::span{ bytes }.first(expected.size()), expected));
+    EXPECT_EQ(bytes[expected.size()], std::byte{ 0xAA });
+    EXPECT_EQ(bytes.back(), std::byte{ 0xAA });
+}
+
+TEST(CommonSerializationTests, GeneratedAdapterRejectsTruncatedAndTrailingInput)
+{
+    const AutoMessage source{ 21.5, { { std::byte{ 1 }, std::byte{ 2 } } }, { 42 } };
+    auto bytes = memory::serialize(source);
+
+    for (std::size_t size{}; size < bytes.size(); ++size) {
+        SCOPED_TRACE(size);
+        AutoMessage destination{};
+        EXPECT_THROW(memory::deserialize(std::span{ bytes }.first(size), destination), std::invalid_argument);
+    }
+    bytes.push_back(std::byte{});
+    AutoMessage destination{};
+    EXPECT_THROW(memory::deserialize(bytes, destination), std::invalid_argument);
+}
+
+TEST(CommonSerializationTests, GeneratedAdapterRejectsOversizedMemberLength)
+{
+    const AutoMessage source{ 21.5, { { std::byte{ 1 } } }, { 42 } };
+    auto bytes = memory::serialize(source);
+    const auto invalid_size = std::numeric_limits<std::size_t>::max();
+    ASSERT_TRUE(
+      memory::serialize(invalid_size, std::span{ bytes }.subspan(sizeof(double), sizeof(invalid_size))));
+    AutoMessage destination{};
+
+    EXPECT_THROW(memory::deserialize(bytes, destination), std::invalid_argument);
+    EXPECT_TRUE(destination.payload.bytes.empty());
+}
+
+TEST(CommonSerializationTests, GeneratedAdapterRejectsSizeOverflow)
 {
     struct Message
     {
-        double value;
+        NonTrivialValue value;
         OversizedPayload payload;
     };
     const Message source{};
@@ -545,85 +632,4 @@ TEST(CommonSerializationTests, NestedAdapterSizeOverflowIsRejectedBeforeWriting)
     EXPECT_THROW(memory::serialize(source), std::length_error);
     EXPECT_THROW(memory::serialize(source, bytes), std::length_error);
     EXPECT_EQ(bytes.front(), std::byte{ 0xAA });
-}
-
-TEST(CommonSerializationTests, ClassPaddingIsNotSerialized)
-{
-    const PaddedMessage source{ 7, 21.5 };
-    PaddedMessage destination{};
-
-    const auto bytes = memory::serialize(source);
-    EXPECT_EQ(bytes.size(), sizeof(source.tag) + sizeof(source.value));
-    ASSERT_TRUE(memory::deserialize(bytes, destination));
-    EXPECT_EQ(destination.tag, source.tag);
-    EXPECT_EQ(destination.value, source.value);
-}
-
-TEST(CommonSerializationTests, BitFieldsAndAdaptedMemberRoundTrip)
-{
-    const BitFieldMessage source{ 1, 13, { { std::byte{ 42 } } } };
-    BitFieldMessage destination{};
-
-    ASSERT_TRUE(memory::copy(destination, source));
-    EXPECT_EQ(destination.enabled, source.enabled);
-    EXPECT_EQ(destination.count, source.count);
-    EXPECT_EQ(destination.payload.bytes, source.payload.bytes);
-}
-
-TEST(CommonSerializationTests, EmptyObjectsAndArraysHaveEmptyEncoding)
-{
-    struct Empty
-    {
-    };
-    Empty object;
-    std::array<Payload, 0> array;
-
-    EXPECT_TRUE(memory::serialize(object).empty());
-    EXPECT_TRUE(memory::serialize(array).empty());
-    EXPECT_TRUE(memory::serialize(object, {}));
-    EXPECT_TRUE(memory::deserialize({}, object));
-    EXPECT_TRUE(memory::deserialize({}, array));
-}
-
-TEST(CommonSerializationTests, MixedSerializationChecksCapacityBeforeWriting)
-{
-    const MixedMessage source{ 21.5, { { std::byte{ 1 }, std::byte{ 2 } } }, 42 };
-    const auto expected = memory::serialize(source);
-    std::vector<std::byte> bytes(expected.size() + 2, std::byte{ 0xAA });
-    const auto original = bytes;
-
-    EXPECT_FALSE(memory::serialize(source, std::span{ bytes }.first(expected.size() - 1)));
-    EXPECT_EQ(bytes, original);
-    ASSERT_TRUE(memory::serialize(source, bytes));
-    EXPECT_TRUE(std::ranges::equal(std::span{ bytes }.first(expected.size()), expected));
-    EXPECT_EQ(bytes[expected.size()], std::byte{ 0xAA });
-    EXPECT_EQ(bytes.back(), std::byte{ 0xAA });
-}
-
-TEST(CommonSerializationTests, MixedDeserializationRejectsTruncatedAndTrailingData)
-{
-    const MixedMessage source{ 21.5, { { std::byte{ 1 }, std::byte{ 2 } } }, 42 };
-    auto bytes = memory::serialize(source);
-
-    for (std::size_t size{}; size < bytes.size(); ++size) {
-        SCOPED_TRACE(size);
-        MixedMessage destination{};
-        EXPECT_FALSE(memory::deserialize(std::span{ bytes }.first(size), destination));
-    }
-    bytes.push_back(std::byte{});
-    MixedMessage destination{};
-    EXPECT_FALSE(memory::deserialize(bytes, destination));
-}
-
-TEST(CommonSerializationTests, MixedDeserializationRejectsOversizedMemberLength)
-{
-    const MixedMessage source{ 21.5, { { std::byte{ 1 } } }, 42 };
-    auto bytes = memory::serialize(source);
-    const auto invalid_size = std::numeric_limits<std::size_t>::max();
-    ASSERT_TRUE(
-      memory::serialize(invalid_size, std::span{ bytes }.subspan(sizeof(double), sizeof(invalid_size))));
-    MixedMessage destination{};
-
-    EXPECT_FALSE(memory::deserialize(bytes, destination));
-    EXPECT_TRUE(destination.payload.bytes.empty());
 }

@@ -36,27 +36,24 @@
 The common module contains small reusable helpers that support the higher-level libraries:
 
 *   `pnm::Result<T>` as `std::expected<T, std::error_code>`.
-*   `pnm::utils::memory` serialization and copy helpers with recursive reflection and custom adapters.
+*   `pnm::utils::memory` serialization and copy helpers with explicit and automatically generated adapters.
 *   `pnm::utils::concurrent` thread concepts plus thread start/stop helpers.
 *   `pnm::utils::queue` push/pop adapters for queue-like types, optionally guarded by a lock.
 *   `pnm::utils::bit` constexpr unsigned bit masks and masked get/set helpers.
 *   Debug assertions and portable structure-packing macros.
 
-`memory::Serializable<T>` checks class members, base classes, and array elements recursively.
-A class containing a `double` and an adapter-backed payload needs no adapter of its own.
-`serialize(value)` returns a byte vector; `serialize(value, destination_span)` writes into a caller-provided
-buffer, and `deserialize(source_span, destination)` restores an existing object. `copy(destination, source)`
-uses the same encoding. A `SerializationAdapter<T>` supplies `bufferSize(const T&)`,
-`serialize(const T&, std::span<std::byte>)`, and `deserialize(std::span<const std::byte>, T&)`;
-the latter two return `void` and can throw on invalid data.
+`memory::serialize`, `deserialize`, and `copy` use `SerializationAdapter<T>` when one is available.
+An adapter provides `bufferSize(const T&)`, `serialize(const T&, std::span<std::byte>)`, and
+`deserialize(std::span<const std::byte>, T&)`; the latter two return `void` and can throw.
+For a non-trivially-copyable class, Pneumo automatically supplies an adapter when reflection confirms
+that every base and member can be serialized. Nested eligible classes receive their own adapters,
+and explicit specializations override the generated fallback. Existing raw serialization for
+trivially serializable types is unchanged.
 
-Class encoding visits bases first, then members in declaration order, and omits object padding.
-Arrays use element order. Each nested adapter payload has a native `std::size_t` byte-length prefix,
-so adapters can restore variable-sized members without a pre-sized destination. Top-level adapters
-receive their complete buffer directly. Scalars and raw-safe unions use their object representation;
-a union containing adapter-backed data needs its own adapter to select the active member.
-The byte format is intended for the same process and ABI. Deserialization errors can leave earlier
-fields modified; adapters are responsible for validating their own payloads.
+Generated adapters visit bases first, then members in declaration order, and process array elements
+recursively. Each adapter-backed field has a native `std::size_t` byte-length prefix, allowing
+variable-sized fields to be restored into empty destinations. This is a same-process, same-ABI format.
+Generated adapters throw on malformed input; fields decoded before an error may already be modified.
 
 ### `pneumo::meta`
 

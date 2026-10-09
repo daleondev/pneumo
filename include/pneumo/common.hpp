@@ -72,26 +72,12 @@ namespace pnm
                 inline constexpr bool is_span_v = is_span<std::remove_cvref_t<T>>::value;
 
                 template<typename T>
-                struct is_std_array : std::false_type
-                {
-                };
-
-                template<typename T, size_t Size>
-                struct is_std_array<std::array<T, Size>> : std::true_type
-                {
-                };
-
-                template<typename T>
-                inline constexpr bool is_std_array_v = is_std_array<std::remove_cvref_t<T>>::value;
-
-                template<typename T>
                 consteval auto is_trivially_serializable() -> bool
                 {
                     using U = std::remove_cvref_t<T>;
 
-                    if constexpr (HasSerializationAdapter<T> || !std::is_trivially_copyable_v<U> ||
-                                  std::is_pointer_v<U> || std::is_member_pointer_v<U> ||
-                                  std::is_reference_v<T> || is_span_v<U>) {
+                    if constexpr (!std::is_trivially_copyable_v<U> || std::is_pointer_v<U> ||
+                                  std::is_member_pointer_v<U> || std::is_reference_v<T> || is_span_v<U>) {
                         return false;
                     }
                     else if constexpr (std::is_array_v<U>) {
@@ -129,108 +115,176 @@ namespace pnm
                     }
                 }
 
-                template<typename T>
-                consteval auto is_serializable() -> bool
-                {
-                    using U = std::remove_cvref_t<T>;
-                    if constexpr (std::is_reference_v<T> || std::is_volatile_v<T>) {
+                // NOLINTEND(readability-identifier-naming)
+            }
+
+            // Raw copies cannot apply adapters to individual members or base classes.
+            template<typename T>
+            concept Serializable =
+              detail::HasSerializationAdapter<T> || detail::is_trivially_serializable<T>();
+
+            template<Serializable T>
+            auto serialize(const T& src, std::span<std::byte> dest_bytes) -> bool
+            {
+                if constexpr (detail::HasSerializationAdapter<T>) {
+                    if (dest_bytes.size() < detail::SerializationAdapterFor<T>::bufferSize(src)) {
                         return false;
                     }
-                    else if constexpr (HasSerializationAdapter<T>) {
-                        return true;
+                    detail::SerializationAdapterFor<T>::serialize(src, dest_bytes);
+                }
+                else {
+                    auto src_bytes{ std::as_bytes(std::span{ &src, 1 }) };
+                    if (dest_bytes.size() < src_bytes.size()) {
+                        return false;
                     }
-                    else if constexpr (std::is_array_v<U>) {
-                        return std::is_bounded_array_v<U> && is_serializable<std::remove_extent_t<U>>();
+                    std::ranges::copy(src_bytes, dest_bytes.begin());
+                }
+                return true;
+            }
+
+            template<Serializable T>
+            auto serialize(const T& src) -> std::vector<std::byte>
+            {
+                if constexpr (detail::HasSerializationAdapter<T>) {
+                    std::vector<std::byte> buffer{ detail::SerializationAdapterFor<T>::bufferSize(src) };
+                    detail::SerializationAdapterFor<T>::serialize(src, buffer);
+                    return buffer;
+                }
+                else {
+                    std::vector<std::byte> buffer{ sizeof(T) };
+                    auto src_bytes{ std::as_bytes(std::span{ &src, 1 }) };
+                    std::ranges::copy(src_bytes, buffer.begin());
+                    return buffer;
+                }
+            }
+
+            template<Serializable T>
+            auto deserialize(std::span<const std::byte> src_bytes, T& dest) -> bool
+            {
+                if constexpr (detail::HasSerializationAdapter<T>) {
+                    detail::SerializationAdapterFor<T>::deserialize(src_bytes, dest);
+                }
+                else {
+                    auto dest_bytes{ std::as_writable_bytes(std::span{ &dest, 1 }) };
+                    if (dest_bytes.size() != src_bytes.size()) {
+                        return false;
                     }
-                    else if constexpr (is_std_array_v<U>) {
-                        return !std::is_const_v<typename U::value_type> &&
-                               is_serializable<typename U::value_type>();
+                    std::ranges::copy(src_bytes, dest_bytes.begin());
+                }
+                return true;
+            }
+
+            template<Serializable T, Serializable U>
+            auto copy(T& dest, const U& src) -> bool
+            {
+                auto bytes{ serialize(src) };
+                return deserialize(bytes, dest);
+            }
+
+            namespace detail
+            {
+                // NOLINTBEGIN(readability-identifier-naming)
+
+                template<typename T>
+                consteval auto is_serializable_field() -> bool
+                {
+                    if constexpr (std::is_reference_v<T> || std::is_const_v<T> || std::is_volatile_v<T>) {
+                        return false;
                     }
-                    else if constexpr (std::is_class_v<U> && !is_span_v<U>) {
-                        static constexpr auto bases{ std::define_static_array(
-                          std::meta::bases_of(^^U, std::meta::access_context::unchecked())) };
-                        // NOLINTNEXTLINE(bugprone-reserved-identifier,readability-identifier-naming)
-                        template for (constexpr auto base : bases)
-                        {
-                            using BaseType = [:std::meta::type_of(base):];
-                            // Match the base conversion used by for_each_subobject, including private bases.
-                            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-cstyle-cast)
-                            if constexpr (!requires(U& value) { (BaseType&)value; } ||
-                                          !is_serializable<BaseType>()) {
-                                return false;
-                            }
-                        }
-                        static constexpr auto members{ std::define_static_array(
-                          std::meta::nonstatic_data_members_of(^^U,
-                                                               std::meta::access_context::unchecked())) };
-                        // NOLINTNEXTLINE(bugprone-reserved-identifier,readability-identifier-naming)
-                        template for (constexpr auto member : members)
-                        {
-                            using MemberType = [:std::meta::type_of(member):];
-                            if constexpr (std::is_const_v<MemberType> || !is_serializable<MemberType>()) {
-                                return false;
-                            }
-                        }
-                        return true;
+                    else if constexpr (std::is_array_v<T>) {
+                        return std::is_bounded_array_v<T> && is_serializable_field<std::remove_extent_t<T>>();
                     }
                     else {
-                        // A union's active member is unknown: only raw-safe unions can omit an adapter.
-                        return is_trivially_serializable<T>();
+                        return Serializable<T>;
+                    }
+                }
+
+                template<typename T>
+                consteval auto can_generate_serialization_adapter() -> bool
+                {
+                    if constexpr (requires { sizeof(T); }) {
+                        if constexpr (std::is_class_v<T> && !std::is_const_v<T> && !std::is_volatile_v<T> &&
+                                      !std::is_trivially_copyable_v<T>) {
+                            static constexpr auto bases{ std::define_static_array(
+                              std::meta::bases_of(^^T, std::meta::access_context::unchecked())) };
+                            // NOLINTNEXTLINE(bugprone-reserved-identifier,readability-identifier-naming)
+                            template for (constexpr auto base : bases)
+                            {
+                                using BaseType = [:std::meta::type_of(base):];
+                                // Match the unchecked base conversion used during traversal.
+                                // NOLINTNEXTLINE(cppcoreguidelines-pro-type-cstyle-cast)
+                                if constexpr (!requires(T& value) { (BaseType&)value; } ||
+                                              !is_serializable_field<BaseType>()) {
+                                    return false;
+                                }
+                            }
+                            static constexpr auto members{ std::define_static_array(
+                              std::meta::nonstatic_data_members_of(^^T,
+                                                                   std::meta::access_context::unchecked())) };
+                            // NOLINTNEXTLINE(bugprone-reserved-identifier,readability-identifier-naming)
+                            template for (constexpr auto member : members)
+                            {
+                                using MemberType = [:std::meta::type_of(member):];
+                                if constexpr (!is_serializable_field<MemberType>()) {
+                                    return false;
+                                }
+                            }
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+
+                template<typename T, typename Func>
+                auto visit_serialization_field(T& field, const Func& function) -> void
+                {
+                    if constexpr (std::is_array_v<T>) {
+                        for (auto& element : field) {
+                            visit_serialization_field(element, function);
+                        }
+                    }
+                    else {
+                        function(field);
                     }
                 }
 
                 template<typename T, typename Func>
-                auto for_each_subobject(T& value, const Func& function) -> bool
+                auto for_each_serialization_field(T& value, const Func& function) -> void
                 {
-                    using U = std::remove_cvref_t<T>;
-                    if constexpr (std::is_array_v<U> || is_std_array_v<U>) {
-                        for (auto& element : value) {
-                            if (!function(element)) {
-                                return false;
-                            }
-                        }
+                    static constexpr auto bases{ std::define_static_array(
+                      std::meta::bases_of(^^std::remove_cv_t<T>, std::meta::access_context::unchecked())) };
+                    // NOLINTNEXTLINE(bugprone-reserved-identifier,readability-identifier-naming)
+                    template for (constexpr auto base : bases)
+                    {
+                        using BaseType = [:std::meta::type_of(base):];
+                        using QualifiedBase =
+                          std::conditional_t<std::is_const_v<T>, const BaseType, BaseType>;
+                        // Clang lacks base splices; this conversion supports private bases too.
+                        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-cstyle-cast)
+                        visit_serialization_field((QualifiedBase&)value, function);
                     }
-                    else {
-                        static constexpr auto bases{ std::define_static_array(
-                          std::meta::bases_of(^^U, std::meta::access_context::unchecked())) };
-                        // NOLINTNEXTLINE(bugprone-reserved-identifier,readability-identifier-naming)
-                        template for (constexpr auto base : bases)
-                        {
-                            using BaseType = [:std::meta::type_of(base):];
-                            using QualifiedBase =
-                              std::conditional_t<std::is_const_v<T>, const BaseType, BaseType>;
-                            // Clang does not yet support base splices. This base conversion also permits
-                            // private bases. NOLINTNEXTLINE(cppcoreguidelines-pro-type-cstyle-cast)
-                            if (!function((QualifiedBase&)value)) {
-                                return false;
-                            }
-                        }
-                        static constexpr auto members{ std::define_static_array(
-                          std::meta::nonstatic_data_members_of(^^U,
-                                                               std::meta::access_context::unchecked())) };
-                        // NOLINTNEXTLINE(bugprone-reserved-identifier,readability-identifier-naming)
-                        template for (constexpr auto member : members)
-                        {
-                            if constexpr (std::meta::is_bit_field(member)) {
-                                if constexpr (std::meta::has_identifier(member)) {
-                                    auto field = value.[:member:];
-                                    if (!function(field)) {
-                                        return false;
-                                    }
-                                    if constexpr (!std::is_const_v<T>) {
-                                        value.[:member:] = field;
-                                    }
+                    static constexpr auto members{ std::define_static_array(
+                      std::meta::nonstatic_data_members_of(^^std::remove_cv_t<T>,
+                                                           std::meta::access_context::unchecked())) };
+                    // NOLINTNEXTLINE(bugprone-reserved-identifier,readability-identifier-naming)
+                    template for (constexpr auto member : members)
+                    {
+                        if constexpr (std::meta::is_bit_field(member)) {
+                            if constexpr (std::meta::has_identifier(member)) {
+                                auto field = value.[:member:];
+                                function(field);
+                                if constexpr (!std::is_const_v<T>) {
+                                    value.[:member:] = field;
                                 }
                             }
-                            else if (!function(value.[:member:])) {
-                                return false;
-                            }
+                        }
+                        else {
+                            visit_serialization_field(value.[:member:], function);
                         }
                     }
-                    return true;
                 }
 
-                inline auto add_size(size_t& total, size_t size) -> void
+                inline auto add_serialized_size(size_t& total, size_t size) -> void
                 {
                     if (size > std::numeric_limits<size_t>::max() - total) {
                         throw std::length_error{ "Serialized data is too large" };
@@ -238,125 +292,93 @@ namespace pnm
                     total += size;
                 }
 
-                template<bool Nested, typename T>
-                auto serialized_size(const T& value) -> size_t
+                template<typename T>
+                auto serialized_field_size(const T& value) -> size_t
                 {
                     if constexpr (HasSerializationAdapter<T>) {
-                        auto size = static_cast<size_t>(SerializationAdapterFor<T>::bufferSize(value));
-                        if constexpr (Nested) {
-                            add_size(size, sizeof(size_t));
-                        }
-                        return size;
-                    }
-                    else if constexpr (std::is_class_v<T> || std::is_array_v<T>) {
-                        size_t size{};
-                        for_each_subobject(value, [&](const auto& field) {
-                            add_size(size, serialized_size<true>(field));
-                            return true;
-                        });
-                        return size;
+                        return static_cast<size_t>(SerializationAdapterFor<T>::bufferSize(value));
                     }
                     else {
                         return sizeof(T);
                     }
                 }
 
-                template<bool Nested, typename T>
-                auto serialize_value(const T& value, std::span<std::byte>& output) -> void
+                template<typename T>
+                auto serialize_field(const T& value, std::span<std::byte>& output) -> void
                 {
+                    const size_t size{ serialized_field_size(value) };
                     if constexpr (HasSerializationAdapter<T>) {
-                        const auto size = static_cast<size_t>(SerializationAdapterFor<T>::bufferSize(value));
-                        if constexpr (Nested) {
-                            serialize_value<true>(size, output);
+                        if (output.size() < sizeof(size)) {
+                            throw std::length_error{ "Serialization buffer is too small" };
                         }
-                        SerializationAdapterFor<T>::serialize(value, output.first(size));
-                        output = output.subspan(size);
+                        std::ranges::copy(std::as_bytes(std::span{ &size, 1 }), output.begin());
+                        output = output.subspan(sizeof(size));
                     }
-                    else if constexpr (std::is_class_v<T> || std::is_array_v<T>) {
-                        for_each_subobject(value, [&](const auto& field) {
-                            serialize_value<true>(field, output);
-                            return true;
-                        });
+                    if (size > output.size() || !memory::serialize(value, output.first(size))) {
+                        throw std::length_error{ "Serialization buffer is too small" };
                     }
-                    else {
-                        const auto bytes = std::as_bytes(std::span{ &value, 1 });
-                        std::ranges::copy(bytes, output.begin());
-                        output = output.subspan(bytes.size());
-                    }
+                    output = output.subspan(size);
                 }
 
-                template<bool Nested, typename T>
-                auto deserialize_value(std::span<const std::byte>& input, T& value) -> bool
+                template<typename T>
+                auto deserialize_field(std::span<const std::byte>& input, T& value) -> void
                 {
+                    size_t size{ sizeof(T) };
                     if constexpr (HasSerializationAdapter<T>) {
-                        size_t size{ input.size() };
-                        if constexpr (Nested) {
-                            if (!deserialize_value<true>(input, size) || size > input.size()) {
-                                return false;
-                            }
+                        if (input.size() < sizeof(size)) {
+                            throw std::invalid_argument{ "Missing serialized member length" };
                         }
-                        SerializationAdapterFor<T>::deserialize(input.first(size), value);
-                        input = input.subspan(size);
+                        std::ranges::copy(input.first(sizeof(size)),
+                                          std::as_writable_bytes(std::span{ &size, 1 }).begin());
+                        input = input.subspan(sizeof(size));
                     }
-                    else if constexpr (std::is_class_v<T> || std::is_array_v<T>) {
-                        if (!for_each_subobject(
-                              value, [&](auto& field) { return deserialize_value<true>(input, field); })) {
-                            return false;
-                        }
+                    if (size > input.size() || !memory::deserialize(input.first(size), value)) {
+                        throw std::invalid_argument{ "Invalid serialized member size" };
                     }
-                    else {
-                        if (input.size() < sizeof(T) || (!Nested && input.size() != sizeof(T))) {
-                            return false;
-                        }
-                        auto bytes = std::as_writable_bytes(std::span{ &value, 1 });
-                        std::ranges::copy(input.first(bytes.size()), bytes.begin());
-                        input = input.subspan(bytes.size());
-                    }
-                    return true;
+                    input = input.subspan(size);
                 }
 
                 // NOLINTEND(readability-identifier-naming)
             }
 
+            // Explicit specializations override this fallback. Only non-trivial classes qualify.
+            // Bases precede members; adapter-backed fields carry native size_t byte lengths.
             template<typename T>
-            concept Serializable = detail::is_serializable<T>();
-
-            // Classes are encoded base-first, then member-by-member; arrays use element order.
-            // Nested adapter payloads carry a native size_t length. Padding is not encoded.
-            template<Serializable T>
-            auto serialize(const T& src, std::span<std::byte> dest_bytes) -> bool
+                requires(detail::can_generate_serialization_adapter<T>())
+            struct SerializationAdapter<T>
             {
-                if (dest_bytes.size() < detail::serialized_size<false>(src)) {
-                    return false;
+                static auto bufferSize(const T& src) -> size_t
+                {
+                    size_t size{};
+                    detail::for_each_serialization_field(src, [&](const auto& field) {
+                        using Field = std::remove_cvref_t<decltype(field)>;
+                        if constexpr (detail::HasSerializationAdapter<Field>) {
+                            detail::add_serialized_size(size, sizeof(size_t));
+                        }
+                        detail::add_serialized_size(size, detail::serialized_field_size(field));
+                    });
+                    return size;
                 }
-                detail::serialize_value<false>(src, dest_bytes);
-                return true;
-            }
 
-            template<Serializable T>
-            auto serialize(const T& src) -> std::vector<std::byte>
-            {
-                std::vector<std::byte> buffer(detail::serialized_size<false>(src));
-                std::span bytes{ buffer };
-                detail::serialize_value<false>(src, bytes);
-                return buffer;
-            }
+                static auto serialize(const T& src, std::span<std::byte> dest) -> void
+                {
+                    if (dest.size() < bufferSize(src)) {
+                        throw std::length_error{ "Serialization buffer is too small" };
+                    }
+                    detail::for_each_serialization_field(
+                      src, [&](const auto& field) { detail::serialize_field(field, dest); });
+                }
 
-            // Failure can leave previously decoded fields modified. Adapters validate their payloads.
-            template<Serializable T>
-                requires(!std::is_const_v<T>)
-            auto deserialize(std::span<const std::byte> src_bytes, T& dest) -> bool
-            {
-                return detail::deserialize_value<false>(src_bytes, dest) && src_bytes.empty();
-            }
-
-            template<Serializable T, Serializable U>
-                requires(!std::is_const_v<T>)
-            auto copy(T& dest, const U& src) -> bool
-            {
-                auto bytes{ serialize(src) };
-                return deserialize(bytes, dest);
-            }
+                // Malformed input throws; previously decoded fields may already have changed.
+                static auto deserialize(std::span<const std::byte> src, T& dest) -> void
+                {
+                    detail::for_each_serialization_field(
+                      dest, [&](auto& field) { detail::deserialize_field(src, field); });
+                    if (!src.empty()) {
+                        throw std::invalid_argument{ "Trailing serialized data" };
+                    }
+                }
+            };
 
             template<auto DeleteFn>
             struct Deleter
