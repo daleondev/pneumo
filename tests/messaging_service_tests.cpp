@@ -624,3 +624,116 @@ TEST(MessagingServiceTests, TimeoutValidationAndSaturation)
     stop.request_stop();
     EXPECT_EQ(infinity.get().error(), ServiceError::Cancelled);
 }
+
+TEST(MessagingServiceTests, SaturatedBlockingWaitCanBeCancelledAndServerWaitCanBeClosed)
+{
+    pnm::msg::Bus bus{};
+    auto service{ bus.service<int, int>("value") };
+    auto server{ service.serve([](int value) { return value; }) };
+    std::stop_source stop{};
+    auto pending{ service.request(1, std::chrono::hours::max(), stop.get_token()) };
+    auto result{ std::async(std::launch::async, [&] { return pending.get(); }) };
+    EXPECT_EQ(result.wait_for(20ms), std::future_status::timeout);
+    stop.request_stop();
+    EXPECT_EQ(result.get().error(), ServiceError::Cancelled);
+    server.poll(); // Retire the cancelled queued call before testing an empty provider wait.
+    auto waiting{ std::async(std::launch::async, [&] { return server.poll(std::chrono::hours::max()); }) };
+    EXPECT_EQ(waiting.wait_for(20ms), std::future_status::timeout);
+    server.close();
+    EXPECT_EQ(waiting.get(), 0UZ);
+}
+
+TEST(MessagingServiceTests, ConcurrentServerPollAndClientConsumptionAreRejected)
+{
+    pnm::msg::Bus bus{};
+    auto service{ bus.service<int, int>("value") };
+    std::latch entered{ 1 };
+    std::latch released{ 1 };
+    auto server{ service.serve([&](int value) {
+        entered.count_down();
+        released.wait();
+        return value;
+    }) };
+    auto pending{ service.request(42, 5s) };
+    std::jthread provider{ [&] { server.poll(); } };
+    entered.wait();
+    EXPECT_THROW(server.poll(), std::logic_error);
+    server.close();
+    released.count_down();
+    provider.join();
+    EXPECT_EQ(pending.get().error(), ServiceError::Unavailable);
+
+    auto replacement{ service.serve([](int value) { return value; }) };
+    std::latch callback_entered{ 1 };
+    std::latch callback_released{ 1 };
+    auto callback_call{ service.request(42, 5s, [&](ServiceResult<int> result) {
+        EXPECT_EQ(result.value(), 42);
+        callback_entered.count_down();
+        callback_released.wait();
+    }) };
+    replacement.poll();
+    std::jthread consumer{ [&] { EXPECT_TRUE(callback_call.poll()); } };
+    callback_entered.wait();
+    EXPECT_THROW(callback_call.poll(), std::logic_error);
+    EXPECT_THROW(static_cast<void>(callback_call.get()), std::logic_error);
+    callback_released.count_down();
+    consumer.join();
+}
+
+TEST(MessagingServiceTests, RetiringCancelledRequestReleasesCallbackOutsideProviderLock)
+{
+    pnm::msg::Bus bus{};
+    auto service{ bus.service<int, int>("value") };
+    auto server{ service.serve([](int value) { return value; }) };
+    int released{};
+    auto capture{ std::shared_ptr<int>{ new int{ 0 }, [&](int* value) {
+        delete value;
+        ++released;
+        server.close(); // Reenter the provider while the old request is being retired.
+    } } };
+    {
+        auto pending{ service.request(1, 5s, [capture](ServiceResult<int>) {}) };
+        capture.reset();
+    }
+    EXPECT_EQ(released, 0);
+    auto next{ service.request(2, 5s) };
+    EXPECT_EQ(released, 1);
+    EXPECT_EQ(next.get().error(), ServiceError::Unavailable);
+}
+
+TEST(MessagingServiceTests, ReplyAndCancellationRaceHasOneTerminalResult)
+{
+    pnm::msg::Bus bus{};
+    auto service{ bus.service<int, int>("value") };
+    std::optional<pnm::msg::Reply<int>> reply{};
+    auto server{ service.serveDeferred(
+      [&](int, pnm::msg::Reply<int> value) { reply.emplace(std::move(value)); }) };
+    for (int iteration{}; iteration < 16; ++iteration) {
+        auto pending{ service.request(iteration, 5s) };
+        server.poll();
+        std::latch start{ 1 };
+        bool responded{};
+        bool cancelled{};
+        std::jthread producer{ [&] {
+            start.wait();
+            responded = reply->respond(42);
+        } };
+        std::jthread consumer{ [&] {
+            start.wait();
+            cancelled = pending.cancel();
+        } };
+        start.count_down();
+        producer.join();
+        consumer.join();
+        EXPECT_NE(responded, cancelled);
+        auto result{ pending.get() };
+        if (responded) {
+            ASSERT_TRUE(result);
+            EXPECT_EQ(*result, 42);
+        }
+        else {
+            ASSERT_FALSE(result);
+            EXPECT_EQ(result.error(), ServiceError::Cancelled);
+        }
+    }
+}

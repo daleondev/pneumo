@@ -10,6 +10,7 @@
 #include <functional>
 #include <future>
 #include <latch>
+#include <limits>
 #include <memory>
 #include <numeric>
 #include <optional>
@@ -18,10 +19,16 @@
 #include <string>
 #include <thread>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace messaging_tests
 {
+    struct HookedMessage
+    {
+        int value{};
+    };
+
     struct Payload
     {
         std::vector<std::byte> bytes;
@@ -43,6 +50,27 @@ namespace messaging_tests
 
 namespace pnm::utils::memory
 {
+    template<>
+    struct SerializationAdapter<messaging_tests::HookedMessage>
+    {
+        static inline std::function<void()> on_serialize{};
+        static inline std::function<void()> on_deserialize{};
+        static auto bufferSize(const messaging_tests::HookedMessage&) -> size_t { return sizeof(int); }
+        static auto serialize(const messaging_tests::HookedMessage& value, std::span<std::byte> bytes) -> void
+        {
+            pnm::utils::memory::serialize(value.value, bytes);
+            if (auto hook{ std::exchange(on_serialize, {}) })
+                hook();
+        }
+        static auto deserialize(std::span<const std::byte> bytes, messaging_tests::HookedMessage& value)
+          -> void
+        {
+            pnm::utils::memory::deserialize(bytes, value.value);
+            if (auto hook{ std::exchange(on_deserialize, {}) })
+                hook();
+        }
+    };
+
     template<>
     struct SerializationAdapter<messaging_tests::Payload>
     {
@@ -679,4 +707,113 @@ TEST(MessagingTopicTests, ConfigurationChangesDuringComparisonAreRespected)
     });
     EXPECT_TRUE(topic.publish(1));
     EXPECT_TRUE(topic.publish(1));
+}
+
+TEST(MessagingTopicTests, SerializationCanReleaseThePublishingHandle)
+{
+    using Message = messaging_tests::HookedMessage;
+    using Adapter = pnm::utils::memory::SerializationAdapter<Message>;
+    pnm::msg::Bus bus{};
+    auto topic{ std::make_unique<pnm::msg::Topic<Message>>(bus.topic<Message>("value")) };
+    int received{};
+    auto subscription{ topic->subscribe([&](const Message& value) { received = value.value; }) };
+    Adapter::on_serialize = [&] { topic.reset(); };
+    EXPECT_TRUE(topic->publish(Message{ 42 }));
+    EXPECT_FALSE(topic);
+    EXPECT_EQ(subscription.poll(), 1UZ);
+    EXPECT_EQ(received, 42);
+}
+
+TEST(MessagingTopicTests, ComparisonCanReleaseThePublishingHandle)
+{
+    pnm::msg::Bus bus{};
+    auto topic{ std::make_unique<pnm::msg::Topic<int>>(bus.topic<int>("value")) };
+    std::vector<int> received{};
+    auto subscription{ topic->subscribe([&](int value) { received.push_back(value); }) };
+    topic->publish(1);
+    topic->setPublishOnlyOnChange(true, [&](int previous, int next) {
+        topic.reset();
+        return previous == next;
+    });
+    EXPECT_TRUE(topic->publish(2));
+    EXPECT_FALSE(topic);
+    EXPECT_EQ(subscription.poll(), 2UZ);
+    EXPECT_EQ(received, (std::vector{ 1, 2 }));
+}
+
+TEST(MessagingTopicTests, AdapterFailuresPreservePublicationAndConsumeOnlyTheFailingQueuedMessage)
+{
+    using Message = messaging_tests::HookedMessage;
+    using Adapter = pnm::utils::memory::SerializationAdapter<Message>;
+    pnm::msg::Bus bus{};
+    auto topic{ bus.topic<Message>("value") };
+    std::vector<int> received{};
+    auto subscription{ topic.subscribe([&](const Message& value) { received.push_back(value.value); }) };
+    topic.publish(Message{ 1 });
+    Adapter::on_serialize = [] { throw std::runtime_error{ "encode" }; };
+    EXPECT_THROW(topic.publish(Message{ 2 }), std::runtime_error);
+    subscription.latest();
+    EXPECT_EQ(received, (std::vector{ 1 }));
+    topic.publish(Message{ 3 });
+    Adapter::on_deserialize = [] { throw std::runtime_error{ "decode" }; };
+    EXPECT_THROW(subscription.poll(), std::runtime_error);
+    EXPECT_EQ(subscription.poll(), 1UZ);
+    EXPECT_EQ(received, (std::vector{ 1, 3 }));
+}
+
+TEST(MessagingTopicTests, TimeoutValidationAndSaturation)
+{
+    pnm::msg::Bus bus{};
+    auto subscription{ bus.topic<int>("value").subscribe([](int) {}) };
+    EXPECT_THROW(subscription.poll(std::chrono::duration<double>{ std::numeric_limits<double>::quiet_NaN() }),
+                 std::invalid_argument);
+    const auto check{ [](auto timeout) {
+        pnm::msg::Bus local_bus{};
+        auto subscriber{ local_bus.topic<int>("value").subscribe([](int) {}) };
+        std::promise<size_t> completion{};
+        auto result{ completion.get_future() };
+        std::latch entered{ 1 };
+        std::jthread thread{ [&] {
+            entered.count_down();
+            completion.set_value(subscriber.poll(timeout));
+        } };
+        entered.wait();
+        EXPECT_EQ(result.wait_for(20ms), std::future_status::timeout);
+        subscriber.unsubscribe();
+        EXPECT_EQ(result.get(), 0UZ);
+    } };
+    check(std::chrono::hours::max());
+    check(std::chrono::duration<double>{ std::numeric_limits<double>::infinity() });
+}
+
+TEST(MessagingTopicTests, ConcurrentPollAndLatestAreRejectedAndSelfDestructionStopsDispatch)
+{
+    pnm::msg::Bus bus{};
+    auto topic{ bus.topic<int>("value") };
+    std::latch entered{ 1 };
+    std::latch released{ 1 };
+    auto subscription{ topic.subscribe([&](int) {
+        entered.count_down();
+        released.wait();
+    }) };
+    topic.publish(1);
+    std::jthread worker{ [&] { EXPECT_EQ(subscription.poll(), 1UZ); } };
+    entered.wait();
+    EXPECT_THROW(subscription.poll(), std::logic_error);
+    EXPECT_THROW(subscription.latest(), std::logic_error);
+    subscription.unsubscribe();
+    released.count_down();
+    worker.join();
+
+    std::optional<pnm::msg::Subscription<int>> self{};
+    int calls{};
+    self.emplace(topic.subscribe([&](int) {
+        ++calls;
+        self.reset();
+    }));
+    topic.publish(2);
+    topic.publish(3);
+    EXPECT_EQ(self->poll(), 1UZ);
+    EXPECT_FALSE(self);
+    EXPECT_EQ(calls, 1);
 }

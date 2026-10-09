@@ -68,6 +68,30 @@ namespace pnm::msg
 
     namespace detail
     {
+        using MessageClock = std::chrono::steady_clock;
+
+        template<typename Rep, typename Period>
+        auto message_deadline(const std::chrono::duration<Rep, Period>& timeout) -> MessageClock::time_point
+        {
+            const auto now{ MessageClock::now() };
+            const auto ticks{ std::chrono::duration<long double, MessageClock::period>{ timeout }.count() };
+            if (std::isnan(ticks)) {
+                throw std::invalid_argument{ "Messaging timeout cannot be NaN" };
+            }
+            if (ticks <= 0) {
+                return now;
+            }
+            const auto rounded{ std::ceil(ticks) };
+            if (rounded >= static_cast<long double>(MessageClock::duration::max().count())) {
+                return MessageClock::time_point::max();
+            }
+            const MessageClock::duration delay{ static_cast<MessageClock::rep>(rounded) };
+            if (now >= MessageClock::time_point::max() - delay) {
+                return MessageClock::time_point::max();
+            }
+            return now + delay;
+        }
+
         using MessageBytes = std::shared_ptr<const std::vector<std::byte>>;
 
         template<typename T>
@@ -214,13 +238,14 @@ namespace pnm::msg
                 return 0;
             }
             detail::DispatchGuard dispatching{ state->dispatching };
+            const auto deadline{ detail::message_deadline(timeout) };
 
             size_t pending{};
             {
                 std::unique_lock lock{ state->mutex };
                 if (timeout > std::chrono::duration<Rep, Period>::zero()) {
-                    state->ready.wait_for(
-                      lock, timeout, [&] { return state->closed || !state->messages.empty(); });
+                    state->ready.wait_until(
+                      lock, deadline, [&] { return state->closed || !state->messages.empty(); });
                 }
                 pending = state->messages.size();
             }
@@ -288,7 +313,8 @@ namespace pnm::msg
         // Return false when change detection suppresses this publication.
         auto publish(const T& message) const -> bool
         {
-            if (!m_state) {
+            auto state{ m_state };
+            if (!state) {
                 throw std::logic_error{ "Cannot publish through a moved-from topic" };
             }
             auto bytes{ std::make_shared<const std::vector<std::byte>>(utils::memory::serialize(message)) };
@@ -297,9 +323,9 @@ namespace pnm::msg
             for (;;) {
                 detail::MessageBytes previous;
                 std::shared_ptr<const detail::MessageEqual<T>> equal;
-                std::unique_lock lock{ m_state->mutex };
-                previous = m_state->latest;
-                equal = m_state->equal;
+                std::unique_lock lock{ state->mutex };
+                previous = state->latest;
+                equal = state->equal;
                 if constexpr (std::default_initializable<T>) {
                     if (previous && equal) {
                         // Adapters and comparators run outside locks. Retry if a concurrent
@@ -307,7 +333,7 @@ namespace pnm::msg
                         lock.unlock();
                         const auto unchanged{ isUnchanged(previous, message, *equal) };
                         lock.lock();
-                        if (m_state->latest != previous || m_state->equal != equal) {
+                        if (state->latest != previous || state->equal != equal) {
                             continue;
                         }
                         if (unchanged) {
@@ -315,13 +341,13 @@ namespace pnm::msg
                         }
                     }
                 }
-                std::erase_if(m_state->subscriptions, [](const auto& weak) { return weak.expired(); });
-                for (const auto& weak : m_state->subscriptions) {
+                std::erase_if(state->subscriptions, [](const auto& weak) { return weak.expired(); });
+                for (const auto& weak : state->subscriptions) {
                     if (auto subscriber{ weak.lock() }) {
                         subscribers.push_back(std::move(subscriber));
                     }
                 }
-                m_state->latest = bytes;
+                state->latest = bytes;
                 // Serializing fan-out preserves one publication order across all subscribers.
                 for (const auto& subscriber : subscribers) {
                     subscriber->enqueue(bytes);
@@ -374,37 +400,13 @@ namespace pnm::msg
 
     namespace detail
     {
-        using ServiceClock = std::chrono::steady_clock;
-
-        template<typename Rep, typename Period>
-        auto service_deadline(const std::chrono::duration<Rep, Period>& timeout) -> ServiceClock::time_point
-        {
-            const auto now{ ServiceClock::now() };
-            const auto ticks{ std::chrono::duration<long double, ServiceClock::period>{ timeout }.count() };
-            if (std::isnan(ticks)) {
-                throw std::invalid_argument{ "Service timeout cannot be NaN" };
-            }
-            if (ticks <= 0) {
-                return now;
-            }
-            const auto rounded{ std::ceil(ticks) };
-            if (rounded >= static_cast<long double>(ServiceClock::duration::max().count())) {
-                return ServiceClock::time_point::max();
-            }
-            const ServiceClock::duration delay{ static_cast<ServiceClock::rep>(rounded) };
-            if (now >= ServiceClock::time_point::max() - delay) {
-                return ServiceClock::time_point::max();
-            }
-            return now + delay;
-        }
-
         template<typename Response>
         using ServiceCompletion = std::function<void(ServiceResult<Response>)>;
 
         // The supported Clang libc++ lacks move_only_function. Preserve move-only captures
         // by giving the erased function shared ownership of its callable when necessary.
         template<typename Signature, typename Function>
-        auto own_service_function(Function&& function) -> std::function<Signature>
+        auto own_function(Function&& function) -> std::function<Signature>
         {
             if constexpr (std::copy_constructible<std::decay_t<Function>>) {
                 return std::function<Signature>{ std::forward<Function>(function) };
@@ -423,7 +425,7 @@ namespace pnm::msg
           public:
             using EncodedResult = std::expected<MessageBytes, ServiceError>;
 
-            ServiceCallState(ServiceClock::time_point end,
+            ServiceCallState(MessageClock::time_point end,
                              std::stop_token token,
                              ServiceCompletion<Response> completion)
               : m_callback{ std::move(completion) }
@@ -455,13 +457,13 @@ namespace pnm::msg
                 return !m_finished;
             }
 
-            auto remainingTime() -> ServiceClock::duration
+            auto remainingTime() -> MessageClock::duration
             {
                 std::scoped_lock lock{ m_mutex };
                 refreshLocked();
                 return m_finished
-                         ? ServiceClock::duration::zero()
-                         : std::max(ServiceClock::duration::zero(), m_deadline - ServiceClock::now());
+                         ? MessageClock::duration::zero()
+                         : std::max(MessageClock::duration::zero(), m_deadline - MessageClock::now());
             }
 
             auto take(bool wait) -> std::optional<EncodedResult>
@@ -499,7 +501,7 @@ namespace pnm::msg
                 if (m_stop.stop_requested()) {
                     m_error = ServiceError::Cancelled;
                 }
-                else if (ServiceClock::now() >= m_deadline) {
+                else if (MessageClock::now() >= m_deadline) {
                     m_error = ServiceError::Timeout;
                 }
                 if (m_error) {
@@ -512,7 +514,7 @@ namespace pnm::msg
             ServiceCompletion<Response> m_callback;
             std::mutex m_mutex;
             std::condition_variable_any m_changed;
-            ServiceClock::time_point m_deadline;
+            MessageClock::time_point m_deadline;
             std::stop_token m_stop;
             MessageBytes m_response;
             std::optional<ServiceError> m_error;
@@ -632,9 +634,9 @@ namespace pnm::msg
 
         auto pending() const -> bool { return m_state && m_state->pending(); }
 
-        auto remainingTime() const -> detail::ServiceClock::duration
+        auto remainingTime() const -> detail::MessageClock::duration
         {
-            return m_state ? m_state->remainingTime() : detail::ServiceClock::duration::zero();
+            return m_state ? m_state->remainingTime() : detail::MessageClock::duration::zero();
         }
 
         auto respond(const Response& response) -> bool
@@ -792,12 +794,14 @@ namespace pnm::msg
                 return 0;
             }
             detail::DispatchGuard dispatching{ provider->dispatching };
-            const auto deadline{ detail::service_deadline(timeout) };
+            const auto deadline{ detail::message_deadline(timeout) };
             size_t pending{};
             {
                 std::unique_lock lock{ provider->mutex };
-                provider->changed.wait_until(
-                  lock, deadline, [&] { return provider->closed || !provider->requests.empty(); });
+                if (timeout > std::chrono::duration<Rep, Period>::zero()) {
+                    provider->changed.wait_until(
+                      lock, deadline, [&] { return provider->closed || !provider->requests.empty(); });
+                }
                 pending = provider->requests.size();
             }
             size_t processed{};
@@ -862,8 +866,7 @@ namespace pnm::msg
         [[nodiscard]] auto serve(Handler&& function, ServiceOptions options = {}) const
           -> ServiceServer<Request, Response>
         {
-            auto handler{ detail::own_service_function<Response(const Request&)>(
-              std::forward<Handler>(function)) };
+            auto handler{ detail::own_function<Response(const Request&)>(std::forward<Handler>(function)) };
             if (!handler) {
                 throw std::invalid_argument{ "A service requires a handler" };
             }
@@ -881,7 +884,7 @@ namespace pnm::msg
             if (!m_state) {
                 throw std::logic_error{ "Cannot serve through a moved-from service" };
             }
-            auto handler{ detail::own_service_function<void(const Request&, Reply<Response>)>(
+            auto handler{ detail::own_function<void(const Request&, Reply<Response>)>(
               std::forward<Handler>(function)) };
             if (!handler || options.max_pending == 0) {
                 throw std::invalid_argument{ "A service requires a handler and a positive pending limit" };
@@ -902,7 +905,7 @@ namespace pnm::msg
                                    const std::chrono::duration<Rep, Period>& timeout,
                                    const std::stop_token& stop = {}) const -> PendingCall<Response>
         {
-            return submit(value, detail::service_deadline(timeout), {}, stop);
+            return submit(value, detail::message_deadline(timeout), {}, stop);
         }
 
         template<typename Rep, typename Period, typename Callback>
@@ -912,8 +915,8 @@ namespace pnm::msg
                                    Callback&& function,
                                    const std::stop_token& stop = {}) const -> PendingCall<Response>
         {
-            const auto deadline{ detail::service_deadline(timeout) };
-            auto callback{ detail::own_service_function<void(ServiceResult<Response>)>(
+            const auto deadline{ detail::message_deadline(timeout) };
+            auto callback{ detail::own_function<void(ServiceResult<Response>)>(
               std::forward<Callback>(function)) };
             if (!callback) {
                 throw std::invalid_argument{ "A callback request requires a completion callback" };
@@ -937,7 +940,7 @@ namespace pnm::msg
         }
 
         auto submit(const Request& value,
-                    detail::ServiceClock::time_point deadline,
+                    detail::MessageClock::time_point deadline,
                     detail::ServiceCompletion<Response> callback,
                     const std::stop_token& stop) const -> PendingCall<Response>
         {
@@ -1057,7 +1060,7 @@ namespace pnm::msg
                 std::optional<ActionError> error;
             };
 
-            ActionGoalState(ServiceClock::time_point end, ActionCallbacks<Feedback, Result> handlers)
+            ActionGoalState(MessageClock::time_point end, ActionCallbacks<Feedback, Result> handlers)
               : m_callbacks{ std::move(handlers) }
               , m_deadline{ end }
             {
@@ -1149,13 +1152,13 @@ namespace pnm::msg
                 }
             }
 
-            auto remainingAcceptanceTime() -> ServiceClock::duration
+            auto remainingAcceptanceTime() -> MessageClock::duration
             {
                 std::scoped_lock lock{ m_mutex };
                 refreshLocked();
                 return m_accepted || m_finished
-                         ? ServiceClock::duration::zero()
-                         : std::max(ServiceClock::duration::zero(), m_deadline - ServiceClock::now());
+                         ? MessageClock::duration::zero()
+                         : std::max(MessageClock::duration::zero(), m_deadline - MessageClock::now());
             }
 
             auto takeAcceptance() -> bool
@@ -1221,13 +1224,13 @@ namespace pnm::msg
 
             auto refreshLocked() -> void
             {
-                if (!m_finished && !m_accepted && ServiceClock::now() >= m_deadline) {
+                if (!m_finished && !m_accepted && MessageClock::now() >= m_deadline) {
                     failLocked(ActionError::Timeout);
                 }
             }
 
             std::mutex m_mutex;
-            ServiceClock::time_point m_deadline;
+            MessageClock::time_point m_deadline;
             MessageBytes m_feedback;
             MessageBytes m_result;
             ActionStatus m_status{ ActionStatus::Succeeded };
@@ -1266,9 +1269,9 @@ namespace pnm::msg
         auto fail(ActionError error) -> bool { return m_state && m_state->fail(error); }
         auto requestCancel() -> bool { return m_state && m_state->requestCancel(); }
         auto cancelRequested() const -> bool { return m_state && m_state->cancelRequested(); }
-        auto remainingAcceptanceTime() const -> detail::ServiceClock::duration
+        auto remainingAcceptanceTime() const -> detail::MessageClock::duration
         {
-            return m_state ? m_state->remainingAcceptanceTime() : detail::ServiceClock::duration::zero();
+            return m_state ? m_state->remainingAcceptanceTime() : detail::MessageClock::duration::zero();
         }
 
         auto feedback(const Feedback& value) -> bool
@@ -1730,8 +1733,7 @@ namespace pnm::msg
             using Produced = std::remove_cvref_t<std::invoke_result_t<Factory&, const Goal&>>;
             using Step = typename detail::ActionStepType<Produced>::Type;
             static_assert(std::invocable<Step&, Execution&>, "An action factory must return a step function");
-            auto factory{ detail::own_service_function<Produced(const Goal&)>(
-              std::forward<Factory>(function)) };
+            auto factory{ detail::own_function<Produced(const Goal&)>(std::forward<Factory>(function)) };
             if (!factory) {
                 throw std::invalid_argument{ "An action requires a factory" };
             }
@@ -1743,10 +1745,10 @@ namespace pnm::msg
                     if (!produced) {
                         return std::unexpected{ produced.error() };
                     }
-                    return detail::own_service_function<void(Execution&)>(std::move(*produced));
+                    return detail::own_function<void(Execution&)>(std::move(*produced));
                 }
                 else {
-                    return detail::own_service_function<void(Execution&)>(std::move(produced));
+                    return detail::own_function<void(Execution&)>(std::move(produced));
                 }
             },
               {},
@@ -1758,7 +1760,7 @@ namespace pnm::msg
         [[nodiscard]] auto serveDeferred(Handler&& function, ActionOptions options = {}) const
           -> ActionServer<Goal, Feedback, Result>
         {
-            auto handler{ detail::own_service_function<void(const Goal&, Execution)>(
+            auto handler{ detail::own_function<void(const Goal&, Execution)>(
               std::forward<Handler>(function)) };
             if (!handler) {
                 throw std::invalid_argument{ "An action requires a deferred handler" };
@@ -1778,7 +1780,7 @@ namespace pnm::msg
                 throw std::invalid_argument{ "An action goal requires a result callback" };
             }
             auto state{ std::make_shared<detail::ActionGoalState<Feedback, Result>>(
-              detail::service_deadline(options.accept_timeout), std::move(callbacks)) };
+              detail::message_deadline(options.accept_timeout), std::move(callbacks)) };
             auto pending{ PendingGoal<Feedback, Result>{ state } };
             if (!state->pending()) {
                 return pending;

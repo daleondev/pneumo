@@ -18,6 +18,20 @@ namespace messaging_action_tests
     {
         std::vector<std::byte> bytes;
     };
+
+    struct MoveOnly
+    {
+        int value{};
+        MoveOnly() = default;
+        explicit MoveOnly(int number)
+          : value{ number }
+        {
+        }
+        MoveOnly(const MoveOnly&) = delete;
+        auto operator=(const MoveOnly&) -> MoveOnly& = delete;
+        MoveOnly(MoveOnly&&) = default;
+        auto operator=(MoveOnly&&) -> MoveOnly& = default;
+    };
 }
 
 namespace pnm::utils::memory
@@ -932,4 +946,223 @@ TEST(MessagingActionTests, ServerCanCloseFromInsideAStepWithoutInvalidatingTheIn
     server->poll();
     ASSERT_TRUE(goal.poll());
     EXPECT_EQ(observer.result->error(), ActionError::Unavailable);
+}
+
+TEST(MessagingActionTests, StopDuringFactoryCreationDoesNotAcceptOrRunTheStep)
+{
+    Bus bus{};
+    auto action{ bus.action<int, int, int>("work") };
+    std::latch entered{ 1 };
+    std::latch released{ 1 };
+    int steps{};
+    auto server{ action.serve([&](int) {
+        entered.count_down();
+        released.wait();
+        return [&](Execution&) { ++steps; };
+    }) };
+    Observer observer{};
+    auto goal{ action.sendGoal(1, OPTIONS, observer.callbacks()) };
+    std::jthread provider{ [&] { server.poll(); } };
+    entered.wait();
+    server.requestStop();
+    released.count_down();
+    provider.join();
+    ASSERT_TRUE(goal.poll());
+    EXPECT_EQ(observer.events, (std::vector<char>{ 'r' }));
+    EXPECT_EQ(observer.result->error(), ActionError::Unavailable);
+    EXPECT_EQ(steps, 0);
+    EXPECT_TRUE(server.idle());
+}
+
+TEST(MessagingActionTests, ExpiredFactoryDoesNotStartExecution)
+{
+    Bus bus{};
+    auto action{ bus.action<int, int, int>("work") };
+    int steps{};
+    auto server{ action.serve([&](int) {
+        std::this_thread::sleep_for(150ms);
+        return [&](Execution&) { ++steps; };
+    }) };
+    Observer observer{};
+    auto goal{ action.sendGoal(1, ActionGoalOptions{ 100ms }, observer.callbacks()) };
+    server.poll();
+    ASSERT_TRUE(goal.poll());
+    EXPECT_EQ(observer.result->error(), ActionError::Timeout);
+    EXPECT_EQ(observer.events, (std::vector<char>{ 'r' }));
+    EXPECT_EQ(steps, 0);
+}
+
+TEST(MessagingActionTests, DeferredExceptionsInvalidateMovedTokensButPreserveAlreadyCompletedResults)
+{
+    Bus bus{};
+    auto action{ bus.action<int, int, int>("work") };
+    std::optional<Execution> retained{};
+    auto server{ action.serveDeferred([&](int value, Execution execution) {
+        if (value == 1)
+            retained.emplace(std::move(execution));
+        else {
+            execution.accept();
+            execution.succeed(42);
+        }
+        throw std::runtime_error{ "handler" };
+    }) };
+    Observer failed{};
+    Observer succeeded{};
+    auto a{ action.sendGoal(1, OPTIONS, failed.callbacks()) };
+    auto b{ action.sendGoal(2, OPTIONS, succeeded.callbacks()) };
+    server.poll();
+    ASSERT_TRUE(a.poll());
+    ASSERT_TRUE(b.poll());
+    EXPECT_EQ(failed.result->error(), ActionError::HandlerFailed);
+    EXPECT_FALSE(retained->accept());
+    EXPECT_TRUE(retained->cancelRequested());
+    EXPECT_EQ(succeeded.result->value().value, 42);
+}
+
+TEST(MessagingActionTests, RetiringExpiredQueuedGoalReleasesCallbacksOutsideProviderLock)
+{
+    Bus bus{};
+    auto action{ bus.action<int, int, int>("work") };
+    auto server{ action.serve(sumFactory, ActionOptions{ 1 }) };
+    int released{};
+    auto capture{ std::shared_ptr<int>{ new int{ 0 }, [&](int* value) {
+        delete value;
+        ++released;
+        static_cast<void>(server.idle()); // Can acquire the same provider mutex safely.
+    } } };
+    {
+        auto goal{ action.sendGoal(
+          1, ActionGoalOptions{ 100ms }, { .on_result{ [capture](ActionResult<int>) {} } }) };
+        capture.reset();
+        ASSERT_FALSE(goal.ready());
+        std::this_thread::sleep_for(150ms);
+        EXPECT_TRUE(goal.ready());
+        EXPECT_TRUE(server.idle()); // Removes the weak registration before the queued bytes.
+    }
+    EXPECT_EQ(released, 0);
+    Observer observer{};
+    auto next{ action.sendGoal(1, OPTIONS, observer.callbacks()) };
+    EXPECT_EQ(released, 1);
+    EXPECT_FALSE(next.ready());
+    server.poll();
+    ASSERT_TRUE(next.poll());
+    EXPECT_EQ(observer.result->value().value, 1);
+}
+
+TEST(MessagingActionTests, MovingExecutionAndServerAbandonsOnlyTheirPreviousOperations)
+{
+    Bus bus{};
+    auto action{ bus.action<int, int, int>("remote") };
+    std::vector<Execution> executions{};
+    auto server{ action.serveDeferred(
+      [&](int, Execution execution) { executions.push_back(std::move(execution)); }) };
+    Observer first{};
+    Observer second{};
+    auto a{ action.sendGoal(1, OPTIONS, first.callbacks()) };
+    auto b{ action.sendGoal(2, OPTIONS, second.callbacks()) };
+    server.poll();
+    executions[0] = std::move(executions[1]);
+    EXPECT_EQ(executions[0].id(), b.id());
+    EXPECT_EQ(executions[1].id(), 0);
+    EXPECT_FALSE(executions[1].accept());
+    EXPECT_FALSE(executions[1].feedback(0));
+    EXPECT_FALSE(executions[1].succeed(0));
+    ASSERT_TRUE(a.poll());
+    EXPECT_EQ(first.result->error(), ActionError::HandlerFailed);
+    auto replacement{ bus.action<int, int, int>("other").serve(sumFactory) };
+    server = std::move(replacement);
+    ASSERT_TRUE(b.poll());
+    EXPECT_EQ(second.result->error(), ActionError::Unavailable);
+    EXPECT_FALSE(executions[0].pending());
+    EXPECT_TRUE(replacement.idle());
+    EXPECT_EQ(replacement.poll(), 0UZ);
+}
+
+TEST(MessagingActionTests, HandlesOutliveBusAndNewGoalsFromStepsWaitForTheNextPoll)
+{
+    auto action{ [] {
+        Bus bus{};
+        return bus.action<int, int, int>("work");
+    }() };
+    Observer first{};
+    Observer second{};
+    std::optional<PendingGoal<int, int>> nested{};
+    auto server{ action.serve([&](int value) {
+        return [&, value](Execution& execution) {
+            if (value == 1)
+                nested.emplace(action.sendGoal(2, OPTIONS, second.callbacks()));
+            execution.succeed(value);
+        };
+    }) };
+    auto goal{ action.sendGoal(1, OPTIONS, first.callbacks()) };
+    EXPECT_EQ(server.poll(), 1UZ);
+    ASSERT_TRUE(goal.poll());
+    ASSERT_TRUE(nested);
+    EXPECT_FALSE(nested->ready());
+    EXPECT_EQ(server.poll(), 1UZ);
+    ASSERT_TRUE(nested->poll());
+    EXPECT_EQ(second.result->value().value, 2);
+}
+
+TEST(MessagingActionTests, ConcurrentTerminalReportsDeliverOnlyOneOutcome)
+{
+    Bus bus{};
+    auto action{ bus.action<int, int, int>("remote") };
+    std::optional<Execution> execution{};
+    auto server{ action.serveDeferred([&](int, Execution value) { execution.emplace(std::move(value)); }) };
+    for (int iteration{}; iteration < 16; ++iteration) {
+        Observer observer{};
+        auto goal{ action.sendGoal(1, OPTIONS, observer.callbacks()) };
+        server.poll();
+        execution->accept();
+        std::latch start{ 1 };
+        bool succeeded{};
+        bool aborted{};
+        std::jthread first{ [&] {
+            start.wait();
+            succeeded = execution->succeed(1);
+        } };
+        std::jthread second{ [&] {
+            start.wait();
+            aborted = execution->abort(2);
+        } };
+        start.count_down();
+        first.join();
+        second.join();
+        EXPECT_NE(succeeded, aborted);
+        ASSERT_TRUE(goal.poll());
+        ASSERT_TRUE(observer.result->has_value());
+        EXPECT_EQ(observer.result->value().status,
+                  succeeded ? ActionStatus::Succeeded : ActionStatus::Aborted);
+        EXPECT_EQ(observer.result->value().value, succeeded ? 1 : 2);
+        EXPECT_TRUE(goal.poll());
+        EXPECT_EQ(observer.events, (std::vector<char>{ 'a', 'r' }));
+    }
+}
+
+TEST(MessagingActionTests, MoveOnlyPayloadsCanBeDecodedAndTheResultTransferred)
+{
+    using messaging_action_tests::MoveOnly;
+    Bus bus{};
+    auto action{ bus.action<MoveOnly, MoveOnly, MoveOnly>("work") };
+    auto server{ action.serve([](const MoveOnly& goal) {
+        return [value{ goal.value }](ActionExecution<MoveOnly, MoveOnly>& execution) {
+            execution.feedback(MoveOnly{ value });
+            execution.succeed(MoveOnly{ value * 2 });
+        };
+    }) };
+    int progress{};
+    std::optional<ActionResult<MoveOnly>> result{};
+    auto goal{ action.sendGoal(
+      MoveOnly{ 21 },
+      OPTIONS,
+      { .on_feedback{ [&](const MoveOnly& value) { progress = value.value; } },
+        .on_result{ [&](ActionResult<MoveOnly> value) { result.emplace(std::move(value)); } } }) };
+    EXPECT_EQ(server.poll(), 1UZ);
+    ASSERT_TRUE(goal.poll());
+    EXPECT_EQ(progress, 21);
+    ASSERT_TRUE(result);
+    ASSERT_TRUE(result->has_value());
+    EXPECT_EQ(result->value().status, ActionStatus::Succeeded);
+    EXPECT_EQ(result->value().value.value, 42);
 }
