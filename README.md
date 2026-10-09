@@ -25,7 +25,7 @@
 *   **`pneumo::formatting`** for reflection-aware std::format extensions.
 *   **`pneumo::units`** for strongly typed quantities, literals, conversions, and dimensional operations.
 *   **`pneumo::logging`** for asynchronous structured logging, configurable routing, source metadata, files, and custom sinks.
-*   **`pneumo::messaging`** for named, typed in-process topics with caller-driven message dispatch.
+*   **`pneumo::messaging`** for named, typed in-process topics and services with caller-driven dispatch.
 *   **`pneumo::coroutines`** for lazy tasks, executor contexts, asynchronous work, timers, and channels.
 
 `pneumo::pneumo` links all seven modules, and `pneumo/pneumo.hpp` is the matching umbrella header.
@@ -235,7 +235,68 @@ retained value explicitly. Closure also clears the subscription's retained value
 
 See [`samples/messaging_sample.cpp`](samples/messaging_sample.cpp) for publishing and polling on
 separate application threads, plus explicit latest-value dispatch and change suppression. The sample
-waits for subscription setup before sending its ten temperature messages.
+also demonstrates blocking services, callback requests, and a deferred proxy between two buses.
+
+Services use `bus.service<Request, Response>(name)`. Request and response types must be serializable
+and default constructible; responses must also be move constructible. Service names have their own
+registry, separate from topics. Each service accepts one provider and multiple concurrent clients.
+Register a provider with `serve(handler)` for a handler returning `Response`, or `serveDeferred(handler)`
+for a handler taking `(const Request&, Reply<Response>)`. The returned move-only server handle owns
+the registration. Its `poll()` or `poll(timeout)` runs handlers on the polling thread, outside locks.
+One server can only be polled by one caller at a time; recursive or concurrent polling throws.
+
+```cpp
+using namespace std::chrono_literals;
+auto service{ bus.service<int, int>("math/double") };
+auto server{ service.serve([](int value) { return value * 2; }) };
+auto pending{ service.request(21, 250ms, [](pnm::msg::ServiceResult<int> result) {
+    // Handle the response or service error here.
+}) };
+server.poll();  // Runs the handler and completes the request.
+pending.poll(); // Runs the client callback exactly once, on this thread.
+```
+
+`ServiceResult<Response>` is `std::expected<Response, ServiceError>`. Errors are `Unavailable`, `Busy`,
+`Timeout`, `Cancelled`, `HandlerFailed`, and `TransportError`. Application-specific outcomes belong
+in the response payload. The first terminal result wins; late or duplicate replies are ignored.
+
+`service.call(request, timeout, stop_token)` blocks the calling thread until a result or error is
+available. Another application thread must drive the provider and any transport it needs.
+`service.request(request, timeout, callback, stop_token)` returns a move-only `PendingCall<Response>`
+without waiting for execution. The token is optional in both forms. Call `pending.poll()` to dispatch
+the callback; it never waits and returns whether a callback ran. Even immediate errors are delivered
+only by polling. Client callback exceptions propagate from `poll()` and consume that completion.
+Callbacks and handlers can capture move-only objects, including reply tokens.
+
+For manual result handling, omit the callback: `service.request(request, timeout, stop_token)` returns
+a handle with `ready()` and blocking `get()`. `get()` consumes one result and is unavailable on callback
+requests; `poll()` is unavailable on requests without a callback. Concurrent or recursive consumption
+of the same handle throws `std::logic_error`. `cancel()` abandons a pending call and produces `Cancelled`;
+destroying its handle also abandons it, without invoking a callback. Cancellation through a stop token
+wakes a waiting `get()` or `call()`.
+
+Timeouts include serialization and queue time. Nonpositive durations time out immediately, NaN is
+rejected, and oversized positive durations saturate. Expiration is checked during dispatch, waiting,
+and readiness/reply operations, so no timer thread is created. Expired or cancelled queued requests
+are skipped; handlers that have already started may finish. Cancellation and timeout cannot undo work
+already performed locally or remotely.
+
+A deferred handler moves its `Reply<Response>` into application-owned storage, then calls `respond()`
+or `fail()` later. These return `false` if the call is no longer pending. `pending()` and `remainingTime()`
+allow bridges to retire stale requests and forward a remaining time budget. Dropping an unanswered
+reply or throwing from a handler completes the call as `HandlerFailed`. Request serialization errors
+propagate from submission; request decoding and response encoding/decoding failures become `HandlerFailed`.
+Closing or destroying the server completes its pending calls as `Unavailable` and permits a new provider.
+Service handles and server registrations can outlive their originating bus.
+
+Both registration methods accept `ServiceOptions{ max_pending }`, defaulting to 64 outstanding calls
+including queued requests and deferred replies. Excess requests complete as `Busy`. Requests and
+responses are serialized into owned buffers, so callers and handlers may reuse their original data.
+
+The sample retains a disabled SPI integration outline. The runnable two-bus proxy demonstrates deferred
+completion, but does not implement an SPI driver or wire protocol. A transport must define framing,
+portable payload/error encoding, request IDs, and reconnection behavior. Reply tokens stay local and
+are matched to wire response IDs; requests are not automatically retried.
 
 ### `pneumo::coroutines`
 
@@ -282,7 +343,7 @@ For the built-in async, timer, and channel waits, destroying a suspended `Task` 
 | `pneumo::formatting` | `pneumo/formatting.hpp` | Reflection-based formatting and optional serialization |
 | `pneumo::units` | `pneumo/units.hpp` | Strong quantity types, literals, conversions, and derived operations |
 | `pneumo::logging` | `pneumo/logging.hpp` | Asynchronous logging, routing, metadata, files, and custom sinks |
-| `pneumo::messaging` | `pneumo/messaging.hpp` | Named, typed topics with caller-driven publish/subscribe dispatch |
+| `pneumo::messaging` | `pneumo/messaging.hpp` | Named, typed topics and services with caller-driven dispatch |
 | `pneumo::coroutines` | `pneumo/coroutines.hpp` | Lazy tasks, executors, asynchronous work, timers, and channels |
 | `pneumo::pneumo` | `pneumo/pneumo.hpp` | Convenience target and umbrella header for all modules |
 
