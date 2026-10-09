@@ -123,6 +123,15 @@ target_link_libraries(
     pneumo::compiler_warnings
 )
 
+add_executable(messaging_tests messaging_tests.cpp)
+target_link_libraries(
+    messaging_tests
+    PRIVATE
+    GTest::gtest_main
+    pneumo::messaging
+    pneumo::compiler_warnings
+)
+
 include(GoogleTest)
 gtest_discover_tests(common_tests)
 gtest_discover_tests(meta_tests)
@@ -130,6 +139,7 @@ gtest_discover_tests(formatting_tests)
 gtest_discover_tests(units_tests)
 gtest_discover_tests(logging_tests)
 gtest_discover_tests(coroutines_tests PROPERTIES TIMEOUT 15)
+gtest_discover_tests(messaging_tests PROPERTIES TIMEOUT 15)
 
 add_test(
     NAME SourceEmbedProbes.SingleTU

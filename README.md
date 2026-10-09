@@ -18,16 +18,17 @@
 
 # Pneumo
 
-**pneumo** is a header-only C++26 utility library with six module targets and one umbrella target:
+**pneumo** is a header-only C++26 utility library with seven module targets and one umbrella target:
 
 *   **`pneumo::common`** for shared result, assertion, memory, queue, and bit helpers.
 *   **`pneumo::meta`** for compile-time reflection and metaprogramming utilities built on C++26 static reflection.
 *   **`pneumo::formatting`** for reflection-aware std::format extensions.
 *   **`pneumo::units`** for strongly typed quantities, literals, conversions, and dimensional operations.
 *   **`pneumo::logging`** for asynchronous structured logging, configurable routing, source metadata, files, and custom sinks.
+*   **`pneumo::messaging`** for named, typed in-process topics with caller-driven message dispatch.
 *   **`pneumo::coroutines`** for lazy tasks, executor contexts, asynchronous work, timers, and channels.
 
-`pneumo::pneumo` links all six modules, and `pneumo/pneumo.hpp` is the matching umbrella header.
+`pneumo::pneumo` links all seven modules, and `pneumo/pneumo.hpp` is the matching umbrella header.
 
 ## Module Overview
 
@@ -168,6 +169,42 @@ The logging module provides:
 *   Default level colors, per-sink palettes, and per-message ANSI color overrides.
 *   User-defined sinks through `pnm::log::ISink` and `pnm::log::SinkBase`.
 
+### `pneumo::messaging`
+
+Link `pneumo::messaging` and include `<pneumo/messaging.hpp>` to use `pnm::msg`.
+Messaging creates no threads and has no coroutine dependency. Applications choose which threads
+publish and poll subscriptions.
+
+```cpp
+pnm::msg::Bus bus;
+auto topic = bus.topic<int>("sensor/value");
+auto subscription = topic.subscribe([](const int& value) { /* consume value */ });
+topic.publish(42);
+subscription.poll(); // Calls the subscriber here.
+```
+
+Each bus owns a registry of topic names. Looking up the same name and type returns another handle
+to the same topic; reusing a name with a different type throws `std::invalid_argument`.
+Messages must satisfy `pnm::utils::memory::Serializable`; subscribing additionally requires a
+default-constructible message type for deserialization. Each publication is serialized once into
+owned bytes, shared across independent subscriber queues, and deserialized when polled.
+
+`poll()` processes queued messages without waiting. `poll(timeout)` waits for a message or closure,
+then processes the queue size observed on waking; both return the number of callbacks completed.
+Callbacks run on the polling thread, outside internal locks, and may publish or unsubscribe.
+Concurrent publishers preserve the same publication order across subscribers. A subscription may
+only be polled by one caller at a time; concurrent or recursive polling throws `std::logic_error`.
+Adapter and callback exceptions propagate; a message whose deserialization or callback throws is
+consumed, while later messages remain queued.
+
+Subscriptions are move-only. Destruction or `unsubscribe()` discards pending messages and wakes a
+waiting poll; an in-flight callback may finish. Topic handles can outlive their bus. Destroying the
+bus and its last topic handle closes the remaining subscriptions. Queues are currently unbounded,
+and publications made before subscribing are not replayed.
+
+See [`samples/messaging_sample.cpp`](samples/messaging_sample.cpp) for publishing and polling on
+separate application threads. The sample waits for subscription setup before sending its ten messages.
+
 ### `pneumo::coroutines`
 
 Link `pneumo::coroutines` and include `<pneumo/coroutines.hpp>` to use the `pnm::coro` namespace. The target supplies the common module and platform thread dependency; it is also included by `pneumo::pneumo`.
@@ -213,6 +250,7 @@ For the built-in async, timer, and channel waits, destroying a suspended `Task` 
 | `pneumo::formatting` | `pneumo/formatting.hpp` | Reflection-based formatting and optional serialization |
 | `pneumo::units` | `pneumo/units.hpp` | Strong quantity types, literals, conversions, and derived operations |
 | `pneumo::logging` | `pneumo/logging.hpp` | Asynchronous logging, routing, metadata, files, and custom sinks |
+| `pneumo::messaging` | `pneumo/messaging.hpp` | Named, typed topics with caller-driven publish/subscribe dispatch |
 | `pneumo::coroutines` | `pneumo/coroutines.hpp` | Lazy tasks, executors, asynchronous work, timers, and channels |
 | `pneumo::pneumo` | `pneumo/pneumo.hpp` | Convenience target and umbrella header for all modules |
 

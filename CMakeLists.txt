@@ -200,7 +200,7 @@ target_sources(
 target_link_libraries(
     pneumo_messaging
     INTERFACE
-    pneumo::meta
+    pneumo::common
 )
 
 target_compile_features(
@@ -232,6 +232,11 @@ target_link_libraries(
 
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Generic")
     find_package(Threads REQUIRED)
+    target_link_libraries(
+        pneumo_messaging
+        INTERFACE
+        Threads::Threads
+    )
     target_link_libraries(
         pneumo_coroutines
         INTERFACE
