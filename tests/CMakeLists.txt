@@ -1,6 +1,7 @@
 add_executable(
     common_tests
     common_tests.cpp
+    serialization_tests.cpp
 )
 
 target_link_libraries(
