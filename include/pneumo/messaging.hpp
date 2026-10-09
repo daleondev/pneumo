@@ -13,6 +13,7 @@
 #include <deque>
 #include <expected>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -966,6 +967,866 @@ namespace pnm::msg
         std::shared_ptr<detail::ServiceState<Request, Response>> m_state;
     };
 
+    enum class ActionStatus : std::uint8_t
+    {
+        Succeeded,
+        Aborted,
+        Cancelled
+    };
+
+    enum class ActionError : std::uint8_t
+    {
+        Unavailable,
+        Busy,
+        Rejected,
+        Timeout,
+        HandlerFailed,
+        TransportError
+    };
+
+    template<typename Result>
+    struct ActionCompletion
+    {
+        ActionStatus status{ ActionStatus::Succeeded };
+        Result value{};
+    };
+
+    template<typename Result>
+    using ActionResult = std::expected<ActionCompletion<Result>, ActionError>;
+
+    // Process-local identity. A transport must add its own connection/session identity.
+    using GoalId = std::uint64_t;
+
+    struct ActionOptions
+    {
+        static constexpr size_t DEFAULT_MAX_GOALS{ 64 };
+        size_t max_goals{ DEFAULT_MAX_GOALS };
+    };
+
+    struct ActionGoalOptions
+    {
+        static constexpr std::chrono::milliseconds DEFAULT_ACCEPT_TIMEOUT{ 250 };
+        // Only admission is timed. Accepted work runs until it reports an outcome.
+        std::chrono::steady_clock::duration accept_timeout{ DEFAULT_ACCEPT_TIMEOUT };
+    };
+
+    template<typename Feedback, typename Result>
+    struct ActionCallbacks
+    {
+        std::function<void()> on_accepted{ nullptr };
+        std::function<void(const Feedback&)> on_feedback{ nullptr };
+        std::function<void(ActionResult<Result>)> on_result{ nullptr };
+    };
+
+    template<utils::memory::Serializable Feedback, utils::memory::Serializable Result>
+    class ActionExecution;
+    template<utils::memory::Serializable Feedback, utils::memory::Serializable Result>
+    class PendingGoal;
+    template<utils::memory::Serializable Goal,
+             utils::memory::Serializable Feedback,
+             utils::memory::Serializable Result>
+    class Action;
+    template<utils::memory::Serializable Goal,
+             utils::memory::Serializable Feedback,
+             utils::memory::Serializable Result>
+    class ActionServer;
+
+    namespace detail
+    {
+        inline auto next_goal_id() -> GoalId
+        {
+            static std::atomic<GoalId> next{ 1 };
+            auto value{ next.load(std::memory_order_relaxed) };
+            for (;;) {
+                if (value == std::numeric_limits<GoalId>::max()) {
+                    throw std::overflow_error{ "Action goal IDs exhausted" };
+                }
+                if (next.compare_exchange_weak(value, value + 1, std::memory_order_relaxed)) {
+                    return value;
+                }
+            }
+        }
+
+        template<typename Feedback, typename Result>
+        struct ActionGoalState
+        {
+            struct Completion
+            {
+                MessageBytes bytes;
+                ActionStatus status{ ActionStatus::Succeeded };
+                std::optional<ActionError> error;
+            };
+
+            ActionGoalState(ServiceClock::time_point end, ActionCallbacks<Feedback, Result> handlers)
+              : m_callbacks{ std::move(handlers) }
+              , m_deadline{ end }
+            {
+            }
+
+            auto pending() -> bool
+            {
+                std::scoped_lock lock{ m_mutex };
+                refreshLocked();
+                return !m_finished;
+            }
+
+            auto accept() -> bool
+            {
+                std::scoped_lock lock{ m_mutex };
+                refreshLocked();
+                if (m_finished || m_accepted) {
+                    return false;
+                }
+                m_accepted = true;
+                return true;
+            }
+
+            auto canPublish() -> bool
+            {
+                std::scoped_lock lock{ m_mutex };
+                refreshLocked();
+                return m_accepted && !m_finished;
+            }
+
+            auto publish(MessageBytes bytes) -> bool
+            {
+                std::scoped_lock lock{ m_mutex };
+                if (m_finished || !m_accepted) {
+                    return false;
+                }
+                m_feedback = std::move(bytes); // Bound undelivered feedback to one value per goal.
+                return true;
+            }
+
+            auto finish(MessageBytes bytes, ActionStatus outcome) -> bool
+            {
+                std::scoped_lock lock{ m_mutex };
+                refreshLocked();
+                if (m_finished || (!m_accepted && outcome != ActionStatus::Cancelled)) {
+                    return false;
+                }
+                m_result = std::move(bytes);
+                m_status = outcome;
+                m_finished = true;
+                return true;
+            }
+
+            auto fail(ActionError failure) -> bool
+            {
+                std::scoped_lock lock{ m_mutex };
+                refreshLocked();
+                if (m_finished || (failure == ActionError::Rejected && m_accepted)) {
+                    return false;
+                }
+                failLocked(failure);
+                return true;
+            }
+
+            auto requestCancel() -> bool
+            {
+                std::scoped_lock lock{ m_mutex };
+                refreshLocked();
+                if (m_finished) {
+                    return false;
+                }
+                m_cancelRequested = true;
+                return true;
+            }
+
+            auto cancelRequested() -> bool
+            {
+                std::scoped_lock lock{ m_mutex };
+                refreshLocked();
+                return m_cancelRequested;
+            }
+
+            auto abandon() -> void
+            {
+                std::scoped_lock lock{ m_mutex };
+                m_abandoned = true;
+                if (!m_finished) {
+                    m_cancelRequested = true;
+                }
+            }
+
+            auto remainingAcceptanceTime() -> ServiceClock::duration
+            {
+                std::scoped_lock lock{ m_mutex };
+                refreshLocked();
+                return m_accepted || m_finished
+                         ? ServiceClock::duration::zero()
+                         : std::max(ServiceClock::duration::zero(), m_deadline - ServiceClock::now());
+            }
+
+            auto takeAcceptance() -> bool
+            {
+                std::scoped_lock lock{ m_mutex };
+                refreshLocked();
+                if (m_abandoned || !m_accepted || m_acceptanceDelivered) {
+                    return false;
+                }
+                m_acceptanceDelivered = true;
+                return true;
+            }
+
+            auto takeFeedback() -> MessageBytes
+            {
+                std::scoped_lock lock{ m_mutex };
+                if (m_abandoned || m_consumed || !m_acceptanceDelivered) {
+                    return {};
+                }
+                return std::exchange(m_feedback, {});
+            }
+
+            auto takeCompletion() -> std::optional<Completion>
+            {
+                std::scoped_lock lock{ m_mutex };
+                refreshLocked();
+                if (m_abandoned || m_consumed || !m_finished || (m_accepted && !m_acceptanceDelivered)) {
+                    return {};
+                }
+                m_consumed = true;
+                m_feedback.reset();
+                return Completion{ std::move(m_result), m_status, m_error };
+            }
+
+            auto delivered() -> bool
+            {
+                std::scoped_lock lock{ m_mutex };
+                return m_consumed;
+            }
+
+            auto deliveryFailed() -> void
+            {
+                std::scoped_lock lock{ m_mutex };
+                // A malformed feedback payload invalidates even an already-queued success.
+                failLocked(ActionError::HandlerFailed);
+                m_feedback.reset();
+                m_result.reset();
+            }
+
+          private:
+            friend class pnm::msg::ActionExecution<Feedback, Result>;
+            friend class pnm::msg::PendingGoal<Feedback, Result>;
+
+            GoalId m_id{ next_goal_id() };
+            std::atomic_flag m_dispatching;
+            ActionCallbacks<Feedback, Result> m_callbacks;
+            auto failLocked(ActionError failure) -> void
+            {
+                m_error = failure;
+                m_finished = true;
+                m_cancelRequested = true;
+            }
+
+            auto refreshLocked() -> void
+            {
+                if (!m_finished && !m_accepted && ServiceClock::now() >= m_deadline) {
+                    failLocked(ActionError::Timeout);
+                }
+            }
+
+            std::mutex m_mutex;
+            ServiceClock::time_point m_deadline;
+            MessageBytes m_feedback;
+            MessageBytes m_result;
+            ActionStatus m_status{ ActionStatus::Succeeded };
+            std::optional<ActionError> m_error;
+            bool m_accepted{};
+            bool m_acceptanceDelivered{};
+            bool m_finished{};
+            bool m_consumed{};
+            bool m_cancelRequested{};
+            bool m_abandoned{};
+        };
+    }
+
+    // An owning token for deferred providers; managed step functions only borrow a reference.
+    template<utils::memory::Serializable Feedback, utils::memory::Serializable Result>
+    class ActionExecution
+    {
+      public:
+        ~ActionExecution() { fail(ActionError::HandlerFailed); }
+        ActionExecution(const ActionExecution&) = delete;
+        auto operator=(const ActionExecution&) -> ActionExecution& = delete;
+        ActionExecution(ActionExecution&&) noexcept = default;
+        auto operator=(ActionExecution&& other) noexcept -> ActionExecution&
+        {
+            if (this != &other) {
+                fail(ActionError::HandlerFailed);
+                m_state = std::move(other.m_state);
+            }
+            return *this;
+        }
+
+        auto id() const -> GoalId { return m_state ? m_state->m_id : 0; }
+        auto pending() const -> bool { return m_state && m_state->pending(); }
+        auto accept() -> bool { return m_state && m_state->accept(); }
+        auto reject() -> bool { return fail(ActionError::Rejected); }
+        auto fail(ActionError error) -> bool { return m_state && m_state->fail(error); }
+        auto requestCancel() -> bool { return m_state && m_state->requestCancel(); }
+        auto cancelRequested() const -> bool { return m_state && m_state->cancelRequested(); }
+        auto remainingAcceptanceTime() const -> detail::ServiceClock::duration
+        {
+            return m_state ? m_state->remainingAcceptanceTime() : detail::ServiceClock::duration::zero();
+        }
+
+        auto feedback(const Feedback& value) -> bool
+        {
+            auto state{ m_state };
+            if (!state || !state->canPublish()) {
+                return false;
+            }
+            try {
+                auto bytes{ std::make_shared<const std::vector<std::byte>>(utils::memory::serialize(value)) };
+                return state->publish(std::move(bytes));
+            } catch (...) {
+                state->fail(ActionError::HandlerFailed);
+                return false;
+            }
+        }
+
+        auto succeed(const Result& value) -> bool { return finish(value, ActionStatus::Succeeded); }
+        auto abort(const Result& value) -> bool { return finish(value, ActionStatus::Aborted); }
+        auto cancelled(const Result& value) -> bool { return finish(value, ActionStatus::Cancelled); }
+
+      private:
+        template<utils::memory::Serializable G, utils::memory::Serializable F, utils::memory::Serializable R>
+        friend class ActionServer;
+
+        explicit ActionExecution(std::shared_ptr<detail::ActionGoalState<Feedback, Result>> state)
+          : m_state{ std::move(state) }
+        {
+        }
+
+        auto finish(const Result& value, ActionStatus status) -> bool
+        {
+            auto state{ m_state };
+            if (!state || !state->pending() || (status != ActionStatus::Cancelled && !state->canPublish())) {
+                return false;
+            }
+            try {
+                auto bytes{ std::make_shared<const std::vector<std::byte>>(utils::memory::serialize(value)) };
+                return state->finish(std::move(bytes), status);
+            } catch (...) {
+                state->fail(ActionError::HandlerFailed);
+                return false;
+            }
+        }
+
+        std::shared_ptr<detail::ActionGoalState<Feedback, Result>> m_state;
+    };
+
+    template<utils::memory::Serializable Feedback, utils::memory::Serializable Result>
+    class PendingGoal
+    {
+        using State = detail::ActionGoalState<Feedback, Result>;
+
+      public:
+        ~PendingGoal() { abandon(); }
+        PendingGoal(const PendingGoal&) = delete;
+        auto operator=(const PendingGoal&) -> PendingGoal& = delete;
+        PendingGoal(PendingGoal&&) noexcept = default;
+        auto operator=(PendingGoal&& other) noexcept -> PendingGoal&
+        {
+            if (this != &other) {
+                abandon();
+                m_state = std::move(other.m_state);
+            }
+            return *this;
+        }
+
+        auto id() const -> GoalId { return m_state ? m_state->m_id : 0; }
+        auto ready() const -> bool { return m_state && !m_state->pending(); }
+        // This requests cleanup; only the provider can confirm that execution has stopped.
+        auto requestCancel() -> bool { return m_state && m_state->requestCancel(); }
+
+        // Dispatch at most one acceptance, one latest feedback, and one completion, in that order.
+        // Callbacks run outside locks. Once completion is consumed, subsequent polls stay true.
+        auto poll() -> bool
+        {
+            auto state{ m_state };
+            if (!state) {
+                throw std::logic_error{ "Action goal handle was moved from" };
+            }
+            detail::DispatchGuard dispatching{ state->m_dispatching };
+            if (state->takeAcceptance() && state->m_callbacks.on_accepted) {
+                state->m_callbacks.on_accepted();
+            }
+            if (auto bytes{ state->takeFeedback() }; bytes && state->m_callbacks.on_feedback) {
+                auto value{ decodeFeedback(bytes) };
+                if (value) {
+                    state->m_callbacks.on_feedback(*value);
+                }
+                else {
+                    state->deliveryFailed();
+                }
+            }
+            if (auto completion{ state->takeCompletion() }) {
+                if (completion->error) {
+                    state->m_callbacks.on_result(std::unexpected{ *completion->error });
+                }
+                else {
+                    state->m_callbacks.on_result(decodeResult(*completion));
+                }
+            }
+            return state->delivered();
+        }
+
+      private:
+        template<utils::memory::Serializable G, utils::memory::Serializable F, utils::memory::Serializable R>
+        friend class Action;
+        explicit PendingGoal(std::shared_ptr<State> state)
+          : m_state{ std::move(state) }
+        {
+        }
+        auto abandon() -> void
+        {
+            if (m_state) {
+                m_state->abandon();
+            }
+        }
+        static auto decodeFeedback(const detail::MessageBytes& bytes) -> std::optional<Feedback>
+        {
+            try {
+                Feedback value{};
+                if (utils::memory::deserialize(*bytes, value)) {
+                    return value;
+                }
+            } catch (...) {
+                return {};
+            }
+            return {};
+        }
+        static auto decodeResult(const typename State::Completion& completion) -> ActionResult<Result>
+        {
+            try {
+                Result value{};
+                if (utils::memory::deserialize(*completion.bytes, value)) {
+                    return ActionCompletion<Result>{ completion.status, std::move(value) };
+                }
+            } catch (...) {
+                return ActionResult<Result>{ std::unexpect, ActionError::HandlerFailed };
+            }
+            return ActionResult<Result>{ std::unexpect, ActionError::HandlerFailed };
+        }
+
+        std::shared_ptr<State> m_state;
+    };
+
+    namespace detail
+    {
+        template<typename Goal, typename Feedback, typename Result>
+        struct ActionProvider
+        {
+            using State = ActionGoalState<Feedback, Result>;
+            using Execution = ActionExecution<Feedback, Result>;
+            using Step = std::function<void(Execution&)>;
+            using Factory = std::function<std::expected<Step, ActionError>(const Goal&)>;
+            using Handler = std::function<void(const Goal&, Execution)>;
+            struct QueuedGoal
+            {
+                MessageBytes bytes;
+                std::shared_ptr<State> state;
+            };
+            struct Job
+            {
+                Execution execution;
+                Step step;
+            };
+
+            ActionProvider(Factory make_step, Handler handler, ActionOptions options)
+              : factory{ std::move(make_step) }
+              , callback{ std::move(handler) }
+              , max_goals{ options.max_goals }
+            {
+            }
+
+            auto open() -> bool
+            {
+                std::scoped_lock lock{ mutex };
+                return !closed;
+            }
+
+            auto enqueue(MessageBytes bytes, const std::shared_ptr<State>& state) -> void
+            {
+                std::vector<std::shared_ptr<State>> retained{};
+                std::deque<QueuedGoal> discarded{};
+                std::scoped_lock lock{ mutex };
+                if (stopping) {
+                    state->fail(ActionError::Unavailable);
+                    return;
+                }
+                pruneLocked(retained);
+                std::erase_if(queue, [&](auto& queued) {
+                    if (queued.state->pending()) {
+                        return false;
+                    }
+                    discarded.push_back(std::move(queued));
+                    return true;
+                });
+                if (!state->pending()) {
+                    return;
+                }
+                if (goals.size() >= max_goals) {
+                    state->fail(ActionError::Busy);
+                    return;
+                }
+                goals.emplace_back(state);
+                queue.push_back(QueuedGoal{ std::move(bytes), state });
+            }
+
+            auto requestStop() -> void
+            {
+                std::deque<QueuedGoal> discarded{};
+                std::vector<std::shared_ptr<State>> retained{};
+                std::scoped_lock lock{ mutex };
+                stopping = true;
+                discarded.swap(queue);
+                for (const auto& queued : discarded) {
+                    queued.state->fail(ActionError::Unavailable);
+                }
+                for (const auto& weak : goals) {
+                    if (auto state{ weak.lock() }) {
+                        state->requestCancel();
+                        retained.push_back(std::move(state));
+                    }
+                }
+            }
+
+            auto idle() -> bool
+            {
+                std::vector<std::shared_ptr<State>> retained{};
+                std::scoped_lock lock{ mutex };
+                pruneLocked(retained);
+                return goals.empty();
+            }
+
+            auto close() -> void
+            {
+                std::deque<QueuedGoal> discarded{};
+                std::vector<std::shared_ptr<Job>> removed{};
+                std::vector<std::weak_ptr<State>> outstanding{};
+                {
+                    std::scoped_lock lock{ mutex };
+                    closed = true;
+                    stopping = true;
+                    discarded.swap(queue);
+                    removed.swap(jobs);
+                    outstanding.swap(goals);
+                }
+                for (const auto& weak : outstanding) {
+                    if (auto state{ weak.lock() }) {
+                        state->fail(ActionError::Unavailable);
+                    }
+                }
+            }
+
+            std::mutex mutex;
+            std::deque<QueuedGoal> queue;
+            std::vector<std::weak_ptr<State>> goals;
+            std::vector<std::shared_ptr<Job>> jobs;
+            std::atomic_flag dispatching;
+            Factory factory;
+            Handler callback;
+            size_t max_goals;
+            bool stopping{};
+            bool closed{};
+
+          private:
+            // Strong references keep user callback destructors outside the provider lock.
+            auto pruneLocked(std::vector<std::shared_ptr<State>>& retained) -> void
+            {
+                retained.reserve(goals.size());
+                std::erase_if(goals, [&](const auto& weak) {
+                    auto state{ weak.lock() };
+                    if (!state) {
+                        return true;
+                    }
+                    const auto done{ !state->pending() };
+                    retained.push_back(std::move(state));
+                    return done;
+                });
+            }
+        };
+
+        template<typename Goal, typename Feedback, typename Result>
+        struct ActionState
+        {
+            std::mutex mutex;
+            std::weak_ptr<ActionProvider<Goal, Feedback, Result>> provider;
+        };
+
+        template<typename T>
+        struct ActionStepType
+        {
+            using Type = T;
+            static constexpr bool CHECKED{ false };
+        };
+        template<typename T>
+        struct ActionStepType<std::expected<T, ActionError>>
+        {
+            using Type = T;
+            static constexpr bool CHECKED{ true };
+        };
+    }
+
+    template<utils::memory::Serializable Goal,
+             utils::memory::Serializable Feedback,
+             utils::memory::Serializable Result>
+    class ActionServer
+    {
+        using Provider = detail::ActionProvider<Goal, Feedback, Result>;
+        using Execution = ActionExecution<Feedback, Result>;
+
+      public:
+        ~ActionServer() { close(); }
+        ActionServer(const ActionServer&) = delete;
+        auto operator=(const ActionServer&) -> ActionServer& = delete;
+        ActionServer(ActionServer&&) noexcept = default;
+        auto operator=(ActionServer&& other) noexcept -> ActionServer&
+        {
+            if (this != &other) {
+                close();
+                m_provider = std::move(other.m_provider);
+            }
+            return *this;
+        }
+
+        // Graceful shutdown: stop admission and ask active work to clean up. Keep polling to idle().
+        auto requestStop() -> void
+        {
+            if (m_provider) {
+                m_provider->requestStop();
+            }
+        }
+        auto idle() const -> bool { return !m_provider || m_provider->idle(); }
+        // Immediate unregistration. This reports Unavailable, not confirmed cancellation.
+        auto close() -> void
+        {
+            if (m_provider) {
+                m_provider->close();
+            }
+        }
+
+        // One caller drives admission and all managed steps. No threads, waits, or implicit retries.
+        // Returns the number of managed steps/deferred handlers invoked during this poll.
+        auto poll() -> size_t
+        {
+            auto provider{ m_provider };
+            if (!provider) {
+                return 0;
+            }
+            detail::DispatchGuard dispatching{ provider->dispatching };
+            std::deque<typename Provider::QueuedGoal> incoming{};
+            {
+                std::scoped_lock lock{ provider->mutex };
+                incoming.swap(provider->queue);
+            }
+            size_t invoked{};
+            for (const auto& queued : incoming) {
+                invoked += dispatch(*provider, queued);
+            }
+            std::vector<std::shared_ptr<typename Provider::Job>> jobs{};
+            {
+                std::scoped_lock lock{ provider->mutex };
+                jobs = provider->jobs;
+            }
+            for (const auto& job : jobs) {
+                if (!job->execution.pending()) {
+                    continue;
+                }
+                try {
+                    job->step(job->execution);
+                } catch (...) {
+                    job->execution.fail(ActionError::HandlerFailed);
+                }
+                ++invoked;
+            }
+            {
+                std::scoped_lock lock{ provider->mutex };
+                // The snapshot retains every removed callable until after unlocking.
+                std::erase_if(provider->jobs, [](const auto& job) { return !job->execution.pending(); });
+            }
+            return invoked;
+        }
+
+      private:
+        friend class Action<Goal, Feedback, Result>;
+        explicit ActionServer(std::shared_ptr<Provider> provider)
+          : m_provider{ std::move(provider) }
+        {
+        }
+        static auto dispatch(Provider& provider, const typename Provider::QueuedGoal& queued) -> size_t
+        {
+            {
+                std::scoped_lock lock{ provider.mutex };
+                if (provider.stopping) {
+                    queued.state->fail(ActionError::Unavailable);
+                    return 0;
+                }
+            }
+            if (!queued.state->pending()) {
+                return 0;
+            }
+            try {
+                Goal goal{};
+                if (!utils::memory::deserialize(*queued.bytes, goal)) {
+                    queued.state->fail(ActionError::HandlerFailed);
+                    return 0;
+                }
+                if (!queued.state->pending()) {
+                    return 0;
+                }
+                Execution execution{ queued.state };
+                if (!provider.factory) {
+                    provider.callback(goal, std::move(execution));
+                    return 1;
+                }
+                auto step{ provider.factory(goal) };
+                if (!step || !*step) {
+                    execution.fail(step ? ActionError::HandlerFailed : step.error());
+                    return 0;
+                }
+                auto job{ std::make_shared<typename Provider::Job>(std::move(execution), std::move(*step)) };
+                std::scoped_lock lock{ provider.mutex };
+                if (provider.stopping) {
+                    job->execution.fail(ActionError::Unavailable);
+                }
+                else if (job->execution.accept()) {
+                    provider.jobs.push_back(job);
+                }
+            } catch (...) {
+                queued.state->fail(ActionError::HandlerFailed);
+            }
+            return 0;
+        }
+
+        std::shared_ptr<Provider> m_provider;
+    };
+
+    template<utils::memory::Serializable Goal,
+             utils::memory::Serializable Feedback,
+             utils::memory::Serializable Result>
+    class Action
+    {
+        static_assert(std::same_as<Goal, std::remove_cvref_t<Goal>> &&
+                        std::same_as<Feedback, std::remove_cvref_t<Feedback>> &&
+                        std::same_as<Result, std::remove_cvref_t<Result>>,
+                      "Action messages must be unqualified value types");
+        static_assert(std::default_initializable<Goal> && std::default_initializable<Feedback> &&
+                        std::default_initializable<Result> && std::move_constructible<Feedback> &&
+                        std::move_constructible<Result>,
+                      "Action messages must be default constructible; feedback and results must be movable");
+        using Provider = detail::ActionProvider<Goal, Feedback, Result>;
+        using Execution = ActionExecution<Feedback, Result>;
+
+      public:
+        template<typename Factory>
+            requires std::invocable<Factory&, const Goal&>
+        [[nodiscard]] auto serve(Factory&& function, ActionOptions options = {}) const
+          -> ActionServer<Goal, Feedback, Result>
+        {
+            using Produced = std::remove_cvref_t<std::invoke_result_t<Factory&, const Goal&>>;
+            using Step = typename detail::ActionStepType<Produced>::Type;
+            static_assert(std::invocable<Step&, Execution&>, "An action factory must return a step function");
+            auto factory{ detail::own_service_function<Produced(const Goal&)>(
+              std::forward<Factory>(function)) };
+            if (!factory) {
+                throw std::invalid_argument{ "An action requires a factory" };
+            }
+            return registerProvider(
+              [factory{ std::move(factory) }](
+                const Goal& goal) mutable -> std::expected<typename Provider::Step, ActionError> {
+                auto produced{ factory(goal) };
+                if constexpr (detail::ActionStepType<Produced>::CHECKED) {
+                    if (!produced) {
+                        return std::unexpected{ produced.error() };
+                    }
+                    return detail::own_service_function<void(Execution&)>(std::move(*produced));
+                }
+                else {
+                    return detail::own_service_function<void(Execution&)>(std::move(produced));
+                }
+            },
+              {},
+              options);
+        }
+
+        template<typename Handler>
+            requires std::invocable<Handler&, const Goal&, Execution>
+        [[nodiscard]] auto serveDeferred(Handler&& function, ActionOptions options = {}) const
+          -> ActionServer<Goal, Feedback, Result>
+        {
+            auto handler{ detail::own_service_function<void(const Goal&, Execution)>(
+              std::forward<Handler>(function)) };
+            if (!handler) {
+                throw std::invalid_argument{ "An action requires a deferred handler" };
+            }
+            return registerProvider({}, std::move(handler), options);
+        }
+
+        [[nodiscard]] auto sendGoal(const Goal& goal,
+                                    ActionGoalOptions options,
+                                    ActionCallbacks<Feedback, Result> callbacks) const
+          -> PendingGoal<Feedback, Result>
+        {
+            if (!m_state) {
+                throw std::logic_error{ "Cannot send goals through a moved-from action" };
+            }
+            if (!callbacks.on_result) {
+                throw std::invalid_argument{ "An action goal requires a result callback" };
+            }
+            auto state{ std::make_shared<detail::ActionGoalState<Feedback, Result>>(
+              detail::service_deadline(options.accept_timeout), std::move(callbacks)) };
+            auto pending{ PendingGoal<Feedback, Result>{ state } };
+            if (!state->pending()) {
+                return pending;
+            }
+            std::shared_ptr<Provider> provider{};
+            {
+                std::scoped_lock lock{ m_state->mutex };
+                provider = m_state->provider.lock();
+            }
+            if (!provider || !provider->open()) {
+                state->fail(ActionError::Unavailable);
+                return pending;
+            }
+            auto bytes{ std::make_shared<const std::vector<std::byte>>(utils::memory::serialize(goal)) };
+            provider->enqueue(std::move(bytes), state);
+            return pending;
+        }
+
+      private:
+        friend class Bus;
+        explicit Action(std::shared_ptr<detail::ActionState<Goal, Feedback, Result>> state)
+          : m_state{ std::move(state) }
+        {
+        }
+        auto registerProvider(typename Provider::Factory factory,
+                              typename Provider::Handler handler,
+                              ActionOptions options) const -> ActionServer<Goal, Feedback, Result>
+        {
+            if (!m_state) {
+                throw std::logic_error{ "Cannot serve through a moved-from action" };
+            }
+            if (options.max_goals == 0) {
+                throw std::invalid_argument{ "An action requires a positive goal limit" };
+            }
+            auto provider{ std::make_shared<Provider>(std::move(factory), std::move(handler), options) };
+            std::shared_ptr<Provider> previous{};
+            std::scoped_lock lock{ m_state->mutex };
+            previous = m_state->provider.lock();
+            if (previous && previous->open()) {
+                throw std::logic_error{ "Action already has a provider" };
+            }
+            m_state->provider = provider;
+            return ActionServer<Goal, Feedback, Result>{ std::move(provider) };
+        }
+
+        std::shared_ptr<detail::ActionState<Goal, Feedback, Result>> m_state;
+    };
+
     class Bus
     {
         struct Entry
@@ -975,6 +1836,28 @@ namespace pnm::msg
         };
 
       public:
+        template<utils::memory::Serializable Goal,
+                 utils::memory::Serializable Feedback,
+                 utils::memory::Serializable Result>
+        auto action(std::string_view name) -> Action<Goal, Feedback, Result>
+        {
+            if (name.empty()) {
+                throw std::invalid_argument{ "An action requires a name" };
+            }
+            using State = detail::ActionState<Goal, Feedback, Result>;
+            std::string key{ name };
+            std::scoped_lock lock{ m_mutex };
+            if (const auto found{ m_actions.find(key) }; found != m_actions.end()) {
+                if (found->second.type != std::type_index{ typeid(State) }) {
+                    throw std::invalid_argument{ "Action '" + key + "' has different message types" };
+                }
+                return Action<Goal, Feedback, Result>{ std::static_pointer_cast<State>(found->second.state) };
+            }
+            auto state{ std::make_shared<State>() };
+            m_actions.emplace(std::move(key), Entry{ std::type_index{ typeid(State) }, state });
+            return Action<Goal, Feedback, Result>{ std::move(state) };
+        }
+
         template<utils::memory::Serializable Request, utils::memory::Serializable Response>
         auto service(std::string_view name) -> Service<Request, Response>
         {
@@ -1018,5 +1901,6 @@ namespace pnm::msg
         std::mutex m_mutex;
         std::unordered_map<std::string, Entry> m_topics;
         std::unordered_map<std::string, Entry> m_services;
+        std::unordered_map<std::string, Entry> m_actions;
     };
 }

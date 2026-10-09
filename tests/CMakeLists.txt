@@ -123,7 +123,7 @@ target_link_libraries(
     pneumo::compiler_warnings
 )
 
-add_executable(messaging_tests messaging_tests.cpp messaging_service_tests.cpp)
+add_executable(messaging_tests messaging_tests.cpp messaging_service_tests.cpp messaging_action_tests.cpp)
 target_link_libraries(
     messaging_tests
     PRIVATE
