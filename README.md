@@ -177,8 +177,8 @@ publish and poll subscriptions.
 
 ```cpp
 pnm::msg::Bus bus;
-auto topic = bus.topic<int>("sensor/value");
-auto subscription = topic.subscribe([](const int& value) { /* consume value */ });
+auto topic{ bus.topic<int>("sensor/value") };
+auto subscription{ topic.subscribe([](const int& value) { /* consume value */ }) };
 topic.publish(42);
 subscription.poll(); // Calls the subscriber here.
 ```
@@ -189,21 +189,53 @@ Messages must satisfy `pnm::utils::memory::Serializable`; subscribing additional
 default-constructible message type for deserialization. Each publication is serialized once into
 owned bytes, shared across independent subscriber queues, and deserialized when polled.
 
+The topic retains its last published message even when there are no subscribers.
+`subscription.latest()` invokes that subscription's callback with the retained value on the calling
+thread, including for a subscription created after publication. It returns `void` and does nothing
+when no message exists or the subscription is closed. It does not consume queued messages, so a
+subsequent `poll()` may deliver the same value again. Repeated calls to `latest()` repeat the callback.
+
+```cpp
+auto state{ bus.topic<int>("system/state") };
+state.setPublishOnlyOnChange(true);
+state.publish(1);
+auto observer{ state.subscribe([](int value) { /* consume value */ }) };
+observer.latest(); // Invokes the callback with 1, despite subscribing after publication.
+state.publish(1);  // Returns false; no message is queued.
+state.publish(2);  // Returns true; queues 2 for every active subscriber.
+observer.poll();   // Invokes the callback with 2.
+```
+
+Change detection is disabled by default. `setPublishOnlyOnChange(true)` compares each value with the
+decoded last publication using `operator==`, avoiding false changes from object padding. Types without
+equality must supply a comparator, for example `topic.setPublishOnlyOnChange(true, equal)`; the comparator
+returns `true` for equivalent values. Enabling detection without either throws `std::invalid_argument`.
+Change detection requires default-constructible messages and affects all handles to the same topic.
+Use `setPublishOnlyOnChange(false)` to publish every call again. Comparators run outside internal locks,
+may run concurrently, and may be retried; they should be thread-safe and free of side effects.
+
+`publish()` returns `true` for an accepted publication and `false` for an unchanged value. The first
+publication is always accepted, and suppressed values do not replace the retained message. Suppression
+saves queueing, wakeups, and subscriber callbacks; serialization still occurs for each attempted publish.
+
 `poll()` processes queued messages without waiting. `poll(timeout)` waits for a message or closure,
 then processes the queue size observed on waking; both return the number of callbacks completed.
 Callbacks run on the polling thread, outside internal locks, and may publish or unsubscribe.
 Concurrent publishers preserve the same publication order across subscribers. A subscription may
-only be polled by one caller at a time; concurrent or recursive polling throws `std::logic_error`.
+only dispatch from one caller at a time; concurrent or recursive calls to `poll()` or `latest()` throw
+`std::logic_error`.
 Adapter and callback exceptions propagate; a message whose deserialization or callback throws is
-consumed, while later messages remain queued.
+consumed by `poll()`, while later messages remain queued. Failed `latest()` calls leave the queue intact.
 
 Subscriptions are move-only. Destruction or `unsubscribe()` discards pending messages and wakes a
 waiting poll; an in-flight callback may finish. Topic handles can outlive their bus. Destroying the
 bus and its last topic handle closes the remaining subscriptions. Queues are currently unbounded,
-and publications made before subscribing are not replayed.
+and publications made before subscribing are not automatically queued; use `latest()` to request the
+retained value explicitly. Closure also clears the subscription's retained value.
 
 See [`samples/messaging_sample.cpp`](samples/messaging_sample.cpp) for publishing and polling on
-separate application threads. The sample waits for subscription setup before sending its ten messages.
+separate application threads, plus explicit latest-value dispatch and change suppression. The sample
+waits for subscription setup before sending its ten temperature messages.
 
 ### `pneumo::coroutines`
 

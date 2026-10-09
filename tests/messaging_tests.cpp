@@ -32,6 +32,13 @@ namespace messaging_tests
         double value;
         Payload payload;
     };
+
+    struct PaddedMessage
+    {
+        char tag;
+        int value;
+        auto operator==(const PaddedMessage&) const -> bool = default;
+    };
 }
 
 namespace pnm::utils::memory
@@ -91,11 +98,11 @@ TEST(MessagingTopicTests, NameResolvesSharedTopicAndOwnsItsString)
 {
     pnm::msg::Bus bus;
     std::string name{ "sensors/temperature" };
-    auto publisher = bus.topic<int>(name);
+    auto publisher{ bus.topic<int>(name) };
     name.assign("different");
-    auto receiver = bus.topic<int>("sensors/temperature");
+    auto receiver{ bus.topic<int>("sensors/temperature") };
     std::vector<int> values;
-    auto subscription = receiver.subscribe([&](int value) { values.push_back(value); });
+    auto subscription{ receiver.subscribe([&](int value) { values.push_back(value); }) };
 
     publisher.publish(42);
     EXPECT_TRUE(values.empty());
@@ -107,7 +114,7 @@ TEST(MessagingTopicTests, NameResolvesSharedTopicAndOwnsItsString)
 TEST(MessagingTopicTests, RejectsIncompatibleTypesEmptyNamesAndEmptyCallbacks)
 {
     pnm::msg::Bus bus;
-    auto topic = bus.topic<int>("value");
+    auto topic{ bus.topic<int>("value") };
     EXPECT_THROW(bus.topic<float>("value"), std::invalid_argument);
     EXPECT_THROW(bus.topic<int>(""), std::invalid_argument);
     EXPECT_THROW(static_cast<void>(topic.subscribe({})), std::invalid_argument);
@@ -118,7 +125,7 @@ TEST(MessagingTopicTests, DifferentNamesAndBusesAreIndependent)
     pnm::msg::Bus first;
     pnm::msg::Bus second;
     int calls{};
-    auto subscription = first.topic<int>("a").subscribe([&](int) { ++calls; });
+    auto subscription{ first.topic<int>("a").subscribe([&](int) { ++calls; }) };
 
     first.topic<int>("b").publish(1);
     second.topic<int>("a").publish(2);
@@ -129,11 +136,11 @@ TEST(MessagingTopicTests, DifferentNamesAndBusesAreIndependent)
 TEST(MessagingTopicTests, SubscribersHaveIndependentQueues)
 {
     pnm::msg::Bus bus;
-    auto topic = bus.topic<int>("value");
+    auto topic{ bus.topic<int>("value") };
     std::vector<int> fast;
     std::vector<int> slow;
-    auto first = topic.subscribe([&](int value) { fast.push_back(value); });
-    auto second = topic.subscribe([&](int value) { slow.push_back(value); });
+    auto first{ topic.subscribe([&](int value) { fast.push_back(value); }) };
+    auto second{ topic.subscribe([&](int value) { slow.push_back(value); }) };
 
     topic.publish(1);
     EXPECT_EQ(first.poll(), 1UZ);
@@ -147,10 +154,10 @@ TEST(MessagingTopicTests, SubscribersHaveIndependentQueues)
 TEST(MessagingTopicTests, SubscribingDoesNotReplayOlderPublications)
 {
     pnm::msg::Bus bus;
-    auto topic = bus.topic<int>("value");
+    auto topic{ bus.topic<int>("value") };
     topic.publish(1);
     std::vector<int> values;
-    auto subscription = topic.subscribe([&](int value) { values.push_back(value); });
+    auto subscription{ topic.subscribe([&](int value) { values.push_back(value); }) };
     topic.publish(2);
 
     EXPECT_EQ(subscription.poll(), 1UZ);
@@ -164,11 +171,11 @@ TEST(MessagingTopicTests, SerializedDataIsOwnedAndAdaptersAreUsed)
     Adapter::serialization_calls = 0;
     Adapter::deserialization_calls = 0;
     pnm::msg::Bus bus;
-    auto topic = bus.topic<Message>("message");
+    auto topic{ bus.topic<Message>("message") };
     Message first{};
     Message second{};
-    auto a = topic.subscribe([&](const Message& value) { first = value; });
-    auto b = topic.subscribe([&](const Message& value) { second = value; });
+    auto a{ topic.subscribe([&](const Message& value) { first = value; }) };
+    auto b{ topic.subscribe([&](const Message& value) { second = value; }) };
     Message source{ 21.5, { { std::byte{ 1 }, std::byte{ 2 } } } };
     topic.publish(source);
     source.value = 99.0;
@@ -186,12 +193,12 @@ TEST(MessagingTopicTests, SerializedDataIsOwnedAndAdaptersAreUsed)
 TEST(MessagingTopicTests, DestroyingSubscriptionReleasesCallbackAndPendingData)
 {
     pnm::msg::Bus bus;
-    auto topic = bus.topic<int>("value");
+    auto topic{ bus.topic<int>("value") };
     std::weak_ptr<int> captured;
     {
-        auto value = std::make_shared<int>(0);
+        auto value{ std::make_shared<int>(0) };
         captured = value;
-        auto subscription = topic.subscribe([value](int number) { *value = number; });
+        auto subscription{ topic.subscribe([value](int number) { *value = number; }) };
         topic.publish(42);
     }
     EXPECT_TRUE(captured.expired());
@@ -201,13 +208,13 @@ TEST(MessagingTopicTests, DestroyingSubscriptionReleasesCallbackAndPendingData)
 TEST(MessagingTopicTests, SubscriptionMovesTransferOwnership)
 {
     pnm::msg::Bus bus;
-    auto topic = bus.topic<int>("value");
+    auto topic{ bus.topic<int>("value") };
     int received{};
     int replaced_calls{};
-    auto original = topic.subscribe([&](int value) { received += value; });
-    auto replacement = topic.subscribe([&](int) { ++replaced_calls; });
+    auto original{ topic.subscribe([&](int value) { received += value; }) };
+    auto replacement{ topic.subscribe([&](int) { ++replaced_calls; }) };
     topic.publish(42);
-    auto moved = std::move(original);
+    auto moved{ std::move(original) };
     replacement = std::move(moved);
 
     EXPECT_EQ(original.poll(), 0UZ);
@@ -220,7 +227,7 @@ TEST(MessagingTopicTests, SubscriptionMovesTransferOwnership)
 TEST(MessagingTopicTests, CallbackCanPublishAndRecursivePollIsRejected)
 {
     pnm::msg::Bus bus;
-    auto topic = bus.topic<int>("value");
+    auto topic{ bus.topic<int>("value") };
     std::vector<int> values;
     std::optional<pnm::msg::Subscription<int>> subscription;
     subscription.emplace(topic.subscribe([&](int value) {
@@ -241,7 +248,7 @@ TEST(MessagingTopicTests, CallbackCanPublishAndRecursivePollIsRejected)
 TEST(MessagingTopicTests, CallbackCanUnsubscribeAndDiscardRemainingMessages)
 {
     pnm::msg::Bus bus;
-    auto topic = bus.topic<int>("value");
+    auto topic{ bus.topic<int>("value") };
     int calls{};
     std::optional<pnm::msg::Subscription<int>> subscription;
     subscription.emplace(topic.subscribe([&](int) {
@@ -260,14 +267,14 @@ TEST(MessagingTopicTests, CallbackCanUnsubscribeAndDiscardRemainingMessages)
 TEST(MessagingTopicTests, CallbackFailureKeepsRemainingMessagesAndAllowsPollingAgain)
 {
     pnm::msg::Bus bus;
-    auto topic = bus.topic<int>("value");
+    auto topic{ bus.topic<int>("value") };
     std::vector<int> values;
-    auto subscription = topic.subscribe([&](int value) {
+    auto subscription{ topic.subscribe([&](int value) {
         if (value == 1) {
             throw std::runtime_error{ "callback failed" };
         }
         values.push_back(value);
-    });
+    }) };
     topic.publish(1);
     topic.publish(2);
 
@@ -279,15 +286,15 @@ TEST(MessagingTopicTests, CallbackFailureKeepsRemainingMessagesAndAllowsPollingA
 TEST(MessagingTopicTests, TimedPollWakesAndRunsCallbackOnPollingThread)
 {
     pnm::msg::Bus bus;
-    auto topic = bus.topic<int>("value");
+    auto topic{ bus.topic<int>("value") };
     std::thread::id callback_thread;
     int received{};
-    auto subscription = topic.subscribe([&](int value) {
+    auto subscription{ topic.subscribe([&](int value) {
         callback_thread = std::this_thread::get_id();
         received = value;
-    });
+    }) };
     std::promise<size_t> completion;
-    auto result = completion.get_future();
+    auto result{ completion.get_future() };
     std::latch started{ 1 };
     std::jthread receiver{ [&] {
         started.count_down();
@@ -305,9 +312,9 @@ TEST(MessagingTopicTests, TimedPollWakesAndRunsCallbackOnPollingThread)
 TEST(MessagingTopicTests, UnsubscribeWakesWaitingPoll)
 {
     pnm::msg::Bus bus;
-    auto subscription = bus.topic<int>("value").subscribe([](int) {});
+    auto subscription{ bus.topic<int>("value").subscribe([](int) {}) };
     std::promise<size_t> completion;
-    auto result = completion.get_future();
+    auto result{ completion.get_future() };
     std::latch started{ 1 };
     std::jthread receiver{ [&] {
         started.count_down();
@@ -323,10 +330,10 @@ TEST(MessagingTopicTests, UnsubscribeWakesWaitingPoll)
 TEST(MessagingTopicTests, PollReturnsOnTimeoutAndNonpositiveDurations)
 {
     pnm::msg::Bus bus;
-    auto subscription = bus.topic<int>("value").subscribe([](int) {});
+    auto subscription{ bus.topic<int>("value").subscribe([](int) {}) };
     EXPECT_EQ(subscription.poll(0ms), 0UZ);
     EXPECT_EQ(subscription.poll(-1ms), 0UZ);
-    const auto started = std::chrono::steady_clock::now();
+    const auto started{ std::chrono::steady_clock::now() };
     EXPECT_EQ(subscription.poll(10ms), 0UZ);
     EXPECT_GE(std::chrono::steady_clock::now() - started, 10ms);
 }
@@ -334,16 +341,16 @@ TEST(MessagingTopicTests, PollReturnsOnTimeoutAndNonpositiveDurations)
 TEST(MessagingTopicTests, ConcurrentPublishersDeliverSameOrderToEverySubscriber)
 {
     pnm::msg::Bus bus;
-    auto topic = bus.topic<int>("value");
+    auto topic{ bus.topic<int>("value") };
     std::vector<int> first;
     std::vector<int> second;
-    auto a = topic.subscribe([&](int value) { first.push_back(value); });
-    auto b = topic.subscribe([&](int value) { second.push_back(value); });
+    auto a{ topic.subscribe([&](int value) { first.push_back(value); }) };
+    auto b{ topic.subscribe([&](int value) { second.push_back(value); }) };
     std::latch start{ 1 };
     std::vector<std::jthread> publishers;
     for (int producer{}; producer < 4; ++producer) {
         publishers.emplace_back([&, producer] {
-            auto publisher = bus.topic<int>("value");
+            auto publisher{ bus.topic<int>("value") };
             start.wait();
             for (int value{}; value < 100; ++value) {
                 publisher.publish(producer * 100 + value);
@@ -366,12 +373,12 @@ TEST(MessagingTopicTests, ConcurrentPublishersDeliverSameOrderToEverySubscriber)
 
 TEST(MessagingTopicTests, TopicHandlesCanOutliveBus)
 {
-    auto topic = [] {
+    auto topic{ [] {
         pnm::msg::Bus bus;
         return bus.topic<int>("value");
-    }();
+    }() };
     int received{};
-    auto subscription = topic.subscribe([&](int value) { received = value; });
+    auto subscription{ topic.subscribe([&](int value) { received = value; }) };
     topic.publish(42);
     EXPECT_EQ(subscription.poll(), 1UZ);
     EXPECT_EQ(received, 42);
@@ -379,22 +386,297 @@ TEST(MessagingTopicTests, TopicHandlesCanOutliveBus)
 
 TEST(MessagingTopicTests, LastTopicOwnerClosesSurvivingSubscriptions)
 {
-    auto subscription = [] {
+    auto subscription{ [] {
         pnm::msg::Bus bus;
-        auto topic = bus.topic<int>("value");
-        auto receiver = topic.subscribe([](int) { ADD_FAILURE() << "Topic has closed"; });
+        auto topic{ bus.topic<int>("value") };
+        auto receiver{ topic.subscribe([](int) { ADD_FAILURE() << "Topic has closed"; }) };
         topic.publish(42);
         return receiver;
-    }();
+    }() };
     EXPECT_EQ(subscription.poll(5s), 0UZ);
 }
 
 TEST(MessagingTopicTests, MovedFromTopicRejectsOperations)
 {
     pnm::msg::Bus bus;
-    auto original = bus.topic<int>("value");
-    auto moved = std::move(original);
+    auto original{ bus.topic<int>("value") };
+    auto moved{ std::move(original) };
     EXPECT_THROW(original.publish(1), std::logic_error);
     EXPECT_THROW(static_cast<void>(original.subscribe([](int) {})), std::logic_error);
+    EXPECT_THROW(original.setPublishOnlyOnChange(true), std::logic_error);
     EXPECT_NO_THROW(moved.publish(2));
+}
+
+TEST(MessagingTopicTests, LatestInvokesCallbackForLateSubscriberWithoutQueueing)
+{
+    pnm::msg::Bus bus;
+    auto topic{ bus.topic<int>("value") };
+    topic.publish(1);
+    topic.publish(2);
+    std::vector<int> values;
+    std::thread::id callback_thread;
+    auto subscription{ topic.subscribe([&](int value) {
+        values.push_back(value);
+        callback_thread = std::this_thread::get_id();
+    }) };
+
+    EXPECT_TRUE(values.empty());
+    subscription.latest();
+    EXPECT_EQ(values, (std::vector{ 2 }));
+    EXPECT_EQ(callback_thread, std::this_thread::get_id());
+    EXPECT_EQ(subscription.poll(), 0UZ);
+    subscription.latest();
+    EXPECT_EQ(values, (std::vector{ 2, 2 }));
+}
+
+TEST(MessagingTopicTests, LatestDoesNothingBeforePublicationOrAfterUnsubscribe)
+{
+    pnm::msg::Bus bus;
+    auto topic{ bus.topic<int>("value") };
+    int calls{};
+    auto subscription{ topic.subscribe([&](int) { ++calls; }) };
+    subscription.latest();
+    EXPECT_EQ(calls, 0);
+    topic.publish(1);
+    subscription.unsubscribe();
+    subscription.latest();
+    EXPECT_EQ(calls, 0);
+}
+
+TEST(MessagingTopicTests, LatestDoesNotConsumeAnySubscriptionQueue)
+{
+    pnm::msg::Bus bus;
+    auto topic{ bus.topic<int>("value") };
+    std::vector<int> first;
+    std::vector<int> second;
+    auto a{ topic.subscribe([&](int value) { first.push_back(value); }) };
+    auto b{ topic.subscribe([&](int value) { second.push_back(value); }) };
+    topic.publish(1);
+    topic.publish(2);
+
+    a.latest();
+    EXPECT_EQ(first, (std::vector{ 2 }));
+    EXPECT_TRUE(second.empty());
+    EXPECT_EQ(a.poll(), 2UZ);
+    EXPECT_EQ(b.poll(), 2UZ);
+    EXPECT_EQ(first, (std::vector{ 2, 1, 2 }));
+    EXPECT_EQ(second, (std::vector{ 1, 2 }));
+    b.latest();
+    EXPECT_EQ(second, (std::vector{ 1, 2, 2 }));
+}
+
+TEST(MessagingTopicTests, LatestRetainsOwnedAdapterPayloadAndTransfersOnMove)
+{
+    using messaging_tests::Message;
+    pnm::msg::Bus bus;
+    auto topic{ bus.topic<Message>("value") };
+    Message source{ 12.5, { { std::byte{ 42 } } } };
+    topic.publish(source);
+    source.payload.bytes.clear();
+    source.value = 99;
+    Message received{};
+    int calls{};
+    auto original{ topic.subscribe([&](const Message& message) {
+        received = message;
+        ++calls;
+    }) };
+    auto moved{ std::move(original) };
+    original.latest();
+    EXPECT_EQ(calls, 0);
+    moved.latest();
+    EXPECT_EQ(calls, 1);
+    EXPECT_EQ(received.value, 12.5);
+    EXPECT_EQ(received.payload.bytes, (std::vector{ std::byte{ 42 } }));
+    received.payload.bytes.clear();
+    moved.latest();
+    EXPECT_EQ(received.payload.bytes, (std::vector{ std::byte{ 42 } }));
+}
+
+TEST(MessagingTopicTests, LatestFailurePreservesQueueAndAllowsSubsequentDispatch)
+{
+    pnm::msg::Bus bus;
+    auto topic{ bus.topic<int>("value") };
+    bool fail{ true };
+    std::vector<int> values;
+    auto subscription{ topic.subscribe([&](int value) {
+        if (fail) {
+            throw std::runtime_error{ "callback failed" };
+        }
+        values.push_back(value);
+    }) };
+    topic.publish(42);
+    EXPECT_THROW(subscription.latest(), std::runtime_error);
+    fail = false;
+    subscription.latest();
+    EXPECT_EQ(subscription.poll(), 1UZ);
+    EXPECT_EQ(values, (std::vector{ 42, 42 }));
+}
+
+TEST(MessagingTopicTests, LatestCallbackCanPublishAndRejectsRecursiveDispatch)
+{
+    pnm::msg::Bus bus;
+    auto topic{ bus.topic<int>("value") };
+    std::optional<pnm::msg::Subscription<int>> subscription;
+    subscription.emplace(topic.subscribe([&](int value) {
+        EXPECT_THROW(subscription->latest(), std::logic_error);
+        EXPECT_THROW(subscription->poll(), std::logic_error);
+        if (value == 1) {
+            topic.publish(2);
+        }
+    }));
+    topic.publish(1);
+    subscription->latest();
+    EXPECT_EQ(subscription->poll(), 2UZ);
+}
+
+TEST(MessagingTopicTests, LastTopicOwnerClearsLatest)
+{
+    auto subscription{ [] {
+        pnm::msg::Bus bus;
+        auto topic{ bus.topic<int>("value") };
+        topic.publish(1);
+        return topic.subscribe([](int) { ADD_FAILURE() << "Topic has closed"; });
+    }() };
+    subscription.latest();
+}
+
+TEST(MessagingTopicTests, ChangeDetectionIsOptionalAndSharedAcrossTopicHandles)
+{
+    pnm::msg::Bus bus;
+    auto topic{ bus.topic<int>("value") };
+    auto other{ bus.topic<int>("value") };
+    std::vector<int> values;
+    auto subscription{ topic.subscribe([&](int value) { values.push_back(value); }) };
+    EXPECT_TRUE(topic.publish(1));
+    EXPECT_TRUE(topic.publish(1));
+    other.setPublishOnlyOnChange(true);
+    EXPECT_FALSE(topic.publish(1));
+    EXPECT_TRUE(other.publish(2));
+    EXPECT_FALSE(topic.publish(2));
+    EXPECT_TRUE(topic.publish(1));
+    other.setPublishOnlyOnChange(false);
+    EXPECT_TRUE(topic.publish(1));
+
+    EXPECT_EQ(subscription.poll(), 5UZ);
+    EXPECT_EQ(values, (std::vector{ 1, 1, 2, 1, 1 }));
+}
+
+TEST(MessagingTopicTests, ChangeDetectionRetainsPublicationWithoutSubscribers)
+{
+    pnm::msg::Bus bus;
+    auto topic{ bus.topic<int>("value") };
+    topic.setPublishOnlyOnChange(true);
+    EXPECT_TRUE(topic.publish(0));
+    EXPECT_FALSE(topic.publish(0));
+    int received{ -1 };
+    auto subscription{ topic.subscribe([&](int value) { received = value; }) };
+    subscription.latest();
+    EXPECT_EQ(received, 0);
+    EXPECT_EQ(subscription.poll(), 0UZ);
+}
+
+TEST(MessagingTopicTests, ChangeDetectionUsesEqualityInsteadOfObjectPadding)
+{
+    using messaging_tests::PaddedMessage;
+    pnm::msg::Bus bus;
+    auto topic{ bus.topic<PaddedMessage>("value") };
+    topic.setPublishOnlyOnChange(true);
+    PaddedMessage first{};
+    PaddedMessage second{};
+    std::ranges::fill(std::as_writable_bytes(std::span{ &first, 1 }), std::byte{ 0x11 });
+    std::ranges::fill(std::as_writable_bytes(std::span{ &second, 1 }), std::byte{ 0x22 });
+    first.tag = 'a';
+    first.value = 42;
+    second.tag = 'a';
+    second.value = 42;
+    EXPECT_TRUE(topic.publish(first));
+    EXPECT_FALSE(topic.publish(second));
+    second.value = 43;
+    EXPECT_TRUE(topic.publish(second));
+}
+
+TEST(MessagingTopicTests, CustomEqualitySupportsAdaptedMessagesAndKeepsLastPublishedValue)
+{
+    using messaging_tests::Message;
+    pnm::msg::Bus bus;
+    auto topic{ bus.topic<Message>("value") };
+    EXPECT_THROW(topic.setPublishOnlyOnChange(true), std::invalid_argument);
+    EXPECT_NO_THROW(topic.setPublishOnlyOnChange(false));
+    topic.setPublishOnlyOnChange(true, [](const Message& left, const Message& right) {
+        return left.payload.bytes == right.payload.bytes;
+    });
+    EXPECT_TRUE(topic.publish(Message{ 1.0, { { std::byte{ 42 } } } }));
+    EXPECT_FALSE(topic.publish(Message{ 2.0, { { std::byte{ 42 } } } }));
+    Message received{};
+    auto subscription{ topic.subscribe([&](const Message& message) { received = message; }) };
+    subscription.latest();
+    EXPECT_EQ(received.value, 1.0);
+    EXPECT_TRUE(topic.publish(Message{ 3.0, { { std::byte{ 43 } } } }));
+    EXPECT_EQ(subscription.poll(), 1UZ);
+    EXPECT_EQ(received.value, 3.0);
+    EXPECT_EQ(received.payload.bytes, (std::vector{ std::byte{ 43 } }));
+}
+
+TEST(MessagingTopicTests, EqualityFailurePreservesLatestAndQueuedMessages)
+{
+    pnm::msg::Bus bus;
+    auto topic{ bus.topic<int>("value") };
+    topic.setPublishOnlyOnChange(true,
+                                 [](int, int) -> bool { throw std::runtime_error{ "comparison failed" }; });
+    std::vector<int> values;
+    auto subscription{ topic.subscribe([&](int value) { values.push_back(value); }) };
+    EXPECT_TRUE(topic.publish(1));
+    EXPECT_THROW(topic.publish(2), std::runtime_error);
+    subscription.latest();
+    EXPECT_EQ(values, (std::vector{ 1 }));
+    EXPECT_EQ(subscription.poll(), 1UZ);
+    EXPECT_EQ(values, (std::vector{ 1, 1 }));
+    topic.setPublishOnlyOnChange(false);
+    EXPECT_TRUE(topic.publish(2));
+}
+
+TEST(MessagingTopicTests, ConcurrentIdenticalPublicationsAreSuppressedForEverySubscriber)
+{
+    pnm::msg::Bus bus;
+    auto topic{ bus.topic<int>("value") };
+    topic.setPublishOnlyOnChange(true);
+    int first{};
+    int second{};
+    auto a{ topic.subscribe([&](int value) { first = value; }) };
+    auto b{ topic.subscribe([&](int value) { second = value; }) };
+    std::atomic<int> published{};
+    std::latch start{ 1 };
+    std::vector<std::jthread> publishers;
+    for (int i{}; i < 4; ++i) {
+        publishers.emplace_back([&] {
+            auto handle{ bus.topic<int>("value") };
+            start.wait();
+            for (int j{}; j < 100; ++j) {
+                if (handle.publish(42)) {
+                    ++published;
+                }
+            }
+        });
+    }
+    start.count_down();
+    for (auto& publisher : publishers) {
+        publisher.join();
+    }
+    EXPECT_EQ(published.load(), 1);
+    EXPECT_EQ(a.poll(), 1UZ);
+    EXPECT_EQ(b.poll(), 1UZ);
+    EXPECT_EQ(first, 42);
+    EXPECT_EQ(second, 42);
+}
+
+TEST(MessagingTopicTests, ConfigurationChangesDuringComparisonAreRespected)
+{
+    pnm::msg::Bus bus;
+    auto topic{ bus.topic<int>("value") };
+    topic.setPublishOnlyOnChange(true, [&](int left, int right) {
+        topic.setPublishOnlyOnChange(false);
+        return left == right;
+    });
+    EXPECT_TRUE(topic.publish(1));
+    EXPECT_TRUE(topic.publish(1));
 }
