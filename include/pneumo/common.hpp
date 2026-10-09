@@ -31,9 +31,26 @@ namespace pnm
     {
         namespace memory
         {
+            template<typename T>
+            struct SerializationAdapter;
+
             namespace detail
             {
                 // NOLINTBEGIN(readability-identifier-naming)
+
+                template<typename T>
+                using SerializationAdapterFor = SerializationAdapter<std::remove_cvref_t<T>>;
+
+                template<typename T>
+                concept HasSerializationAdapter = requires(const std::remove_cvref_t<T>& src_value,
+                                                           std::remove_cvref_t<T>& dest_value,
+                                                           std::span<const std::byte> src,
+                                                           std::span<std::byte> dest) {
+                    requires sizeof(SerializationAdapterFor<T>) > 0UZ;
+                    { SerializationAdapterFor<T>::serialize(src_value, dest) } -> std::same_as<void>;
+                    { SerializationAdapterFor<T>::deserialize(src, dest_value) } -> std::same_as<void>;
+                    { SerializationAdapterFor<T>::bufferSize(src_value) } -> std::convertible_to<size_t>;
+                };
 
                 template<typename T>
                 struct is_span : std::false_type
@@ -55,7 +72,7 @@ namespace pnm
 
                     if constexpr (!std::is_trivially_copyable_v<U> || std::is_pointer_v<U> ||
                                   std::is_member_pointer_v<U> || std::is_reference_v<T> || is_span_v<U>) {
-                        return false;
+                        return HasSerializationAdapter<T>;
                     }
                     else if constexpr (std::is_array_v<U>) {
                         return is_serializable<std::remove_extent_t<U>>();
@@ -98,15 +115,65 @@ namespace pnm
             template<typename T>
             concept Serializable = detail::is_serializable<T>();
 
-            auto copy(Serializable auto& dest, const Serializable auto& src) -> bool
+            template<Serializable T>
+            auto serialize(const T& src, std::span<std::byte> dest_bytes) -> bool
             {
-                auto src_bytes{ std::as_bytes(std::span{ &src, 1 }) };
-                auto dest_bytes{ std::as_writable_bytes(std::span{ &dest, 1 }) };
-                if (src_bytes.size() != dest_bytes.size()) {
-                    return false;
+                if constexpr (detail::HasSerializationAdapter<T>) {
+                    if (dest_bytes.size() < detail::SerializationAdapterFor<T>::bufferSize(src)) {
+                        return false;
+                    }
+                    detail::SerializationAdapterFor<T>::serialize(src, dest_bytes);
                 }
-                std::ranges::copy(src_bytes, dest_bytes.begin());
+                else {
+                    auto src_bytes{ std::as_bytes(std::span{ &src, 1 }) };
+                    if (dest_bytes.size() < src_bytes.size()) {
+                        return false;
+                    }
+                    std::ranges::copy(src_bytes, dest_bytes.begin());
+                }
                 return true;
+            }
+
+            template<Serializable T>
+            auto serialize(const T& src) -> std::vector<std::byte>
+            {
+                if constexpr (detail::HasSerializationAdapter<T>) {
+                    std::vector<std::byte> buffer{ detail::SerializationAdapterFor<T>::bufferSize(src) };
+                    detail::SerializationAdapterFor<T>::serialize(src, buffer);
+                    return buffer;
+                }
+                else {
+                    std::vector<std::byte> buffer{ sizeof(T) };
+                    auto src_bytes{ std::as_bytes(std::span{ &src, 1 }) };
+                    std::ranges::copy(src_bytes, buffer.begin());
+                    return buffer;
+                }
+            }
+
+            template<Serializable T>
+            auto deserialize(std::span<const std::byte> src_bytes, T& dest) -> bool
+            {
+                if constexpr (detail::HasSerializationAdapter<T>) {
+                    if (detail::SerializationAdapterFor<T>::bufferSize(dest) < src_bytes.size()) {
+                        return false;
+                    }
+                    detail::SerializationAdapterFor<T>::deserialize(src_bytes, dest);
+                }
+                else {
+                    auto dest_bytes{ std::as_writable_bytes(std::span{ &dest, 1 }) };
+                    if (dest_bytes.size() < src_bytes.size()) {
+                        return false;
+                    }
+                    std::ranges::copy(src_bytes, dest_bytes.begin());
+                }
+                return true;
+            }
+
+            template<typename T, typename U>
+            auto copy(T& dest, const U& src) -> bool
+            {
+                auto bytes{ serialize(src) };
+                return deserialize(bytes, dest);
             }
 
             template<auto DeleteFn>
