@@ -31,13 +31,22 @@ namespace pnm::msg
 {
     class Bus;
 
-    enum class OverflowPolicy { DropOldest, DropNewest };
+    enum class OverflowPolicy : std::uint8_t
+    {
+        DropOldest,
+        DropNewest
+    };
     struct SubscriptionOptions
     {
         // Zero preserves the original unbounded FIFO behavior.
         size_t capacity{};
         OverflowPolicy overflow{ OverflowPolicy::DropOldest };
-        static constexpr auto latestOnly() -> SubscriptionOptions { return { 1, OverflowPolicy::DropOldest }; }
+        static constexpr auto latestOnly() -> SubscriptionOptions
+        {
+            SubscriptionOptions options{};
+            options.capacity = 1;
+            return options;
+        }
     };
     struct SubscriptionStatistics
     {
@@ -264,8 +273,10 @@ namespace pnm::msg
         {
             Readiness activity;
             friend struct MessagingAccess;
-            explicit SubscriptionState(std::function<void(const T&)> handler, SubscriptionOptions configuration = {})
-              : options{ configuration }, callback{ std::move(handler) }
+            explicit SubscriptionState(std::function<void(const T&)> handler,
+                                       SubscriptionOptions configuration = {})
+              : options{ configuration }
+              , callback{ std::move(handler) }
             {
             }
 
@@ -275,16 +286,17 @@ namespace pnm::msg
                 std::scoped_lock lock{ mutex };
                 if (!closed) {
                     latest = bytes;
-                    if (options.capacity && messages.size() >= options.capacity) {
-                        ++dropped;
-                        if (options.overflow == OverflowPolicy::DropNewest)
-                            return;
-                        messages.pop_front();
-                    }
-                    messages.push_back(bytes);
-                    ready.notify_one();
-                    activity.notify();
+                    enqueueLocked(bytes);
                 }
+            }
+
+            auto replay() -> void
+            {
+                NotificationBatch notifications{};
+                std::scoped_lock lock{ mutex };
+                // Keep the retained value and its queue insertion in one publication order.
+                if (!closed && latest)
+                    enqueueLocked(latest);
             }
 
             auto close() -> void
@@ -307,6 +319,20 @@ namespace pnm::msg
             bool closed{};
             std::atomic_flag dispatching;
             std::function<void(const T&)> callback;
+
+          private:
+            auto enqueueLocked(const MessageBytes& bytes) -> void
+            {
+                if (options.capacity && messages.size() >= options.capacity) {
+                    ++dropped;
+                    if (options.overflow == OverflowPolicy::DropNewest)
+                        return;
+                    messages.pop_front();
+                }
+                messages.push_back(bytes);
+                ready.notify_one();
+                activity.notify();
+            }
         };
 
         template<typename T>
@@ -1327,13 +1353,20 @@ namespace pnm::msg
                 return true;
             }
 
+            auto canFinish(ActionStatus outcome) -> bool
+            {
+                NotificationBatch notifications{};
+                std::scoped_lock lock{ m_mutex };
+                refreshLocked();
+                return canFinishLocked(outcome);
+            }
+
             auto finish(MessageBytes bytes, ActionStatus outcome) -> bool
             {
                 NotificationBatch notifications{};
                 std::scoped_lock lock{ m_mutex };
                 refreshLocked();
-                if (m_finished || (outcome == ActionStatus::Rejected && m_accepted) ||
-                    (!m_accepted && outcome != ActionStatus::Cancelled && outcome != ActionStatus::Rejected)) {
+                if (!canFinishLocked(outcome)) {
                     return false;
                 }
                 m_result = std::move(bytes);
@@ -1341,6 +1374,16 @@ namespace pnm::msg
                 m_finished = true;
                 m_activity.notify();
                 return true;
+            }
+
+            auto finishFailed(ActionStatus outcome) -> void
+            {
+                NotificationBatch notifications{};
+                std::scoped_lock lock{ m_mutex };
+                refreshLocked();
+                // Encoding may race with acceptance or another terminal transition.
+                if (canFinishLocked(outcome))
+                    failLocked(ActionError::HandlerFailed);
             }
 
             auto fail(ActionError failure) -> bool
@@ -1459,6 +1502,13 @@ namespace pnm::msg
             GoalId m_id{ next_goal_id() };
             std::atomic_flag m_dispatching;
             ActionCallbacks<Feedback, Result> m_callbacks;
+            auto canFinishLocked(ActionStatus outcome) const -> bool
+            {
+                return !m_finished &&
+                       (outcome == ActionStatus::Rejected ? !m_accepted
+                                                          : m_accepted || outcome == ActionStatus::Cancelled);
+            }
+
             auto failLocked(ActionError failure) -> void
             {
                 NotificationBatch notifications{};
@@ -1555,14 +1605,14 @@ namespace pnm::msg
         auto finish(const Result& value, ActionStatus status) -> bool
         {
             auto state{ m_state };
-            if (!state || !state->pending() || (status != ActionStatus::Cancelled && status != ActionStatus::Rejected && !state->canPublish())) {
+            if (!state || !state->canFinish(status)) {
                 return false;
             }
             try {
                 auto bytes{ std::make_shared<const std::vector<std::byte>>(utils::memory::serialize(value)) };
                 return state->finish(std::move(bytes), status);
             } catch (...) {
-                state->fail(ActionError::HandlerFailed);
+                state->finishFailed(status);
                 return false;
             }
         }
@@ -2155,14 +2205,8 @@ namespace pnm::msg
             template<typename T>
             static auto replay(Subscription<T>& subscription) -> void
             {
-                NotificationBatch notifications{};
                 auto state{ subscription.m_state };
-                MessageBytes latest;
-                {
-                    std::scoped_lock lock{ state->mutex };
-                    latest = state->latest;
-                }
-                if (latest) state->enqueue(latest);
+                state->replay();
             }
             template<typename Q, typename R, typename Handler>
             static auto serve(const Service<Q, R>& service, Handler&& handler, ServiceOptions options)

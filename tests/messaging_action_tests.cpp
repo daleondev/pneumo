@@ -39,12 +39,15 @@ namespace pnm::utils::memory
     template<>
     struct SerializationAdapter<messaging_action_tests::Blob>
     {
+        static inline std::function<void()> on_serialize{};
         static auto bufferSize(const messaging_action_tests::Blob& value) -> size_t
         {
             return value.bytes.size();
         }
         static auto serialize(const messaging_action_tests::Blob& value, std::span<std::byte> bytes) -> void
         {
+            if (auto hook{ std::exchange(on_serialize, {}) })
+                hook();
             if (!value.bytes.empty() && value.bytes.front() == std::byte{ 0xff }) {
                 throw std::runtime_error{ "encode failure" };
             }
@@ -340,6 +343,116 @@ TEST(MessagingActionTests, DeferredRejectionCancellationAndDroppedTokenBeforeAcc
     EXPECT_EQ(cancelled.result->value().status, ActionStatus::Cancelled);
     EXPECT_EQ(dropped.result->error(), ActionError::HandlerFailed);
     EXPECT_EQ(cancelled.events, (std::vector<char>{ 'r' }));
+}
+
+TEST(MessagingActionTests, TypedRejectionDeliversOnlyItsResultAndIsTerminal)
+{
+    Bus bus{};
+    auto action{ bus.action<int, int, int>("rejected") };
+    auto server{ action.serveDeferred([](int, Execution execution) {
+        EXPECT_TRUE(execution.reject(42));
+        EXPECT_FALSE(execution.pending());
+        EXPECT_FALSE(execution.cancelRequested());
+        EXPECT_FALSE(execution.accept());
+        EXPECT_FALSE(execution.reject(99));
+        EXPECT_FALSE(execution.reject());
+        EXPECT_FALSE(execution.feedback(1));
+        EXPECT_FALSE(execution.succeed(1));
+    }) };
+    Observer observer{};
+    auto goal{ action.sendGoal(1, OPTIONS, observer.callbacks()) };
+    server.poll();
+    EXPECT_TRUE(server.idle());
+    ASSERT_TRUE(goal.poll());
+    ASSERT_TRUE(observer.result);
+    ASSERT_TRUE(observer.result->has_value());
+    EXPECT_EQ(observer.result->value().status, ActionStatus::Rejected);
+    EXPECT_EQ(observer.result->value().value, 42);
+    EXPECT_TRUE(goal.poll());
+    EXPECT_EQ(observer.events, (std::vector<char>{ 'r' }));
+}
+
+TEST(MessagingActionTests, AcceptedGoalIgnoresTypedRejectionWithoutEncoding)
+{
+    using Adapter = pnm::utils::memory::SerializationAdapter<Blob>;
+    Bus bus{};
+    auto action{ bus.action<int, int, Blob>("accepted") };
+    std::optional<ActionExecution<int, Blob>> execution{};
+    auto server{ action.serveDeferred(
+      [&](int, ActionExecution<int, Blob> value) { execution.emplace(std::move(value)); }) };
+    std::optional<ActionResult<Blob>> result{};
+    auto goal{ action.sendGoal(
+      1, OPTIONS, { .on_result{ [&](ActionResult<Blob> value) { result.emplace(std::move(value)); } } }) };
+    server.poll();
+    ASSERT_TRUE(execution);
+    ASSERT_TRUE(execution->accept());
+    bool encoded{};
+    Adapter::on_serialize = [&] { encoded = true; };
+    EXPECT_FALSE(execution->reject(Blob{ { std::byte{ 0xff } } }));
+    Adapter::on_serialize = {};
+    EXPECT_FALSE(encoded);
+    EXPECT_TRUE(execution->pending());
+    EXPECT_FALSE(goal.ready());
+    EXPECT_TRUE(execution->succeed(Blob{ { std::byte{ 1 } } }));
+    ASSERT_TRUE(goal.poll());
+    ASSERT_TRUE(result);
+    ASSERT_TRUE(result->has_value());
+    EXPECT_EQ(result->value().status, ActionStatus::Succeeded);
+    EXPECT_EQ(result->value().value.bytes, (std::vector{ std::byte{ 1 } }));
+}
+
+TEST(MessagingActionTests, AcceptanceDuringRejectionEncodingPreservesTheAcceptedGoal)
+{
+    using Adapter = pnm::utils::memory::SerializationAdapter<Blob>;
+    for (const auto byte : { std::byte{ 1 }, std::byte{ 0xff } }) {
+        Bus bus{};
+        auto action{ bus.action<int, int, Blob>("accepted") };
+        std::optional<ActionExecution<int, Blob>> execution{};
+        auto server{ action.serveDeferred(
+          [&](int, ActionExecution<int, Blob> value) { execution.emplace(std::move(value)); }) };
+        std::optional<ActionResult<Blob>> result{};
+        auto goal{ action.sendGoal(1, OPTIONS, { .on_result{ [&](ActionResult<Blob> value) {
+            result.emplace(std::move(value));
+        } } }) };
+        server.poll();
+        ASSERT_TRUE(execution);
+        // Exercise a state change after validation, both with and without an encoding exception.
+        bool accepted{};
+        Adapter::on_serialize = [&] { accepted = execution->accept(); };
+        EXPECT_FALSE(execution->reject(Blob{ { byte } }));
+        Adapter::on_serialize = {};
+        EXPECT_TRUE(accepted);
+        EXPECT_TRUE(execution->pending());
+        EXPECT_FALSE(goal.ready());
+        EXPECT_TRUE(execution->succeed(Blob{}));
+        ASSERT_TRUE(goal.poll());
+        ASSERT_TRUE(result);
+        ASSERT_TRUE(result->has_value());
+        EXPECT_EQ(result->value().status, ActionStatus::Succeeded);
+    }
+}
+
+TEST(MessagingActionTests, TypedRejectionAdapterFailuresReportHandlerFailed)
+{
+    for (const auto byte : { std::byte{ 0xff }, std::byte{ 0xfe } }) {
+        Bus bus{};
+        auto action{ bus.action<int, int, Blob>("rejected") };
+        auto server{ action.serveDeferred([byte](int, ActionExecution<int, Blob> execution) {
+            EXPECT_EQ(execution.reject(Blob{ { byte } }), byte == std::byte{ 0xfe });
+        }) };
+        int accepted{};
+        std::optional<ActionResult<Blob>> result{};
+        auto goal{ action.sendGoal(
+          1, OPTIONS, { .on_accepted{ [&] { ++accepted; } }, .on_result{ [&](ActionResult<Blob> value) {
+            result.emplace(std::move(value));
+        } } }) };
+        server.poll();
+        ASSERT_TRUE(goal.poll());
+        ASSERT_TRUE(result);
+        ASSERT_FALSE(result->has_value());
+        EXPECT_EQ(result->error(), ActionError::HandlerFailed);
+        EXPECT_EQ(accepted, 0);
+    }
 }
 
 TEST(MessagingActionTests, AcceptanceDeadlineExpiresButNeverTimesOutAcceptedWork)
