@@ -18,16 +18,17 @@
 
 # Pneumo
 
-**pneumo** is a header-only C++26 utility library with six module targets and one umbrella target:
+**pneumo** is a header-only C++26 utility library with seven module targets and one umbrella target:
 
 *   **`pneumo::common`** for shared result, assertion, memory, queue, and bit helpers.
 *   **`pneumo::meta`** for compile-time reflection and metaprogramming utilities built on C++26 static reflection.
 *   **`pneumo::formatting`** for reflection-aware std::format extensions.
 *   **`pneumo::units`** for strongly typed quantities, literals, conversions, and dimensional operations.
 *   **`pneumo::logging`** for asynchronous structured logging, configurable routing, source metadata, files, and custom sinks.
+*   **`pneumo::messaging`** for named, typed in-process topics, services, and actions with caller-driven dispatch.
 *   **`pneumo::coroutines`** for lazy tasks, executor contexts, asynchronous work, timers, and channels.
 
-`pneumo::pneumo` links all six modules, and `pneumo/pneumo.hpp` is the matching umbrella header.
+`pneumo::pneumo` links all seven modules, and `pneumo/pneumo.hpp` is the matching umbrella header.
 
 ## Module Overview
 
@@ -36,11 +37,24 @@
 The common module contains small reusable helpers that support the higher-level libraries:
 
 *   `pnm::Result<T>` as `std::expected<T, std::error_code>`.
-*   `pnm::utils::memory` byte-copy helpers for trivially copyable values and contiguous ranges.
+*   `pnm::utils::memory` serialization and copy helpers with explicit and automatically generated adapters.
 *   `pnm::utils::concurrent` thread concepts plus thread start/stop helpers.
 *   `pnm::utils::queue` push/pop adapters for queue-like types, optionally guarded by a lock.
 *   `pnm::utils::bit` constexpr unsigned bit masks and masked get/set helpers.
 *   Debug assertions and portable structure-packing macros.
+
+`memory::serialize`, `deserialize`, and `copy` use `SerializationAdapter<T>` when one is available.
+An adapter provides `bufferSize(const T&)`, `serialize(const T&, std::span<std::byte>)`, and
+`deserialize(std::span<const std::byte>, T&)`; the latter two return `void` and can throw.
+For a non-trivially-copyable class, Pneumo automatically supplies an adapter when reflection confirms
+that every base and member can be serialized. Nested eligible classes receive their own adapters,
+and explicit specializations override the generated fallback. Existing raw serialization for
+trivially serializable types is unchanged.
+
+Generated adapters visit bases first, then members in declaration order, and process array elements
+recursively. Each adapter-backed field has a native `std::size_t` byte-length prefix, allowing
+variable-sized fields to be restored into empty destinations. This is a same-process, same-ABI format.
+Generated adapters throw on malformed input; fields decoded before an error may already be modified.
 
 ### `pneumo::meta`
 
@@ -155,6 +169,364 @@ The logging module provides:
 *   Default level colors, per-sink palettes, and per-message ANSI color overrides.
 *   User-defined sinks through `pnm::log::ISink` and `pnm::log::SinkBase`.
 
+### `pneumo::messaging`
+
+Link `pneumo::messaging` and include `<pneumo/messaging.hpp>` to use `pnm::msg`.
+Messaging connects modules **inside one process**, including modules on different application threads.
+It creates no threads and has no coroutine dependency. The application drives dispatch by polling.
+
+| Pattern | Use | Provider/publisher | Client/consumer |
+| :--- | :--- | :--- | :--- |
+| Topic | State updates and data streams; many publishers and subscribers | `publish(message)` | `subscribe(callback)`, `poll()`, `latest()` |
+| Service | Short request/response operations; one provider, many clients | `serve(handler)` or `serveDeferred(handler)`, server `poll()` | Blocking `call()` or nonblocking `request()` |
+| Action | Longer operations with progress and cooperative cancellation | `serve(factory)` or `serveDeferred(handler)`, server `poll()` | `sendGoal()`, goal `poll()`, `requestCancel()` |
+
+Each `Bus` has separate topic, service, and action name registries. Reusing a name within one registry
+returns the same endpoint if all message types match; a type mismatch or empty name throws
+`std::invalid_argument`. Different buses are independent. A service or action allows one registered
+provider at a time; registering another throws `std::logic_error`.
+
+Payloads must be unqualified value types satisfying `pnm::utils::memory::Serializable`. Messages are
+serialized into owned buffers and decoded at dispatch, so the sender may reuse its input after
+submission. Subscribers need default-constructible payloads. Services and actions require all payloads
+to be default constructible; responses, action feedback, and action results must also be movable.
+The local serialization format is not a portable wire protocol.
+Payload references passed to handlers and callbacks are borrowed for that invocation; copy any data
+that needs to survive it.
+
+#### Threads, ownership, and dispatch
+
+| Application thread | Operations executed there |
+| :--- | :--- |
+| Publisher/client | Submission and serialization; blocking service waits if requested |
+| Subscription poller | Topic deserialization and subscriber callbacks |
+| Provider poller | Request/goal deserialization, service handlers, action factories and steps |
+| Client poller | Service result callbacks; action acceptance, feedback, and result callbacks |
+
+Publishing or producing feedback does **not** invoke consumer callbacks. Even immediate errors are
+reported through client polling or service `get()`/`call()`. User callbacks, adapters, and comparators
+run outside messaging's locks. Adapters and comparators must tolerate concurrent calls when used from
+multiple threads. Callback-owned application state only needs synchronization if other threads also
+access it.
+
+Endpoint handles (`Topic`, `Service`, `Action`) are copyable and can outlive their bus. Subscriptions,
+server registrations, pending operations, replies, and action execution tokens are move-only. Keep
+these handles alive for the operation's lifetime. Lookups and submissions are synchronized, but do
+not concurrently move or destroy a handle that another thread is using. The bus must remain alive
+while looking up endpoints.
+
+Only one caller may dispatch a given subscription, server, or pending operation at a time. Concurrent
+or recursive dispatch throws `std::logic_error`; independent handles can be polled by different
+threads. Closing a handle can wake/fail pending work, but an invocation already in flight may finish.
+`poll()` does not intentionally wait for work; timed topic/service polling can wait. Mutex contention,
+serialization, and user code can still take time. This is not a lock-free or hard-real-time API.
+
+The examples below use these headers and a local bus:
+
+```cpp
+#include <pneumo/messaging.hpp>
+
+#include <chrono>
+#include <cstdint>
+#include <print>
+#include <stop_token>
+#include <thread>
+#include <utility>
+
+using namespace std::chrono_literals;
+pnm::msg::Bus bus{};
+```
+
+#### Local topics
+
+Each subscription owns an independent queue: consuming a message never removes it from another
+subscription. Topics retain the last publication even without subscribers. A late subscriber requests
+it explicitly with `latest()`, which invokes its callback on the calling thread and returns `void`.
+
+```cpp
+auto temperature{ bus.topic<std::int32_t>("sensors/temperature_mC") };
+temperature.setPublishOnlyOnChange(true);
+temperature.publish(21500);
+
+auto display{ temperature.subscribe([](std::int32_t value) {
+    std::println("Temperature: {} millidegrees C", value);
+}) };
+display.latest();             // Calls the callback with the retained 21500.
+temperature.publish(21500);   // Returns false; no publication because the value is unchanged.
+temperature.publish(22000);   // Returns true; queues a message for each subscriber.
+display.poll();               // Calls this subscription's callback with 22000.
+```
+
+`latest()` does nothing without a retained value or after closure. It does not consume queued messages;
+repeated calls repeat the callback, and a subsequent `poll()` may deliver the same value again.
+Publications before subscription are not otherwise queued.
+
+Change detection is off by default and shared by every handle to a topic. It uses `operator==`, or a
+custom comparator passed to `setPublishOnlyOnChange(true, equal)`. Without either, enabling detection
+throws `std::invalid_argument`. It compares decoded values rather than padding bytes, requires a
+default-constructible payload, and never replaces the retained value when suppressing a publication.
+Comparators may be retried, so avoid side effects. Suppression saves queueing and callbacks;
+serialization still occurs for every attempted publication.
+
+`poll()` processes the queue size observed at entry. `poll(timeout)` waits for data or closure, then
+processes the observed queue size. Both return the number of callbacks completed. Publishers preserve
+one publication order across all subscribers. A callback may publish or unsubscribe. Deserialization
+or callback exceptions propagate and consume the failing queued message; later messages remain queued.
+An encoding exception prevents publication. Allocation failure during fan-out can leave a publication
+partially delivered; the operation does not provide a transactional guarantee across subscribers.
+
+Destroying or unsubscribing a subscription discards its queue and retained value and wakes a waiting
+poll. Destroying the last bus/topic owner closes surviving subscriptions. **Topic queues are unbounded**:
+a slow consumer needs application-level rate control, change suppression, or another buffering policy.
+
+#### Local services
+
+A synchronous handler returns the response. Here the application runs its provider on a separate
+thread, allowing the calling thread to use both blocking and callback-based requests:
+
+```cpp
+auto service{ bus.service<std::int32_t, std::int64_t>("math/double") };
+auto server{ service.serve([](std::int32_t value) {
+    return std::int64_t{ value } * 2;
+}) };
+std::jthread provider{ [&](std::stop_token stop) {
+    while (!stop.stop_requested()) {
+        server.poll(10ms); // Runs handlers on this provider thread.
+    }
+} };
+
+auto result{ service.call(21, 1s) };
+if (result) {
+    std::println("Blocking result: {}", *result);
+}
+
+auto pending{ service.request(21, 1s, [](pnm::msg::ServiceResult<std::int64_t> response) {
+    if (response) {
+        std::println("Callback result: {}", *response);
+    }
+}) };
+while (!pending.poll()) { // Runs the completion callback on this client thread.
+    std::this_thread::sleep_for(1ms);
+}
+provider.request_stop();
+provider.join();
+```
+
+`ServiceResult<Response>` is `std::expected<Response, ServiceError>`. Errors are `Unavailable`, `Busy`,
+`Timeout`, `Cancelled`, `HandlerFailed`, and `TransportError`; application-specific outcomes belong in
+the response payload. Registration accepts `ServiceOptions{ max_pending }`, defaulting to 64 queued
+or executing requests, including deferred replies. Excess requests complete as `Busy`.
+
+- `call(request, timeout, stop_token)` waits for completion. Another thread must drive the provider
+  and any required transport; calling it on the sole provider thread can only time out.
+- `request(request, timeout, callback, stop_token)` returns `PendingCall<Response>`. Its nonblocking
+  `poll()` returns `true` only when it invokes the completion callback, exactly once.
+- Omitting the callback provides `ready()` and blocking, single-consumption `get()` instead. Do not
+  mix `get()` and callback polling. Handlers and service callbacks may capture move-only objects.
+- The optional stop token or `pending.cancel()` abandons the response and produces `Cancelled`.
+  Destroying the pending handle also abandons it without invoking a callback. This does **not** stop
+  an already-running handler or undo remote side effects.
+
+Timeouts include serialization and queueing. Nonpositive durations expire immediately; NaN throws
+`std::invalid_argument`; oversized positive durations saturate. Topic and service polling use the same
+timeout validation. Expiration is checked by polling, waiting, and readiness/reply operations, without
+a timer thread. Expired/cancelled queued requests are skipped. The first terminal result wins.
+
+For externally completed work, `serveDeferred()` passes `(const Request&, Reply<Response>)`. Move the
+reply token into application-owned storage, then call `respond(response)` or `fail(error)` later.
+`pending()` and `remainingTime()` support expiry checks and forwarding a remaining budget. Late or
+duplicate completions return `false`. Dropping an unanswered reply or throwing from a handler yields
+`HandlerFailed`. Request encoding exceptions propagate from submission; decoding and response encoding
+failures become `HandlerFailed`. Client callback exceptions propagate and consume that completion.
+Closing or destroying the server reports `Unavailable` to outstanding calls and permits re-registration.
+
+#### Local actions
+
+An action has a goal, feedback payload, and result payload. `serve(factory)` calls the factory once per
+goal and stores its returned step function. Each `server.poll()` admits queued goals, invokes each
+active step once, and removes completed executions. Acceptance is automatic after successful factory
+creation. A factory may return `std::expected<Step, ActionError>` to reject a goal instead.
+
+```cpp
+struct SumGoal { std::uint32_t count; };
+struct SumFeedback { std::uint32_t completed; };
+struct SumResult { std::uint64_t sum; };
+using Execution = pnm::msg::ActionExecution<SumFeedback, SumResult>;
+
+auto action{ bus.action<SumGoal, SumFeedback, SumResult>("math/sum") };
+auto server{ action.serve([](SumGoal goal) {
+    return [goal, completed{ std::uint32_t{ 0 } }, sum{ std::uint64_t{ 0 } }]
+           (Execution& execution) mutable {
+        if (execution.cancelRequested()) {
+            execution.cancelled(SumResult{ sum }); // Confirm cleanup is finished.
+            return;
+        }
+        if (completed < goal.count) {
+            sum += ++completed; // One addition per provider poll; state is private to this goal.
+            execution.feedback(SumFeedback{ completed });
+        }
+        if (completed == goal.count) {
+            execution.succeed(SumResult{ sum });
+        }
+    };
+}) };
+std::jthread provider{ [&](std::stop_token stop) {
+    while (!stop.stop_requested()) {
+        server.poll();
+        std::this_thread::sleep_for(10ms);
+    }
+    server.requestStop(); // Reject queued/new goals, ask active executions to cancel.
+    while (!server.idle()) {
+        server.poll(); // Continue cleanup before destroying the server.
+        std::this_thread::sleep_for(10ms);
+    }
+} };
+
+std::uint32_t progress{}; // Accessed only by the client thread, including its callbacks.
+auto goal{ action.sendGoal(SumGoal{ 100 }, pnm::msg::ActionGoalOptions{ 1s }, {
+    .on_accepted{ [] { std::println("Goal accepted"); } },
+    .on_feedback{ [&](const SumFeedback& value) { progress = value.completed; } },
+    .on_result{ [](pnm::msg::ActionResult<SumResult> result) {
+        if (!result) {
+            std::println("Action error: {}", static_cast<int>(result.error()));
+        }
+        else if (result->status == pnm::msg::ActionStatus::Succeeded) {
+            std::println("Sum: {}", result->value.sum);
+        }
+        else {
+            std::println("Stopped with partial sum: {}", result->value.sum);
+        }
+    } }
+}) };
+while (!goal.poll()) {
+    if (progress >= 3) goal.requestCancel(); // Idempotent request, not immediate completion.
+    std::this_thread::sleep_for(1ms);
+}
+provider.request_stop();
+provider.join();
+```
+
+Each submission has a distinct process-local `GoalId`, even for identical payloads. Each goal's state
+is independent; cancelling one does not cancel the others. Steps share the provider thread and must
+return promptly. Execution starts after provider acceptance, without waiting for the client to observe
+`on_accepted`. The borrowed execution reference must not be moved or retained by a managed step.
+
+`ActionResult<Result>` is `std::expected<ActionCompletion<Result>, ActionError>`. A completion contains
+`status` (`Succeeded`, `Aborted`, or `Cancelled`) and `value`; **an engaged expected does not necessarily
+mean success**. Aborted and cancelled executions can return partial results. Errors are `Unavailable`,
+`Busy`, `Rejected`, `Timeout`, `HandlerFailed`, and `TransportError`.
+
+- `goal.poll()` delivers acceptance, at most one latest feedback, and completion in that order, on
+  the calling thread. Intermediate feedback is coalesced. A result callback is required; the others
+  are optional. Action callbacks use `std::function` and require copyable captures. Factories, steps,
+  and deferred handlers can own move-only state.
+- `poll()` stays `true` after consuming completion, without repeating the callback. `ready()` reports
+  a terminal outcome without dispatching callbacks. Callback exceptions propagate; the current event
+  is consumed while later events remain available to a subsequent poll.
+- `requestCancel()` only records a request. The step must observe `cancelRequested()`, finish cleanup,
+  and call `cancelled(result)`. Cleanup may take several polls. Success can win a cancellation race.
+  Application policy decides whether a new goal preempts an existing one; preemption is not automatic.
+- `ActionGoalOptions{ accept_timeout }` defaults to 250 ms and only limits admission, including queue
+  time. Accepted execution has no implicit timeout. Admission expiry also latches cancellation for a
+  deferred provider/bridge. Use application timers to request cancellation of long-running work.
+- `ActionOptions{ max_goals }` defaults to 64 pending/active goals. Cancellation alone does not release
+  an active goal's slot. Destroying a client handle requests cancellation without invoking callbacks.
+- `server.requestStop()` stops admission and requests cancellation of active goals. Keep polling until
+  `idle()` and join the provider thread. `idle()` describes outstanding goals, not whether every thread
+  has returned from an in-flight call. `close()`/destruction instead unregisters immediately and reports
+  `Unavailable`; it cannot perform application cleanup or prove that remote work has stopped.
+
+`serveDeferred()` passes `(const Goal&, ActionExecution<Feedback, Result>)`. Retain that owning token,
+explicitly `accept()` or `reject()`, then publish feedback and call `succeed()`, `abort()`, or `cancelled()`.
+This supports delayed remote admission. `fail(error)` reports infrastructure failure. Dropping an
+unfinished token or throwing from a factory/step/handler reports `HandlerFailed`. Payload encoding and
+decoding rules match services; malformed client feedback also reports `HandlerFailed`. Applications must
+use appropriate resource ownership/cleanup for exceptional failures, not rely solely on cancellation.
+
+See [`samples/messaging_sample.cpp`](samples/messaging_sample.cpp) for the runnable two-thread action
+example with two concurrent goals, plus topics, services, and a deferred two-bus service proxy.
+
+#### Extending local messaging over SPI
+
+Two processors instantiate **separate buses**. An application bridge connects selected endpoints;
+clients keep using the same local API. Pneumo supplies the messaging and deferred-completion primitives,
+not an SPI driver, framing, reconnection protocol, or portable codec.
+
+A practical frame contains a protocol/schema version, message kind, stable endpoint ID, session ID,
+request/goal sequence, payload length, and integrity check. Requests/goals also carry a remaining time
+budget. Encode fixed-width integers and other fields explicitly with agreed byte order and bounds;
+do not transmit native structs, `std::expected`, reply/execution tokens, pointers, or generated-adapter
+bytes. The latter can contain padding and native `size_t` lengths. The receiver validates the complete
+frame and decodes a typed payload before submitting it to its bus.
+
+For a topic, processor A's bridge subscribes and encodes publications; processor B decodes each frame
+and publishes locally under the corresponding topic name. Poll subscriptions and process received frames
+in an application loop/task. The ISR only queues received bytes or signals available work: bus operations
+can allocate and lock. Make routes directional, or attach origin/deduplication metadata, to prevent an
+incoming publication from being forwarded back indefinitely. The SPI controller must clock transfers;
+a peripheral interrupt alone does not deliver a frame to its peer.
+
+For services, the proxy retains the originating reply until the remote response arrives. This is the
+shape used in the sample; `SpiBridge`, `forwardService`, and codec helpers below are application code:
+
+```cpp
+// Processor A: register this proxy and retain/poll it for the lifetime of the bridge.
+auto service{ bus.service<std::int32_t, std::int64_t>("math/double") };
+constexpr std::uint16_t DOUBLE_SERVICE_ID{ 1 };
+auto proxy{ service.serveDeferred([&](const std::int32_t& request, pnm::msg::Reply<std::int64_t> reply) {
+    const auto budget{ reply.remainingTime() };
+    // Encode/own the request; allocate a session-scoped wire ID and retain the moved reply under it.
+    bridge.forwardService(DOUBLE_SERVICE_ID, request, budget, std::move(reply));
+}) };
+
+// Processor B: after validating a received request frame, submit it to the real local provider.
+// Keep the returned PendingCall in a bounded map until its callback has been polled.
+auto forwarded{ remote_service.request(decode_request(frame.payload), frame.remaining_budget,
+    [&bridge, id{ frame.request_id }](pnm::msg::ServiceResult<std::int64_t> result) {
+        bridge.sendServiceResponse(id, result); // Explicitly encode value OR error with the same ID.
+    }) };
+
+// Processor A: a response frame identifies the retained reply. Decode the payload/error, then:
+if (result) reply.respond(*result);
+else reply.fail(result.error());
+```
+
+The bridge owns the encoded buffers and pending maps. Its application loop polls the local proxy,
+transport, remote provider, and forwarded pending calls as appropriate on each processor. On A, expire
+entries using `reply.pending()`/`remainingTime()`; a disconnect reports `TransportError`. On B, keep each
+wire ID associated with its own `PendingCall`, so concurrent/out-of-order responses reach the right caller.
+
+For actions, use `serveDeferred()` with a retained execution token on A and `sendGoal()` on B:
+
+| Event | Bridge operation |
+| :--- | :--- |
+| Submit | Allocate `(session, wire goal ID)`, encode goal/budget; B retains its local `PendingGoal` under that ID |
+| Remote acceptance/rejection | Send decision to A; only then call its retained `accept()`/`reject()` |
+| Remote feedback | Send a sequenced feedback frame; A calls `execution.feedback(value)` |
+| Local cancellation request | Observe `execution.cancelRequested()` on A; send Cancel; B calls its mapped goal's `requestCancel()` |
+| Remote terminal outcome | Encode status and result/error; A calls `succeed`, `abort`, `cancelled`, or `fail` |
+
+The two local goal IDs need not match; the bridge maps them through the wire ID. A cancellation
+acknowledgement means only that the request was received. Report `Cancelled` exclusively after remote
+cleanup is confirmed. Continue forwarding a latched cancellation even if the originating client times
+out or drops its handle, retaining a bounded cleanup record until completion or session expiry.
+
+For all bridged operations:
+
+- Bound frame sizes, receive/transmit queues, and pending maps. Coalesce action feedback so progress
+  cannot crowd out acceptance, cancellation, or terminal frames; reject excess work as `Busy`.
+- Include session identity, reject stale/unknown IDs, and order/deduplicate per-goal events. Ensure
+  Submit precedes Cancel, or retain an early cancel until its Submit arrives. Cache completed request
+  IDs/results for the protocol's retry window so duplicate frames do not execute work twice.
+- Send a remaining duration, not a `steady_clock` timestamp. The origin owns its deadline; remote
+  budgets are advisory because transport latency and clocks differ.
+- Do not automatically resubmit operations after timeout or reconnection. A lost response or
+  `TransportError` does not prove that execution failed to start or stopped. Define a remote watchdog
+  or lease policy if work must stop when the link disappears.
+
+The sample includes disabled SPI outlines for services and actions; the transport-specific helpers are
+intentionally illustrative. The local API, two-thread example, and two-bus proxy use implemented code.
+
 ### `pneumo::coroutines`
 
 Link `pneumo::coroutines` and include `<pneumo/coroutines.hpp>` to use the `pnm::coro` namespace. The target supplies the common module and platform thread dependency; it is also included by `pneumo::pneumo`.
@@ -162,7 +534,7 @@ Link `pneumo::coroutines` and include `<pneumo/coroutines.hpp>` to use the `pnm:
 *   `Task<T>` and `Task<void>` are lazy, move-only coroutine results with exception propagation.
 *   `Context` runs scheduled coroutine handles; `co_spawn(context, callable)` starts a task whose callable accepts the executor by reference.
 *   `runAsync<T>(callable)` runs work on a detached thread and delivers its result or exception to the awaiting task.
-*   `sleep(duration)` suspends for positive durations; nonpositive durations complete immediately.
+*   `sleep(duration)` uses a worker thread for positive durations; nonpositive durations complete immediately. Both sleep overloads round positive fractional clock ticks up, saturate oversized deadlines, and reject NaN durations.
 *   `sleep(context, duration, stop_token)` uses a context timer and returns `false` when cancelled. Oversized positive durations saturate to the clock's maximum deadline; NaN durations throw `std::invalid_argument`.
 *   `Context::poll(limit)` processes ready work without waiting, with a default limit of 64 callbacks or resumptions. Due timers and queued tasks alternate when both are ready, preserving deadline order and queue order respectively. `scheduleAt(deadline, callback)` returns a timer whose destruction cancels its queued callback.
 *   `Channel<T>` queues values for individual consumers. Closing a channel wakes waiting consumers and allows buffered values to drain before `next()` returns `std::nullopt`.
@@ -189,7 +561,175 @@ Tasks have one consumer and one result: await an unstarted task, or start it wit
 
 `co_spawn` transfers ownership to the context, which releases queued, unstarted frames if destroyed. Nested tasks inherit the executor, so async work, timers, and channel waits resume on a thread running that context. Unbound tasks can resume on the worker or channel producer thread. Keep the context alive until spawned work finishes. `Context::stop()` rejects new scheduling and drains already queued work; it does not cancel outstanding operations. A rejected continuation resumes inline to propagate the scheduling exception to its awaiting task.
 
+`co_spawn` is detached: an uncaught exception in its top-level coroutine terminates the process.
+Catch errors there when the application needs to report or recover from them. `runAsync` starts one
+worker thread per call; it does not provide a bounded worker pool.
+
 For the built-in async, timer, and channel waits, destroying a suspended `Task` disconnects its continuation safely. Detached workers and thread-based sleeps still run to completion; destroying a context-backed sleep cancels its queued timer. Any objects borrowed by worker callables must remain alive until the workers finish. Channel reads retain their shared state even when the original channel wrapper is moved or destroyed. Custom executors must outlive scheduling calls; the default `scheduleOwned` transfers frames to `schedule`, whose accepted work must eventually run. Executors that can abandon queued work should override `scheduleOwned` to retain and release that ownership.
+
+#### Coroutine messaging
+
+Include `<pneumo/coroutines.hpp>` and link `pneumo::coroutines` to use topics, services, and
+actions from coroutines. A `pnm::coro::Bus` binds an existing `pnm::msg::Bus` to a context. Names and
+payload types resolve to the same endpoints as ordinary messaging, so coroutine and non-coroutine
+modules can communicate directly.
+
+```cpp
+pnm::msg::Bus native;
+pnm::coro::Context context;
+pnm::coro::Bus messaging{ context, native };
+```
+
+The adapter creates no threads. Messaging readiness schedules context work; context timers enforce
+service and action-admission deadlines. There is no periodic messaging poller. Run `context.run()` on
+an application-owned thread, or drive `context.poll()` in an existing loop. Provider admission is
+limited to 64 requests/goals per dispatch so other work and timers can run.
+
+`pnm::msg` remains independent of coroutines. The existing `Channel`, `RawBinaryChannel`, and
+`BinaryChannel` APIs remain available with their existing semantics.
+
+**Topics.** Subscribe immediately, then await individual messages:
+
+```cpp
+auto topic{ messaging.topic<int>("sensor/temperature_mC") };
+auto subscription{ topic.subscribe() };
+subscription.latest(); // Explicitly queues the retained value for this subscription, if any.
+while (auto value{ co_await subscription.next(stop) }) {
+    use_temperature(*value);
+}
+```
+
+`next()` returns `Task<std::optional<T>>`; the stop token is optional. Each subscription retains its own
+native message queue, including publications received between awaits. There is no second stream queue.
+One read may be outstanding per subscription; overlapping reads throw `std::logic_error`. Cancelling a
+pending read returns `nullopt` without consuming a message. If delivery already claimed a message, that
+delivery wins the race. Cancellation does not unsubscribe; a subsequent read can continue.
+
+`latest()` appends an explicit replay without removing queued publications. It does not automatically
+replay on subscription, and does nothing without a retained value. `unsubscribe()` or destruction drops
+the queue and wakes a reader with `nullopt`. `publish()` and `setPublishOnlyOnChange()` retain their native
+behavior. Topic decoding exceptions propagate through `next()` and consume only that failing message.
+
+**Services.** A client awaits the existing `ServiceResult<Response>`. A provider owns a coroutine for
+each request, with an owned payload and a cancellation token:
+
+```cpp
+auto service{ messaging.service<int, int>("math/double") };
+auto server{ service.serve([](int request, std::stop_token stop) -> pnm::coro::Task<int> {
+    // Other awaitable work may use stop; short calculations can just return.
+    if (stop.stop_requested()) co_return 0;
+    co_return request * 2;
+}) };
+auto response{ co_await service.request(21, std::chrono::seconds{ 1 }, stop) };
+if (response) use_response(*response);
+```
+
+`request()` is lazy: it owns its input when called, but submits and starts its deadline when execution
+begins. The same context can host the client and provider because the wait suspends rather than blocks.
+Cancellation returns `ServiceError::Cancelled`; it also requests cancellation of an executing coroutine
+provider. Timeouts and abandoned clients similarly signal the provider's token once observed. A handler
+may ignore cancellation, so abandoning a response does not guarantee that side effects stop.
+
+`serve(handler, ServiceOptions{})` bounds pending calls and live coroutine handlers. A cancelled or
+timed-out handler continues occupying an execution slot until its cleanup finishes; further admission
+returns `Busy` while all slots are occupied.
+Exceptions from the handler become `HandlerFailed`. Request encoding exceptions propagate through the
+client task; native decoding/response-encoding failures remain `HandlerFailed`.
+
+**Actions.** Submission is immediate and returns a move-only goal handle. Acceptance and feedback
+callbacks run on the bound context, and the final result is awaited:
+
+```cpp
+auto action{ messaging.action<Goal, Feedback, Result>("robot/move") };
+auto goal{ action.sendGoal(target, pnm::msg::ActionGoalOptions{ std::chrono::seconds{ 1 } }, {
+    .on_accepted{ [] { report_accepted(); } },
+    .on_feedback{ [](const Feedback& value) { report_progress(value); } }
+}) };
+auto result{ co_await goal.result(stop) };
+```
+
+Both progress callbacks are optional and use copyable `std::function` captures. Feedback is coalesced,
+and acceptance precedes feedback and completion. `result()` has one active consumer and can be consumed
+once. `id()`, `ready()`, and `requestCancel()` are also available. A progress callback exception requests
+cancellation, suppresses further progress callbacks, and propagates through `result()`.
+
+An action provider receives an owned goal and a copyable execution view. It returns an explicit status
+and result instead of calling a terminal method on the execution:
+
+```cpp
+using Execution = pnm::coro::ActionExecution<Feedback, Result>;
+auto server{ action.serve([](Goal goal, Execution execution)
+    -> pnm::coro::Task<pnm::msg::ActionCompletion<Result>> {
+    // execution.id(), feedback(value), cancelRequested(), and stopToken() are available.
+    auto result{ co_await perform_steps(goal, execution) };
+    if (execution.cancelRequested()) {
+        co_await finish_cleanup();
+        co_return pnm::msg::ActionCompletion<Result>{ pnm::msg::ActionStatus::Cancelled, std::move(result) };
+    }
+    co_return pnm::msg::ActionCompletion<Result>{ pnm::msg::ActionStatus::Succeeded, std::move(result) };
+}) };
+```
+
+Acceptance occurs after successful creation and registration of the coroutine job. To reject before
+acceptance, use a factory returning
+`std::expected<Task<ActionCompletion<Result>>, pnm::msg::ActionError>`; validation happens in that
+factory before it returns the task. Empty tasks and handler exceptions produce `HandlerFailed`.
+`ActionOptions` bounds queued/active goals and live coroutine handlers, including cleanup after an
+early terminal error. The deadline only applies to admission.
+
+A stop request during `goal.result(stop)` requests provider cancellation and **continues waiting for the
+actual terminal outcome**. The provider must observe cancellation, finish cleanup, and return `Cancelled`.
+It may instead finish successfully if completion wins the race. An engaged result can also contain
+`Aborted`; always inspect its status. Destroying the goal handle requests cancellation and suppresses
+its progress callbacks, without waiting for remote cleanup.
+
+**Ownership and shutdown.** Provider callable objects stay alive until their jobs finish, including
+move-only captures and coroutine-lambda captures. Payloads must be serializable, default constructible,
+and movable; copying is not required. Keep referenced application objects alive yourself. Lazy task
+wrappers retain endpoint state and owned arguments rather than borrowing the wrapper's `this` pointer.
+
+Provider code, decoding, and action progress callbacks execute on their bound context. Awaiting tasks
+resume on their inherited executor; this can be a different context. Unbound tasks resume on the
+completion thread. As with other coroutine operations, rejected scheduling can resume a continuation
+inline to propagate an error; do not stop a context before its messaging work has drained.
+
+```cpp
+messaging.requestStop(); // Stop admission, close subscriptions, request cancellation.
+co_await messaging.join();
+context.stop();
+```
+
+Coroutine provider registrations also expose `requestStop()`, `join()`, and `close()`. `join()` requires
+stop to have been requested and permits multiple waiters. Keep driving the context until it finishes.
+Service shutdown unregisters the provider and fails outstanding calls while its coroutine jobs unwind;
+action shutdown rejects pending goals and permits active goals to finish cooperative cleanup.
+
+`close()` unregisters/abandons immediately, but retains executing local jobs while they unwind; use
+`join()` afterward to await their completion. Closing reports failure, not confirmed cancellation.
+Destruction is a fallback, not asynchronous cleanup. The underlying bus and context must outlive the
+bound view and its in-flight work. Synchronize destruction with context execution and in-flight API calls, and do not join a
+provider or bus from one of the jobs that the join itself must wait for. A handler that ignores
+cancellation, or a live remote goal that never responds, can prevent graceful shutdown from finishing.
+Dropping a remote client does not prove that the remote work stopped.
+
+See [`samples/coroutines_messaging_sample.cpp`](samples/coroutines_messaging_sample.cpp) for topics,
+an awaited service, two action jobs, cancellation with asynchronous cleanup, and shutdown using two
+application-owned context threads:
+
+```bash
+cmake --build --preset gcc-debug --target coroutines_messaging_sample coroutines_messaging_tests
+./build/gcc-debug/samples/coroutines_messaging_sample
+ctest --preset gcc-debug -R CoroutinesMessaging --output-on-failure
+```
+
+**Remote bridges.** Coroutine clients use the same named endpoints as the
+[SPI bridge outlines](#extending-local-messaging-over-spi). A native `serveDeferred()` proxy can retain
+its reply/execution token while frames travel across SPI. Calling `reply.respond()` or reporting an
+action event on the receive thread wakes the coroutine client's context automatically; it does not
+require a coroutine-aware transport. On the peer, a native client can call a coroutine provider in the
+same way. The bridge owner still drives its native proxy and transport, maps IDs, forwards cancellation,
+and validates frames. Two-bus integration tests cover service forwarding and action
+acceptance/feedback/cancellation/result forwarding. No SPI driver or portable wire codec is provided.
 
 ### CMake Targets and Headers
 
@@ -200,7 +740,8 @@ For the built-in async, timer, and channel waits, destroying a suspended `Task` 
 | `pneumo::formatting` | `pneumo/formatting.hpp` | Reflection-based formatting and optional serialization |
 | `pneumo::units` | `pneumo/units.hpp` | Strong quantity types, literals, conversions, and derived operations |
 | `pneumo::logging` | `pneumo/logging.hpp` | Asynchronous logging, routing, metadata, files, and custom sinks |
-| `pneumo::coroutines` | `pneumo/coroutines.hpp` | Lazy tasks, executors, asynchronous work, timers, and channels |
+| `pneumo::messaging` | `pneumo/messaging.hpp` | Named, typed topics, services, and actions with caller-driven dispatch |
+| `pneumo::coroutines` | `pneumo/coroutines.hpp` | Tasks, executors, timers, channels, and event-driven messaging adapters |
 | `pneumo::pneumo` | `pneumo/pneumo.hpp` | Convenience target and umbrella header for all modules |
 
 ## Requirements
@@ -1164,6 +1705,9 @@ cmake --build --preset clang-release
 
 # Coroutines sample
 ./build/clang-release/samples/coroutines_sample
+
+# Messaging sample
+./build/clang-release/samples/messaging_sample
 ```
 
 ### Run the tests:

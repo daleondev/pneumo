@@ -1015,4 +1015,117 @@ TEST(CoroutinesSleepTests, SaturatedDeadlineCanBeCancelledWhileContextRuns)
     EXPECT_FALSE(elapsed);
 }
 
+TEST(CoroutinesContextTests, InitialOwnedExecutionSerializesAccessToBorrowedChild)
+{
+    pnm::coro::Context context;
+    std::latch entered{ 1 };
+    std::latch release{ 1 };
+    auto body{ [&]() -> pnm::coro::Task<void> {
+        entered.count_down();
+        release.wait();
+        co_return;
+    } };
+    auto child{ body() };
+    pnm::coro::co_spawn(context, [&](pnm::coro::Context&) -> pnm::coro::Task<void> { co_await child; });
+    std::jthread runner{ [&] { context.poll(); } };
+    entered.wait();
+    std::promise<void> checking;
+    auto observer{ std::async(std::launch::async, [&] {
+        checking.set_value();
+        return child.await_ready();
+    }) };
+    checking.get_future().wait();
+    EXPECT_EQ(observer.wait_for(10ms), std::future_status::timeout);
+    release.count_down();
+    runner.join();
+    EXPECT_TRUE(observer.get());
+}
+
+TEST(CoroutinesChannelTests, CancellationRacesDeliveryWithoutLosingTheQueuedValue)
+{
+    for (int iteration{}; iteration < 200; ++iteration) {
+        pnm::coro::Channel<int> channel;
+        std::stop_source stop;
+        auto read{ channel.next(stop.get_token()) };
+        read.resume();
+        std::latch start{ 1 };
+        std::jthread producer{ [&] {
+            start.wait();
+            channel.push(42);
+        } };
+        std::jthread canceller{ [&] {
+            start.wait();
+            stop.request_stop();
+        } };
+        start.count_down();
+        producer.join();
+        canceller.join();
+        ASSERT_TRUE(read.await_ready());
+        auto result{ read.await_resume() };
+        if (!result) {
+            auto remaining{ channel.next() };
+            remaining.resume();
+            ASSERT_TRUE(remaining.await_ready());
+            result = remaining.await_resume();
+        }
+        EXPECT_EQ(result, 42);
+        channel.close();
+        auto end{ channel.next() };
+        end.resume();
+        EXPECT_FALSE(end.await_resume());
+    }
+}
+
+TEST(CoroutinesChannelTests, ConsumerDestructionRacesDeliveryAndClose)
+{
+    for (int iteration{}; iteration < 200; ++iteration) {
+        pnm::coro::Channel<int> channel;
+        auto read{ channel.next() };
+        read.resume();
+        std::latch start{ 1 };
+        std::jthread producer{ [&] {
+            start.wait();
+            if (iteration % 2 == 0)
+                channel.push(42);
+            else
+                channel.close();
+        } };
+        start.count_down();
+        read = {};
+        producer.join();
+        channel.close();
+    }
+}
+
+TEST(CoroutinesContextTests, ThrowingTimerLeavesOtherWorkDispatchable)
+{
+    pnm::coro::Context context;
+    const auto now{ std::chrono::steady_clock::now() };
+    auto failing{ context.scheduleAt(now, [] { throw std::runtime_error{ "timer" }; }) };
+    bool called{};
+    auto succeeding{ context.scheduleAt(now, [&] { called = true; }) };
+    EXPECT_THROW(context.poll(), std::runtime_error);
+    EXPECT_EQ(context.poll(), 1);
+    EXPECT_TRUE(called);
+    EXPECT_EQ(context.poll(), 0);
+}
+
+TEST(CoroutinesSleepTests, FractionalClockTicksRoundUp)
+{
+    using Clock = std::chrono::steady_clock;
+    using Fractional = std::chrono::duration<double, Clock::period>;
+    const Clock::time_point now{};
+    EXPECT_EQ(pnm::coro::detail::sleep_deadline(Fractional{ 0.25 }, now), now + Clock::duration{ 1 });
+    EXPECT_EQ(pnm::coro::detail::sleep_deadline(Fractional{ 1.25 }, now), now + Clock::duration{ 2 });
+    EXPECT_EQ(pnm::coro::detail::sleep_deadline(Fractional{ 2.0 }, now), now + Clock::duration{ 2 });
+}
+
+TEST(CoroutinesSleepTests, ThreadSleepRejectsNaNWithoutStartingAWorker)
+{
+    auto task{ pnm::coro::sleep(std::chrono::duration<double>{ std::numeric_limits<double>::quiet_NaN() }) };
+    task.resume();
+    ASSERT_TRUE(task.await_ready());
+    EXPECT_THROW(task.await_resume(), std::invalid_argument);
+}
+
 // NOLINTEND

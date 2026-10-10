@@ -181,6 +181,34 @@ target_compile_features(
     cxx_std_26
 )
 
+
+#---------------------------------------------------------
+# messaging
+#---------------------------------------------------------
+
+add_library(pneumo_messaging INTERFACE)
+add_library(pneumo::messaging ALIAS pneumo_messaging)
+
+target_sources(
+    pneumo_messaging
+    INTERFACE
+    FILE_SET HEADERS
+    BASE_DIRS ${CMAKE_CURRENT_LIST_DIR}/include
+    FILES ${CMAKE_CURRENT_LIST_DIR}/include/pneumo/messaging.hpp
+)
+
+target_link_libraries(
+    pneumo_messaging
+    INTERFACE
+    pneumo::common
+)
+
+target_compile_features(
+    pneumo_messaging
+    INTERFACE
+    cxx_std_26
+)
+
 #---------------------------------------------------------
 # coroutines
 #---------------------------------------------------------
@@ -200,10 +228,16 @@ target_link_libraries(
     pneumo_coroutines
     INTERFACE
     pneumo::common
+    pneumo::messaging
 )
 
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Generic")
     find_package(Threads REQUIRED)
+    target_link_libraries(
+        pneumo_messaging
+        INTERFACE
+        Threads::Threads
+    )
     target_link_libraries(
         pneumo_coroutines
         INTERFACE
@@ -240,6 +274,7 @@ target_link_libraries(
     pneumo::formatting
     pneumo::units
     pneumo::logging
+    pneumo::messaging
     pneumo::coroutines
 )
 

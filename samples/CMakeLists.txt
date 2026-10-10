@@ -82,6 +82,22 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     target_compile_options(logging_sample PRIVATE -g -fno-optimize-sibling-calls)
 endif()
 
+add_executable(messaging_sample)
+
+target_sources(
+    messaging_sample
+    PRIVATE
+    messaging_sample.cpp
+)
+
+target_link_libraries(
+    messaging_sample
+    PRIVATE
+    pneumo::messaging
+    pneumo::compiler_warnings
+    $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:stdc++exp>
+)
+
 add_executable(coroutines_sample)
 
 target_sources(
@@ -111,3 +127,6 @@ target_link_libraries(
     pneumo::coroutines
     pneumo::compiler_warnings
 )
+
+add_executable(coroutines_messaging_sample coroutines_messaging_sample.cpp)
+target_link_libraries(coroutines_messaging_sample PRIVATE pneumo::coroutines pneumo::compiler_warnings)
