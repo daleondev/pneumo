@@ -768,8 +768,9 @@ namespace pnm::meta
             {
                 constexpr auto access_ctx{ std::meta::access_context::current() };
                 std::vector<std::meta::info> type_members{};
-#if defined(__clang__) && defined(_LIBCPP_VERSION)
-                // libc++ maps type-alias declarations to type entities before returning from members_of.
+#if defined(__clang__) && defined(_LIBCPP_META)
+                // Clang's <meta> maps type-alias declarations to type entities before returning from members_of.
+                // Select by the reflection header, including when used with libstdc++.
                 // Clang currently loses access metadata on aliases to class-template specializations there.
                 using Iterator =
                   std::meta::__range_of_infos::iterator<std::meta::__range_of_infos::front_member_of_fn,
