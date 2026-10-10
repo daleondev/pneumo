@@ -1623,6 +1623,11 @@ namespace pnm::coro
             check();
             detail::msg::Access::replay(m_state->native);
         }
+        auto statistics() const -> pnm::msg::SubscriptionStatistics
+        {
+            check();
+            return m_state->native.statistics();
+        }
         auto unsubscribe() -> void
         {
             if (m_state)
@@ -1659,14 +1664,14 @@ namespace pnm::coro
         {
             m_native.setPublishOnlyOnChange(enabled, std::move(equal));
         }
-        [[nodiscard]] auto subscribe() const -> Subscription<T>
+        [[nodiscard]] auto subscribe(pnm::msg::SubscriptionOptions options = {}) const -> Subscription<T>
             requires std::default_initializable<T> && std::move_constructible<T>
         {
             if (!m_runtime)
                 throw std::logic_error{ "Endpoint was moved from" };
             m_runtime->checkOpen();
             auto node{ std::make_shared<detail::msg::TopicNode<T>>(m_runtime,
-                                                                   m_native.subscribe([](const T&) {})) };
+                                                                   m_native.subscribe([](const T&) {}, options)) };
             try {
                 node->observe(node->native);
                 m_runtime->add(node);

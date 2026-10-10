@@ -31,6 +31,29 @@ namespace pnm::msg
 {
     class Bus;
 
+    enum class OverflowPolicy : std::uint8_t
+    {
+        DropOldest,
+        DropNewest
+    };
+    struct SubscriptionOptions
+    {
+        // Zero preserves the original unbounded FIFO behavior.
+        size_t capacity{};
+        OverflowPolicy overflow{ OverflowPolicy::DropOldest };
+        static constexpr auto latestOnly() -> SubscriptionOptions
+        {
+            SubscriptionOptions options{};
+            options.capacity = 1;
+            return options;
+        }
+    };
+    struct SubscriptionStatistics
+    {
+        size_t queued{};
+        std::uint64_t dropped{};
+    };
+
     template<utils::memory::Serializable T>
     class Topic;
 
@@ -250,8 +273,10 @@ namespace pnm::msg
         {
             Readiness activity;
             friend struct MessagingAccess;
-            explicit SubscriptionState(std::function<void(const T&)> handler)
-              : callback{ std::move(handler) }
+            explicit SubscriptionState(std::function<void(const T&)> handler,
+                                       SubscriptionOptions configuration = {})
+              : options{ configuration }
+              , callback{ std::move(handler) }
             {
             }
 
@@ -260,11 +285,18 @@ namespace pnm::msg
                 NotificationBatch notifications{};
                 std::scoped_lock lock{ mutex };
                 if (!closed) {
-                    messages.push_back(bytes);
                     latest = bytes;
-                    ready.notify_one();
-                    activity.notify();
+                    enqueueLocked(bytes);
                 }
+            }
+
+            auto replay() -> void
+            {
+                NotificationBatch notifications{};
+                std::scoped_lock lock{ mutex };
+                // Keep the retained value and its queue insertion in one publication order.
+                if (!closed && latest)
+                    enqueueLocked(latest);
             }
 
             auto close() -> void
@@ -278,6 +310,8 @@ namespace pnm::msg
                 activity.notify();
             }
 
+            SubscriptionOptions options;
+            std::uint64_t dropped{};
             std::mutex mutex;
             std::condition_variable ready;
             std::deque<MessageBytes> messages;
@@ -285,6 +319,20 @@ namespace pnm::msg
             bool closed{};
             std::atomic_flag dispatching;
             std::function<void(const T&)> callback;
+
+          private:
+            auto enqueueLocked(const MessageBytes& bytes) -> void
+            {
+                if (options.capacity && messages.size() >= options.capacity) {
+                    ++dropped;
+                    if (options.overflow == OverflowPolicy::DropNewest)
+                        return;
+                    messages.pop_front();
+                }
+                messages.push_back(bytes);
+                ready.notify_one();
+                activity.notify();
+            }
         };
 
         template<typename T>
@@ -338,6 +386,13 @@ namespace pnm::msg
             if (m_state) {
                 m_state->close();
             }
+        }
+
+        auto statistics() const -> SubscriptionStatistics
+        {
+            if (!m_state) return {};
+            std::scoped_lock lock{ m_state->mutex };
+            return { m_state->messages.size(), m_state->dropped };
         }
 
         auto poll() -> size_t { return poll(std::chrono::milliseconds::zero()); }
@@ -495,7 +550,7 @@ namespace pnm::msg
             }
         }
 
-        [[nodiscard]] auto subscribe(std::function<void(const T&)> callback) const -> Subscription<T>
+        [[nodiscard]] auto subscribe(std::function<void(const T&)> callback, SubscriptionOptions options = {}) const -> Subscription<T>
             requires std::default_initializable<T>
         {
             if (!m_state) {
@@ -504,7 +559,7 @@ namespace pnm::msg
             if (!callback) {
                 throw std::invalid_argument{ "A subscription requires a callback" };
             }
-            auto state{ std::make_shared<detail::SubscriptionState<T>>(std::move(callback)) };
+            auto state{ std::make_shared<detail::SubscriptionState<T>>(std::move(callback), options) };
             {
                 std::scoped_lock lock{ m_state->mutex };
                 std::erase_if(m_state->subscriptions, [](const auto& weak) { return weak.expired(); });
@@ -1160,7 +1215,8 @@ namespace pnm::msg
     {
         Succeeded,
         Aborted,
-        Cancelled
+        Cancelled,
+        Rejected
     };
 
     enum class ActionError : std::uint8_t
@@ -1297,12 +1353,20 @@ namespace pnm::msg
                 return true;
             }
 
+            auto canFinish(ActionStatus outcome) -> bool
+            {
+                NotificationBatch notifications{};
+                std::scoped_lock lock{ m_mutex };
+                refreshLocked();
+                return canFinishLocked(outcome);
+            }
+
             auto finish(MessageBytes bytes, ActionStatus outcome) -> bool
             {
                 NotificationBatch notifications{};
                 std::scoped_lock lock{ m_mutex };
                 refreshLocked();
-                if (m_finished || (!m_accepted && outcome != ActionStatus::Cancelled)) {
+                if (!canFinishLocked(outcome)) {
                     return false;
                 }
                 m_result = std::move(bytes);
@@ -1310,6 +1374,16 @@ namespace pnm::msg
                 m_finished = true;
                 m_activity.notify();
                 return true;
+            }
+
+            auto finishFailed(ActionStatus outcome) -> void
+            {
+                NotificationBatch notifications{};
+                std::scoped_lock lock{ m_mutex };
+                refreshLocked();
+                // Encoding may race with acceptance or another terminal transition.
+                if (canFinishLocked(outcome))
+                    failLocked(ActionError::HandlerFailed);
             }
 
             auto fail(ActionError failure) -> bool
@@ -1428,6 +1502,13 @@ namespace pnm::msg
             GoalId m_id{ next_goal_id() };
             std::atomic_flag m_dispatching;
             ActionCallbacks<Feedback, Result> m_callbacks;
+            auto canFinishLocked(ActionStatus outcome) const -> bool
+            {
+                return !m_finished &&
+                       (outcome == ActionStatus::Rejected ? !m_accepted
+                                                          : m_accepted || outcome == ActionStatus::Cancelled);
+            }
+
             auto failLocked(ActionError failure) -> void
             {
                 NotificationBatch notifications{};
@@ -1484,6 +1565,7 @@ namespace pnm::msg
         auto pending() const -> bool { return m_state && m_state->pending(); }
         auto accept() -> bool { return m_state && m_state->accept(); }
         auto reject() -> bool { return fail(ActionError::Rejected); }
+        auto reject(const Result& reason) -> bool { return finish(reason, ActionStatus::Rejected); }
         auto fail(ActionError error) -> bool { return m_state && m_state->fail(error); }
         auto requestCancel() -> bool { return m_state && m_state->requestCancel(); }
         auto cancelRequested() const -> bool { return m_state && m_state->cancelRequested(); }
@@ -1523,14 +1605,14 @@ namespace pnm::msg
         auto finish(const Result& value, ActionStatus status) -> bool
         {
             auto state{ m_state };
-            if (!state || !state->pending() || (status != ActionStatus::Cancelled && !state->canPublish())) {
+            if (!state || !state->canFinish(status)) {
                 return false;
             }
             try {
                 auto bytes{ std::make_shared<const std::vector<std::byte>>(utils::memory::serialize(value)) };
                 return state->finish(std::move(bytes), status);
             } catch (...) {
-                state->fail(ActionError::HandlerFailed);
+                state->finishFailed(status);
                 return false;
             }
         }
@@ -2077,10 +2159,13 @@ namespace pnm::msg
             template<typename Handle>
             static auto watch(Handle& handle, std::function<void()> callback) -> WakeupRegistration
             {
+                if (!callback) throw std::invalid_argument{ "A readiness callback is required" };
                 if constexpr (requires { handle.m_provider; }) {
+                    if (!handle.m_provider) throw std::logic_error{ "Cannot watch a moved-from handle" };
                     return handle.m_provider->activity.watch(std::move(callback));
                 }
                 else {
+                    if (!handle.m_state) throw std::logic_error{ "Cannot watch a moved-from handle" };
                     if constexpr (requires { handle.m_state->readiness(); }) {
                         return handle.m_state->readiness().watch(std::move(callback));
                     }
@@ -2120,14 +2205,8 @@ namespace pnm::msg
             template<typename T>
             static auto replay(Subscription<T>& subscription) -> void
             {
-                NotificationBatch notifications{};
                 auto state{ subscription.m_state };
-                std::scoped_lock lock{ state->mutex };
-                if (!state->closed && state->latest) {
-                    state->messages.push_back(state->latest);
-                    state->ready.notify_one();
-                    state->activity.notify();
-                }
+                state->replay();
             }
             template<typename Q, typename R, typename Handler>
             static auto serve(const Service<Q, R>& service, Handler&& handler, ServiceOptions options)
@@ -2164,6 +2243,16 @@ namespace pnm::msg
                     return !provider->queue.empty();
             }
         };
+    }
+
+    // Readiness hooks only schedule work; they must not throw or dispatch a handle
+    // inline. An initial notification closes the registration/readiness race.
+    // Disconnect prevents future starts; an in-flight callback may still finish.
+    using ReadinessRegistration = detail::WakeupRegistration;
+    template<typename Handle>
+    [[nodiscard]] auto watch(Handle& handle, std::function<void()> callback) -> ReadinessRegistration
+    {
+        return detail::MessagingAccess::watch(handle, std::move(callback));
     }
 
     class Bus

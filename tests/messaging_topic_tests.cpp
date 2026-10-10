@@ -817,3 +817,47 @@ TEST(MessagingTopicTests, ConcurrentPollAndLatestAreRejectedAndSelfDestructionSt
     EXPECT_FALSE(self);
     EXPECT_EQ(calls, 1);
 }
+
+TEST(MessagingTopicTests, BoundedSubscriptionsKeepTheirSelectedHistory)
+{
+    pnm::msg::Bus bus{};
+    auto topic{ bus.topic<int>("bounded") };
+    std::vector<int> latest{};
+    std::vector<int> oldest{};
+    auto a{ topic.subscribe([&](int value) { latest.push_back(value); },
+                            pnm::msg::SubscriptionOptions::latestOnly()) };
+    auto b{ topic.subscribe([&](int value) { oldest.push_back(value); },
+                            { 2, pnm::msg::OverflowPolicy::DropNewest }) };
+    for (int i{}; i < 10; ++i)
+        topic.publish(i);
+    EXPECT_EQ(a.statistics().queued, 1UZ);
+    EXPECT_EQ(a.statistics().dropped, 9UZ);
+    EXPECT_EQ(b.statistics().queued, 2UZ);
+    EXPECT_EQ(b.statistics().dropped, 8UZ);
+    a.poll();
+    b.poll();
+    EXPECT_EQ(latest, (std::vector<int>{ 9 }));
+    EXPECT_EQ(oldest, (std::vector<int>{ 0, 1 }));
+    b.latest();
+    EXPECT_EQ(oldest.back(), 9);
+    EXPECT_EQ(b.statistics().queued, 0UZ);
+    topic.publish(10);
+    EXPECT_EQ(b.poll(), 1UZ);
+    EXPECT_EQ(oldest.back(), 10);
+    EXPECT_EQ(b.statistics().dropped, 8UZ);
+}
+
+TEST(MessagingTopicTests, PublicReadinessRegistrationIsInitialAndDisconnectable)
+{
+    pnm::msg::Bus bus{};
+    auto topic{ bus.topic<int>("watch") };
+    auto sub{ topic.subscribe([](int) {}) };
+    int wakes{};
+    auto registration{ pnm::msg::watch(sub, [&] { ++wakes; }) };
+    EXPECT_EQ(wakes, 1);
+    topic.publish(1);
+    EXPECT_EQ(wakes, 2);
+    registration.reset();
+    topic.publish(2);
+    EXPECT_EQ(wakes, 2);
+}

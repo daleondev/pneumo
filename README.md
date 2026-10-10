@@ -276,8 +276,23 @@ An encoding exception prevents publication. Allocation failure during fan-out ca
 partially delivered; the operation does not provide a transactional guarantee across subscribers.
 
 Destroying or unsubscribing a subscription discards its queue and retained value and wakes a waiting
-poll. Destroying the last bus/topic owner closes surviving subscriptions. **Topic queues are unbounded**:
-a slow consumer needs application-level rate control, change suppression, or another buffering policy.
+poll. Destroying the last bus/topic owner closes surviving subscriptions. Queues are unbounded by
+default for compatibility. Pass `SubscriptionOptions::latestOnly()` as the second argument to native
+`subscribe(callback, options)`, or to coroutine `subscribe(options)`, to retain only the newest queued
+value. `{capacity, OverflowPolicy::DropOldest}` and `DropNewest` select other bounded policies.
+`statistics()` reports queued entries and the cumulative dropped count. Retained topic state remains
+the latest publication even when a subscription drops a queued value.
+
+`pnm::msg::watch(handle, callback)` returns a move-only RAII `ReadinessRegistration` for native
+subscriptions, service/action servers, replies, calls, goals and action executions. It performs an
+initial notification and notifies subsequent activity; callbacks should only schedule owner-thread
+work. Wakeups can coalesce and are not a count of messages. Use `poll()`/readiness on the owner thread
+to drain the handle. Callbacks must not throw. `reset()` disconnects the hook but does not wait for
+an already-running callback, so use weak ownership where lifetimes can overlap.
+
+`ActionExecution::reject(result)` optionally provides a typed rejection reason with
+`ActionStatus::Rejected` before acceptance. The parameterless `reject()` continues to report
+`ActionError::Rejected`. Neither form accepts the action or reports completed cancellation.
 
 #### Local services
 

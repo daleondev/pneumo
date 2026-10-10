@@ -1228,4 +1228,113 @@ TEST(CoroutinesMessagingActions, ThrowingResultTransferFailsAwaiterWithoutStrand
     env.finish(joined);
 }
 
+TEST(CoroutinesMessagingTopics, LatestReplayRespectsCapacity)
+{
+    Environment env{};
+    auto topic{ env.bus.topic<int>("bounded") };
+    auto sub{ topic.subscribe(pnm::msg::SubscriptionOptions::latestOnly()) };
+    sub.latest();
+    EXPECT_EQ(sub.statistics().queued, 0UZ);
+    EXPECT_EQ(sub.statistics().dropped, 0UZ);
+    topic.publish(1);
+    topic.publish(2);
+    sub.latest();
+    EXPECT_EQ(sub.statistics().queued, 1UZ);
+    EXPECT_EQ(sub.statistics().dropped, 2UZ);
+    auto next{ sub.next() };
+    env.start(next);
+    EXPECT_EQ(env.finish(next), 2);
+    sub.unsubscribe();
+    sub.latest();
+    EXPECT_EQ(sub.statistics().queued, 0UZ);
+    EXPECT_EQ(sub.statistics().dropped, 2UZ);
+}
+
+TEST(CoroutinesMessagingTopics, DroppedReplayPreservesTheLatestPublication)
+{
+    Environment env{};
+    auto topic{ env.bus.topic<int>("bounded") };
+    auto sub{ topic.subscribe({ 1, pnm::msg::OverflowPolicy::DropNewest }) };
+    topic.publish(1);
+    topic.publish(2);
+    sub.latest();
+    EXPECT_EQ(sub.statistics().queued, 1UZ);
+    EXPECT_EQ(sub.statistics().dropped, 2UZ);
+    auto first{ sub.next() };
+    env.start(first);
+    EXPECT_EQ(env.finish(first), 1);
+    sub.latest();
+    auto replay{ sub.next() };
+    env.start(replay);
+    EXPECT_EQ(env.finish(replay), 2);
+    EXPECT_EQ(sub.statistics().dropped, 2UZ);
+}
+
+TEST(CoroutinesMessagingTopics, ConcurrentReplayNeverReplacesANewerPublication)
+{
+    Environment env{};
+    auto topic{ env.native.topic<int>("concurrent") };
+    auto sub{ env.bus.topic<int>("concurrent").subscribe(pnm::msg::SubscriptionOptions::latestOnly()) };
+    constexpr int ROUNDS{ 20000 };
+    std::atomic<int> current_round{};
+    std::atomic<int> published{};
+    std::atomic<int> replayed{};
+    std::jthread publisher{ [&] {
+        for (int round{ 1 }; round <= ROUNDS; ++round) {
+            while (current_round.load() != round) {
+            }
+            topic.publish(round * 2);
+            published.store(round);
+        }
+    } };
+    std::jthread replayer{ [&] {
+        for (int round{ 1 }; round <= ROUNDS; ++round) {
+            while (current_round.load() != round) {
+            }
+            sub.latest();
+            replayed.store(round);
+        }
+    } };
+    int stale{};
+    for (int round{ 1 }; round <= ROUNDS; ++round) {
+        topic.publish(round * 2 - 1);
+        current_round.store(round);
+        while (published.load() != round || replayed.load() != round) {
+        }
+        // With both operations complete, both the queue and retained value must be current.
+        auto queued{ sub.next() };
+        env.start(queued);
+        if (env.finish(queued) != round * 2)
+            ++stale;
+        sub.latest();
+        auto retained{ sub.next() };
+        env.start(retained);
+        if (env.finish(retained) != round * 2)
+            ++stale;
+    }
+    publisher.join();
+    replayer.join();
+    EXPECT_EQ(stale, 0);
+}
+
+TEST(CoroutinesMessagingActions, NativeTypedRejectionPreservesTheReasonWithoutAcceptance)
+{
+    Environment env{};
+    auto provider{ env.native.action<int, int, int>("rejected")
+                     .serveDeferred(
+                       [](int, pnm::msg::ActionExecution<int, int> execution) { execution.reject(42); }) };
+    int accepted{};
+    auto goal{
+        env.bus.action<int, int, int>("rejected").sendGoal(1, { 1s }, { .on_accepted{ [&] { ++accepted; } } })
+    };
+    auto result{ goal.result() };
+    env.start(result);
+    provider.poll();
+    const auto completion{ env.finish(result) };
+    ASSERT_TRUE(completion);
+    EXPECT_EQ(completion->status, ActionStatus::Rejected);
+    EXPECT_EQ(completion->value, 42);
+    EXPECT_EQ(accepted, 0);
+}
+
 // NOLINTEND(modernize-use-designated-initializers)
