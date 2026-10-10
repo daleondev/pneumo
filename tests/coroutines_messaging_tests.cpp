@@ -1229,3 +1229,16 @@ TEST(CoroutinesMessagingActions, ThrowingResultTransferFailsAwaiterWithoutStrand
 }
 
 // NOLINTEND(modernize-use-designated-initializers)
+
+TEST(CoroutinesMessagingTopics, LatestReplayRespectsCapacity)
+{
+    pnm::msg::Bus native;
+    pnm::coro::Context context;
+    pnm::coro::Bus bus(context,native);
+    auto topic=bus.topic<int>("bounded");
+    auto sub=topic.subscribe(pnm::msg::SubscriptionOptions::latestOnly());
+    topic.publish(1); topic.publish(2); sub.latest();
+    EXPECT_EQ(sub.statistics().queued,1);
+    EXPECT_EQ(sub.statistics().dropped,2);
+    sub.unsubscribe(); bus.close();
+}
