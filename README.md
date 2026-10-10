@@ -534,7 +534,7 @@ Link `pneumo::coroutines` and include `<pneumo/coroutines.hpp>` to use the `pnm:
 *   `Task<T>` and `Task<void>` are lazy, move-only coroutine results with exception propagation.
 *   `Context` runs scheduled coroutine handles; `co_spawn(context, callable)` starts a task whose callable accepts the executor by reference.
 *   `runAsync<T>(callable)` runs work on a detached thread and delivers its result or exception to the awaiting task.
-*   `sleep(duration)` suspends for positive durations; nonpositive durations complete immediately.
+*   `sleep(duration)` uses a worker thread for positive durations; nonpositive durations complete immediately. Both sleep overloads round positive fractional clock ticks up, saturate oversized deadlines, and reject NaN durations.
 *   `sleep(context, duration, stop_token)` uses a context timer and returns `false` when cancelled. Oversized positive durations saturate to the clock's maximum deadline; NaN durations throw `std::invalid_argument`.
 *   `Context::poll(limit)` processes ready work without waiting, with a default limit of 64 callbacks or resumptions. Due timers and queued tasks alternate when both are ready, preserving deadline order and queue order respectively. `scheduleAt(deadline, callback)` returns a timer whose destruction cancels its queued callback.
 *   `Channel<T>` queues values for individual consumers. Closing a channel wakes waiting consumers and allows buffered values to drain before `next()` returns `std::nullopt`.
@@ -561,11 +561,15 @@ Tasks have one consumer and one result: await an unstarted task, or start it wit
 
 `co_spawn` transfers ownership to the context, which releases queued, unstarted frames if destroyed. Nested tasks inherit the executor, so async work, timers, and channel waits resume on a thread running that context. Unbound tasks can resume on the worker or channel producer thread. Keep the context alive until spawned work finishes. `Context::stop()` rejects new scheduling and drains already queued work; it does not cancel outstanding operations. A rejected continuation resumes inline to propagate the scheduling exception to its awaiting task.
 
+`co_spawn` is detached: an uncaught exception in its top-level coroutine terminates the process.
+Catch errors there when the application needs to report or recover from them. `runAsync` starts one
+worker thread per call; it does not provide a bounded worker pool.
+
 For the built-in async, timer, and channel waits, destroying a suspended `Task` disconnects its continuation safely. Detached workers and thread-based sleeps still run to completion; destroying a context-backed sleep cancels its queued timer. Any objects borrowed by worker callables must remain alive until the workers finish. Channel reads retain their shared state even when the original channel wrapper is moved or destroyed. Custom executors must outlive scheduling calls; the default `scheduleOwned` transfers frames to `schedule`, whose accepted work must eventually run. Executors that can abandon queued work should override `scheduleOwned` to retain and release that ownership.
 
 #### Coroutine messaging
 
-Include `<pneumo/coroutines_messaging.hpp>` and link `pneumo::coroutines` to use topics, services, and
+Include `<pneumo/coroutines.hpp>` and link `pneumo::coroutines` to use topics, services, and
 actions from coroutines. A `pnm::coro::Bus` binds an existing `pnm::msg::Bus` to a context. Names and
 payload types resolve to the same endpoints as ordinary messaging, so coroutine and non-coroutine
 modules can communicate directly.
@@ -626,7 +630,9 @@ Cancellation returns `ServiceError::Cancelled`; it also requests cancellation of
 provider. Timeouts and abandoned clients similarly signal the provider's token once observed. A handler
 may ignore cancellation, so abandoning a response does not guarantee that side effects stop.
 
-`serve(handler, ServiceOptions{})` preserves the native pending limit, including suspended handlers.
+`serve(handler, ServiceOptions{})` bounds pending calls and live coroutine handlers. A cancelled or
+timed-out handler continues occupying an execution slot until its cleanup finishes; further admission
+returns `Busy` while all slots are occupied.
 Exceptions from the handler become `HandlerFailed`. Request encoding exceptions propagate through the
 client task; native decoding/response-encoding failures remain `HandlerFailed`.
 
@@ -668,7 +674,8 @@ Acceptance occurs after successful creation and registration of the coroutine jo
 acceptance, use a factory returning
 `std::expected<Task<ActionCompletion<Result>>, pnm::msg::ActionError>`; validation happens in that
 factory before it returns the task. Empty tasks and handler exceptions produce `HandlerFailed`.
-`ActionOptions` still bounds queued/active goals, and the deadline only applies to admission.
+`ActionOptions` bounds queued/active goals and live coroutine handlers, including cleanup after an
+early terminal error. The deadline only applies to admission.
 
 A stop request during `goal.result(stop)` requests provider cancellation and **continues waiting for the
 actual terminal outcome**. The provider must observe cancellation, finish cleanup, and return `Cancelled`.
@@ -734,7 +741,7 @@ acceptance/feedback/cancellation/result forwarding. No SPI driver or portable wi
 | `pneumo::units` | `pneumo/units.hpp` | Strong quantity types, literals, conversions, and derived operations |
 | `pneumo::logging` | `pneumo/logging.hpp` | Asynchronous logging, routing, metadata, files, and custom sinks |
 | `pneumo::messaging` | `pneumo/messaging.hpp` | Named, typed topics, services, and actions with caller-driven dispatch |
-| `pneumo::coroutines` | `pneumo/coroutines.hpp`, `pneumo/coroutines_messaging.hpp` | Tasks, executors, timers, channels, and event-driven messaging adapters |
+| `pneumo::coroutines` | `pneumo/coroutines.hpp` | Tasks, executors, timers, channels, and event-driven messaging adapters |
 | `pneumo::pneumo` | `pneumo/pneumo.hpp` | Convenience target and umbrella header for all modules |
 
 ## Requirements

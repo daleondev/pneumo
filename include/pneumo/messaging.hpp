@@ -1174,6 +1174,8 @@ namespace pnm::msg
     };
 
     template<typename Result>
+    // Payload moves may throw; the implicit move constructor preserves their exception specification.
+    // NOLINTNEXTLINE(bugprone-exception-escape)
     struct ActionCompletion
     {
         ActionStatus status{ ActionStatus::Succeeded };

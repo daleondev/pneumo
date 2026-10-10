@@ -1,4 +1,7 @@
-#include "pneumo/coroutines_messaging.hpp"
+#include "pneumo/coroutines.hpp"
+
+// Keep brace initialization for fixtures; Clang warns on designated scalar brace initializers.
+// NOLINTBEGIN(modernize-use-designated-initializers)
 
 #include <gtest/gtest.h>
 
@@ -23,6 +26,25 @@ namespace coroutines_messaging_tests
         MoveOnly(MoveOnly&&) = default;
         auto operator=(MoveOnly&&) -> MoveOnly& = default;
     };
+    struct HookedMove
+    {
+        static inline std::function<void()> on_move;
+        int value{};
+        HookedMove() = default;
+        explicit HookedMove(int number)
+          : value{ number }
+        {
+        }
+        HookedMove(const HookedMove&) = default;
+        auto operator=(const HookedMove&) -> HookedMove& = default;
+        HookedMove(HookedMove&& other)
+          : value{ other.value }
+        {
+            if (on_move)
+                on_move();
+        }
+        auto operator=(HookedMove&&) -> HookedMove& = default;
+    };
     struct Payload
     {
         std::vector<std::byte> bytes;
@@ -30,6 +52,23 @@ namespace coroutines_messaging_tests
 }
 namespace pnm::utils::memory
 {
+    template<>
+    struct SerializationAdapter<coroutines_messaging_tests::HookedMove>
+    {
+        using Value = coroutines_messaging_tests::HookedMove;
+        static inline std::function<void()> on_serialize;
+        static auto bufferSize(const Value&) -> size_t { return sizeof(int); }
+        static auto serialize(const Value& value, std::span<std::byte> bytes) -> void
+        {
+            pnm::utils::memory::serialize(value.value, bytes);
+            if (auto hook{ std::exchange(on_serialize, {}) })
+                hook();
+        }
+        static auto deserialize(std::span<const std::byte> bytes, Value& value) -> void
+        {
+            pnm::utils::memory::deserialize(bytes, value.value);
+        }
+    };
     template<>
     struct SerializationAdapter<coroutines_messaging_tests::Payload>
     {
@@ -899,3 +938,294 @@ TEST(CoroutinesMessagingRegistration, StoppedContextRejectsSynchronousRegistrati
     EXPECT_THROW(static_cast<void>(action.serve(sum)), std::runtime_error);
     EXPECT_THROW(static_cast<void>(topic.subscribe()), std::runtime_error);
 }
+
+TEST(CoroutinesMessagingActions, ClosingDuringResultTransferPreservesTheClaimedOutcome)
+{
+    using Value = coroutines_messaging_tests::HookedMove;
+    Environment env;
+    auto action{ env.bus.action<int, int, Value>("work") };
+    auto provider{ env.native.action<int, int, Value>("work").serve([](int value) {
+        return
+          [value](pnm::msg::ActionExecution<int, Value>& execution) { execution.succeed(Value{ value }); };
+    }) };
+    auto goal{ action.sendGoal(42, { 1s }) };
+    provider.poll();
+    bool closed{};
+    Value::on_move = [&] {
+        if (!closed && goal.ready()) {
+            closed = true;
+            env.bus.close();
+        }
+    };
+    auto result{ goal.result() };
+    env.start(result);
+    env.context.poll();
+    Value::on_move = {};
+    ASSERT_TRUE(closed);
+    ASSERT_TRUE(result.await_ready());
+    auto outcome{ result.await_resume() };
+    ASSERT_TRUE(outcome);
+    EXPECT_EQ(outcome->status, ActionStatus::Succeeded);
+    EXPECT_EQ(outcome->value.value, 42);
+}
+
+TEST(CoroutinesMessagingServices, CancelledHandlersHoldCapacityUntilCleanupFinishes)
+{
+    Environment env;
+    auto service{ env.bus.service<int, int>("work") };
+    pnm::coro::Channel<bool> cleanup;
+    int started{};
+    auto server{ service.serve([&](int value, std::stop_token stop) -> Task<int> {
+        ++started;
+        co_await pnm::coro::sleep(env.context, 1h, stop);
+        co_await cleanup.next();
+        co_return value;
+    }, pnm::msg::ServiceOptions{ 1 }) };
+    auto client{ env.native.service<int, int>("work") };
+    auto first{ client.request(1, 1s) };
+    env.context.poll();
+    EXPECT_EQ(started, 1);
+    first.cancel();
+    env.context.poll();
+    auto second{ client.request(2, 1s) };
+    env.context.poll();
+    EXPECT_TRUE(second.ready());
+    if (second.ready()) {
+        EXPECT_EQ(second.get().error(), pnm::msg::ServiceError::Busy);
+    }
+    EXPECT_EQ(started, 1);
+    second.cancel();
+    cleanup.close();
+    env.context.poll();
+    auto third{ client.request(3, 1s) };
+    env.context.poll();
+    EXPECT_EQ(started, 2);
+    third.cancel();
+    env.context.poll();
+    server.requestStop();
+    auto joined{ server.join() };
+    env.start(joined);
+    env.finish(joined);
+}
+
+TEST(CoroutinesMessagingTopics, ReadRegistrationRacesUnsubscribeWithoutStrandingReader)
+{
+    for (int iteration{}; iteration < 500; ++iteration) {
+        Environment env;
+        auto topic{ env.bus.topic<int>("value") };
+        auto subscription{ topic.subscribe() };
+        env.context.poll();
+        auto read{ subscription.next() };
+        std::latch start{ 1 };
+        std::jthread close{ [&] {
+            start.wait();
+            subscription.unsubscribe();
+            env.context.poll();
+        } };
+        start.count_down();
+        read.resume(); // Unbound: registration can race the adapter's context dispatch.
+        close.join();
+        env.context.poll();
+        ASSERT_TRUE(read.await_ready()) << iteration;
+        EXPECT_FALSE(read.await_resume());
+    }
+}
+
+TEST(CoroutinesMessagingActions, FailedFeedbackHoldsCapacityUntilTheHandlerExits)
+{
+    using Feedback = coroutines_messaging_tests::Payload;
+    Environment env;
+    pnm::coro::Channel<bool> cleanup;
+    int started{};
+    auto action{ env.bus.action<int, Feedback, int>("work") };
+    auto server{ action.serve(
+      [&](int value, pnm::coro::ActionExecution<Feedback, int> execution) -> Task<ActionCompletion<int>> {
+        ++started;
+        if (value == 1) {
+            EXPECT_FALSE(execution.feedback(Feedback{ { std::byte{ 0xff } } }));
+        }
+        co_await cleanup.next();
+        co_return ActionCompletion<int>{ ActionStatus::Succeeded, value };
+    }, pnm::msg::ActionOptions{ 1 }) };
+    auto first{ action.sendGoal(1, { 1s }) };
+    auto failed{ first.result() };
+    env.start(failed);
+    EXPECT_EQ(env.finish(failed).error(), pnm::msg::ActionError::HandlerFailed);
+    auto second{ action.sendGoal(2, { 1s }) };
+    auto busy{ second.result() };
+    env.start(busy);
+    EXPECT_EQ(env.finish(busy).error(), pnm::msg::ActionError::Busy);
+    EXPECT_EQ(started, 1);
+    cleanup.close();
+    env.context.poll();
+    auto third{ action.sendGoal(3, { 1s }) };
+    auto result{ third.result() };
+    env.start(result);
+    EXPECT_EQ(env.finish(result)->value, 3);
+    EXPECT_EQ(started, 2);
+}
+
+TEST(CoroutinesMessagingServices, EmptyTasksAndThrowingFactoriesReleaseTheirSlots)
+{
+    Environment env;
+    auto service{ env.bus.service<int, int>("work") };
+    auto server{ service.serve([](int value, std::stop_token stop) -> Task<int> {
+        if (value == 0)
+            return {};
+        if (value == 1)
+            throw std::runtime_error{ "factory" };
+        return immediate(value, stop);
+    }, pnm::msg::ServiceOptions{ 1 }) };
+    for (int value{ 0 }; value < 3; ++value) {
+        auto call{ service.request(value, 1s) };
+        env.start(call);
+        auto result{ env.finish(call) };
+        if (value < 2)
+            EXPECT_EQ(result.error(), pnm::msg::ServiceError::HandlerFailed);
+        else
+            EXPECT_EQ(result.value(), 4);
+    }
+}
+
+TEST(CoroutinesMessagingActions, InvalidTasksStatusesAndFactoriesReleaseTheirSlots)
+{
+    Environment env;
+    auto action{ env.bus.action<int, int, int>("work") };
+    auto invalid{ [](int, Execution) -> Task<ActionCompletion<int>> {
+        // Deliberately exercise defensive validation of an invalid provider status.
+        // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange)
+        co_return ActionCompletion<int>{ static_cast<ActionStatus>(255), 0 };
+    } };
+    auto server{ action.serve([&](int value, Execution execution) -> Task<ActionCompletion<int>> {
+        if (value == 0)
+            return {};
+        if (value == 1)
+            throw std::runtime_error{ "factory" };
+        if (value == 2)
+            return invalid(value, std::move(execution));
+        return sum(value, std::move(execution));
+    }, pnm::msg::ActionOptions{ 1 }) };
+    for (int value{ 0 }; value < 4; ++value) {
+        auto goal{ action.sendGoal(value, { 1s }) };
+        auto result{ goal.result() };
+        env.start(result);
+        auto outcome{ env.finish(result) };
+        if (value < 3)
+            EXPECT_EQ(outcome.error(), pnm::msg::ActionError::HandlerFailed);
+        else
+            EXPECT_EQ(outcome->value, 6);
+    }
+}
+
+TEST(CoroutinesMessagingActions, DestroyedResultWaiterCanBeReplacedWithoutLosingCompletion)
+{
+    Environment env;
+    auto action{ env.bus.action<int, int, int>("work") };
+    std::optional<pnm::msg::ActionExecution<int, int>> execution;
+    auto server{ env.native.action<int, int, int>("work").serveDeferred(
+      [&](int, pnm::msg::ActionExecution<int, int> incoming) {
+        incoming.accept();
+        execution.emplace(std::move(incoming));
+    }) };
+    auto goal{ action.sendGoal(42, { 1s }) };
+    auto first{ goal.result() };
+    env.start(first);
+    server.poll();
+    env.context.poll();
+    auto duplicate{ goal.result() };
+    env.start(duplicate);
+    EXPECT_THROW(static_cast<void>(env.finish(duplicate)), std::logic_error);
+    first = {};
+    ASSERT_TRUE(execution);
+    EXPECT_TRUE(execution->cancelRequested());
+    EXPECT_TRUE(execution->succeed(42));
+    auto second{ goal.result() };
+    env.start(second);
+    EXPECT_EQ(env.finish(second)->value, 42);
+}
+
+TEST(CoroutinesMessagingShutdown, MultipleJoinsWaitForCleanupAndRejectUnrequestedShutdown)
+{
+    Environment env;
+    pnm::coro::Channel<bool> cleanup;
+    auto action{ env.bus.action<int, int, int>("work") };
+    auto server{ action.serve([&](int, Execution) -> Task<ActionCompletion<int>> {
+        co_await cleanup.next();
+        co_return ActionCompletion<int>{ ActionStatus::Cancelled, 0 };
+    }) };
+    auto goal{ action.sendGoal(1, { 1s }) };
+    env.context.poll();
+    auto early_bus{ env.bus.join() };
+    auto early_server{ server.join() };
+    env.start(early_bus);
+    env.start(early_server);
+    EXPECT_THROW(env.finish(early_bus), std::logic_error);
+    EXPECT_THROW(env.finish(early_server), std::logic_error);
+    env.bus.requestStop();
+    auto first{ env.bus.join() };
+    auto second{ env.bus.join() };
+    auto provider{ server.join() };
+    env.start(first);
+    env.start(second);
+    env.start(provider);
+    EXPECT_FALSE(first.await_ready());
+    EXPECT_FALSE(second.await_ready());
+    EXPECT_FALSE(provider.await_ready());
+    EXPECT_THROW(static_cast<void>(env.bus.topic<int>("closed")), std::logic_error);
+    cleanup.close();
+    env.finish(first);
+    env.finish(second);
+    env.finish(provider);
+    auto finished{ env.bus.join() };
+    env.start(finished);
+    env.finish(finished);
+}
+
+TEST(CoroutinesMessagingActions, EncodingCanReleaseTheSubmittingEndpoint)
+{
+    using Value = coroutines_messaging_tests::HookedMove;
+    Environment env;
+    auto action{ std::make_unique<pnm::coro::Action<Value, int, int>>(
+      env.bus.action<Value, int, int>("work")) };
+    auto provider{ env.native.action<Value, int, int>("work").serve([](const Value& value) {
+        return [number{ value.value }](pnm::msg::ActionExecution<int, int>& execution) {
+            execution.succeed(number);
+        };
+    }) };
+    pnm::utils::memory::SerializationAdapter<Value>::on_serialize = [&] { action.reset(); };
+    auto goal{ action->sendGoal(Value{ 42 }, { 1s }) };
+    EXPECT_FALSE(action);
+    provider.poll();
+    auto result{ goal.result() };
+    env.start(result);
+    EXPECT_EQ(env.finish(result)->value, 42);
+}
+
+TEST(CoroutinesMessagingActions, ThrowingResultTransferFailsAwaiterWithoutStrandingShutdown)
+{
+    using Value = coroutines_messaging_tests::HookedMove;
+    static_assert(!std::is_nothrow_move_constructible_v<ActionCompletion<Value>>);
+    Environment env;
+    auto provider{ env.native.action<int, int, Value>("work").serve([](int value) {
+        return
+          [value](pnm::msg::ActionExecution<int, Value>& execution) { execution.succeed(Value{ value }); };
+    }) };
+    auto goal{ env.bus.action<int, int, Value>("work").sendGoal(42, { 1s }) };
+    provider.poll();
+    Value::on_move = [&] {
+        if (goal.ready())
+            throw std::runtime_error{ "result move" };
+    };
+    auto result{ goal.result() };
+    env.start(result);
+    env.context.poll();
+    Value::on_move = {};
+    ASSERT_TRUE(result.await_ready());
+    EXPECT_THROW(static_cast<void>(result.await_resume()), std::runtime_error);
+    env.bus.requestStop();
+    auto joined{ env.bus.join() };
+    env.start(joined);
+    env.finish(joined);
+}
+
+// NOLINTEND(modernize-use-designated-initializers)
