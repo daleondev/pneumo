@@ -68,6 +68,134 @@ namespace pnm::msg
 
     namespace detail
     {
+        struct MessagingAccess;
+
+        // Integration hooks only schedule work. Batches defer them past the outermost messaging
+        // operation's locks, including calls into a goal/call state while a provider is locked.
+        struct Wakeup
+        {
+            std::function<void()> callback;
+            std::atomic<bool> connected{ true };
+            std::atomic<bool> queued{ false };
+            std::atomic<bool> dirty{ false };
+            std::shared_ptr<Wakeup> next;
+            auto invoke() const noexcept -> void
+            {
+                if (connected.load(std::memory_order_acquire)) {
+                    try {
+                        callback();
+                    } catch (...) {
+                        std::terminate();
+                    } // Internal wakeups must not throw.
+                }
+            }
+        };
+
+        class NotificationBatch
+        {
+          public:
+            NotificationBatch() { s_current = this; }
+            ~NotificationBatch()
+            {
+                s_current = m_parent;
+                if (!m_parent) {
+                    while (m_pending) {
+                        auto wakeup{ std::move(m_pending) };
+                        m_pending = std::move(wakeup->next);
+                        wakeup->dirty.store(false, std::memory_order_release);
+                        wakeup->invoke();
+                        wakeup->queued.store(false, std::memory_order_release);
+                        // Another thread may have signalled after the first invocation. Once
+                        // queued is clear, later notifications either own a new batch entry or
+                        // are covered by this final invocation. No allocation is needed to wake.
+                        if (wakeup->dirty.exchange(false, std::memory_order_acq_rel))
+                            wakeup->invoke();
+                    }
+                }
+            }
+            NotificationBatch(const NotificationBatch&) = delete;
+            auto operator=(const NotificationBatch&) -> NotificationBatch& = delete;
+            NotificationBatch(NotificationBatch&&) = delete;
+            auto operator=(NotificationBatch&&) -> NotificationBatch& = delete;
+            static auto defer(std::shared_ptr<Wakeup> wakeup) noexcept -> void
+            {
+                wakeup->dirty.store(true, std::memory_order_release);
+                if (wakeup->queued.exchange(true, std::memory_order_acq_rel))
+                    return;
+                auto* root{ s_current };
+                while (root->m_parent)
+                    root = root->m_parent;
+                wakeup->next = std::move(root->m_pending);
+                root->m_pending = std::move(wakeup);
+            }
+
+          private:
+            static inline thread_local NotificationBatch* s_current{};
+            NotificationBatch* m_parent{ s_current };
+            std::shared_ptr<Wakeup> m_pending;
+        };
+
+        class WakeupRegistration
+        {
+          public:
+            WakeupRegistration() = default;
+            explicit WakeupRegistration(std::shared_ptr<Wakeup> wakeup)
+              : m_wakeup{ std::move(wakeup) }
+            {
+            }
+            ~WakeupRegistration() { reset(); }
+            WakeupRegistration(const WakeupRegistration&) = delete;
+            auto operator=(const WakeupRegistration&) -> WakeupRegistration& = delete;
+            WakeupRegistration(WakeupRegistration&&) noexcept = default;
+            auto operator=(WakeupRegistration&& other) noexcept -> WakeupRegistration&
+            {
+                if (this != &other) {
+                    reset();
+                    m_wakeup = std::move(other.m_wakeup);
+                }
+                return *this;
+            }
+            auto reset() noexcept -> void
+            {
+                if (m_wakeup)
+                    m_wakeup->connected.store(false, std::memory_order_release);
+                m_wakeup.reset();
+            }
+
+          private:
+            std::shared_ptr<Wakeup> m_wakeup;
+        };
+
+        class Readiness
+        {
+          public:
+            auto watch(std::function<void()> callback) -> WakeupRegistration
+            {
+                auto wakeup{ std::make_shared<Wakeup>(std::move(callback)) };
+                {
+                    std::scoped_lock lock{ m_mutex };
+                    std::erase_if(m_watchers, [](const auto& weak) { return weak.expired(); });
+                    m_watchers.emplace_back(wakeup);
+                }
+                // Unconditional initial notification closes the install/readiness race.
+                wakeup->invoke();
+                return WakeupRegistration{ std::move(wakeup) };
+            }
+            auto notify() -> void
+            {
+                NotificationBatch notifications{};
+                std::scoped_lock lock{ m_mutex };
+                for (const auto& weak : m_watchers) {
+                    if (auto wakeup{ weak.lock() })
+                        NotificationBatch::defer(std::move(wakeup));
+                }
+            }
+
+          private:
+            std::mutex m_mutex;
+            std::vector<std::weak_ptr<Wakeup>> m_watchers;
+        };
+
         using MessageClock = std::chrono::steady_clock;
 
         template<typename Rep, typename Period>
@@ -120,6 +248,8 @@ namespace pnm::msg
         template<typename T>
         struct SubscriptionState
         {
+            Readiness activity;
+            friend struct MessagingAccess;
             explicit SubscriptionState(std::function<void(const T&)> handler)
               : callback{ std::move(handler) }
             {
@@ -127,21 +257,25 @@ namespace pnm::msg
 
             auto enqueue(const MessageBytes& bytes) -> void
             {
+                NotificationBatch notifications{};
                 std::scoped_lock lock{ mutex };
                 if (!closed) {
                     messages.push_back(bytes);
                     latest = bytes;
                     ready.notify_one();
+                    activity.notify();
                 }
             }
 
             auto close() -> void
             {
+                NotificationBatch notifications{};
                 std::scoped_lock lock{ mutex };
                 closed = true;
                 messages.clear();
                 latest.reset();
                 ready.notify_all();
+                activity.notify();
             }
 
             std::mutex mutex;
@@ -158,6 +292,7 @@ namespace pnm::msg
         {
             ~TopicState()
             {
+                NotificationBatch notifications{};
                 for (const auto& weak : subscriptions) {
                     if (auto subscription{ weak.lock() }) {
                         subscription->close();
@@ -181,6 +316,8 @@ namespace pnm::msg
     template<utils::memory::Serializable T>
     class Subscription
     {
+        friend struct detail::MessagingAccess;
+
       public:
         ~Subscription() { unsubscribe(); }
         Subscription(const Subscription&) = delete;
@@ -284,6 +421,7 @@ namespace pnm::msg
     template<utils::memory::Serializable T>
     class Topic
     {
+        friend struct detail::MessagingAccess;
         static_assert(std::same_as<T, std::remove_cvref_t<T>>,
                       "Topic messages must be unqualified value types");
 
@@ -313,6 +451,7 @@ namespace pnm::msg
         // Return false when change detection suppresses this publication.
         auto publish(const T& message) const -> bool
         {
+            detail::NotificationBatch notifications{};
             auto state{ m_state };
             if (!state) {
                 throw std::logic_error{ "Cannot publish through a moved-from topic" };
@@ -423,6 +562,8 @@ namespace pnm::msg
         class ServiceCallState
         {
           public:
+            auto readiness() -> Readiness& { return m_activity; }
+            friend struct MessagingAccess;
             using EncodedResult = std::expected<MessageBytes, ServiceError>;
 
             ServiceCallState(MessageClock::time_point end,
@@ -434,8 +575,20 @@ namespace pnm::msg
             {
             }
 
+            auto watchStop(const std::shared_ptr<ServiceCallState>& self) -> void
+            {
+                if (m_stop.stop_possible()) {
+                    m_cancellation = std::make_unique<std::stop_callback<std::function<void()>>>(
+                      m_stop, [weak{ std::weak_ptr{ self } }] {
+                        if (auto state{ weak.lock() })
+                            state->fail(ServiceError::Cancelled);
+                    });
+                }
+            }
+
             auto finish(MessageBytes value, std::optional<ServiceError> failure = {}) -> bool
             {
+                NotificationBatch notifications{};
                 std::scoped_lock lock{ m_mutex };
                 refreshLocked();
                 if (m_finished) {
@@ -445,6 +598,7 @@ namespace pnm::msg
                 m_error = failure;
                 m_finished = true;
                 m_changed.notify_all();
+                m_activity.notify();
                 return true;
             }
 
@@ -452,6 +606,7 @@ namespace pnm::msg
 
             auto pending() -> bool
             {
+                NotificationBatch notifications{};
                 std::scoped_lock lock{ m_mutex };
                 refreshLocked();
                 return !m_finished;
@@ -459,6 +614,7 @@ namespace pnm::msg
 
             auto remainingTime() -> MessageClock::duration
             {
+                NotificationBatch notifications{};
                 std::scoped_lock lock{ m_mutex };
                 refreshLocked();
                 return m_finished
@@ -468,6 +624,7 @@ namespace pnm::msg
 
             auto take(bool wait) -> std::optional<EncodedResult>
             {
+                NotificationBatch notifications{};
                 std::unique_lock lock{ m_mutex };
                 if (m_consumed) {
                     if (wait) {
@@ -491,10 +648,12 @@ namespace pnm::msg
             }
 
           private:
+            Readiness m_activity;
             friend class pnm::msg::PendingCall<Response>;
             // Called only while holding m_mutex. The first terminal result wins.
             auto refreshLocked() -> void
             {
+                NotificationBatch notifications{};
                 if (m_finished) {
                     return;
                 }
@@ -507,6 +666,7 @@ namespace pnm::msg
                 if (m_error) {
                     m_finished = true;
                     m_changed.notify_all();
+                    m_activity.notify();
                 }
             }
 
@@ -520,12 +680,15 @@ namespace pnm::msg
             std::optional<ServiceError> m_error;
             bool m_finished{};
             bool m_consumed{};
+            std::unique_ptr<std::stop_callback<std::function<void()>>> m_cancellation;
         };
 
         template<typename Request, typename Response>
         struct ServiceProvider
         {
-            using Handler = std::function<void(const Request&, Reply<Response>)>;
+            Readiness activity;
+            friend struct MessagingAccess;
+            using Handler = std::function<void(Request&, Reply<Response>)>;
             using CallState = ServiceCallState<Response>;
 
             struct QueuedRequest
@@ -542,12 +705,14 @@ namespace pnm::msg
 
             auto open() -> bool
             {
+                NotificationBatch notifications{};
                 std::scoped_lock lock{ mutex };
                 return !closed;
             }
 
             auto enqueue(MessageBytes bytes, const std::shared_ptr<CallState>& call) -> void
             {
+                NotificationBatch notifications{};
                 // Keep callback-owning states alive until the provider lock has been released.
                 std::vector<std::shared_ptr<CallState>> retained;
                 std::scoped_lock lock{ mutex };
@@ -576,10 +741,12 @@ namespace pnm::msg
                 calls.emplace_back(call);
                 requests.push_back(QueuedRequest{ std::move(bytes), call });
                 changed.notify_one();
+                activity.notify();
             }
 
             auto close() -> void
             {
+                NotificationBatch notifications{};
                 std::deque<QueuedRequest> discarded;
                 std::vector<std::weak_ptr<CallState>> outstanding;
                 {
@@ -588,6 +755,7 @@ namespace pnm::msg
                     discarded.swap(requests);
                     outstanding.swap(calls);
                     changed.notify_all();
+                    activity.notify();
                 }
                 for (const auto& weak : outstanding) {
                     if (auto call{ weak.lock() }) {
@@ -618,6 +786,8 @@ namespace pnm::msg
     template<utils::memory::Serializable Response>
     class Reply
     {
+        friend struct detail::MessagingAccess;
+
       public:
         ~Reply() { fail(ServiceError::HandlerFailed); }
         Reply(const Reply&) = delete;
@@ -672,6 +842,8 @@ namespace pnm::msg
     template<utils::memory::Serializable Response>
     class PendingCall
     {
+        friend struct detail::MessagingAccess;
+
       public:
         ~PendingCall() { cancel(); }
         PendingCall(const PendingCall&) = delete;
@@ -761,6 +933,7 @@ namespace pnm::msg
     template<utils::memory::Serializable Request, utils::memory::Serializable Response>
     class ServiceServer
     {
+        friend struct detail::MessagingAccess;
         using Provider = detail::ServiceProvider<Request, Response>;
 
       public:
@@ -789,6 +962,13 @@ namespace pnm::msg
         template<typename Rep, typename Period>
         auto poll(const std::chrono::duration<Rep, Period>& timeout) -> size_t
         {
+            return pollSome(timeout, std::numeric_limits<size_t>::max());
+        }
+
+      private:
+        template<typename Rep, typename Period>
+        auto pollSome(const std::chrono::duration<Rep, Period>& timeout, size_t limit) -> size_t
+        {
             auto provider{ m_provider };
             if (!provider) {
                 return 0;
@@ -802,7 +982,7 @@ namespace pnm::msg
                     provider->changed.wait_until(
                       lock, deadline, [&] { return provider->closed || !provider->requests.empty(); });
                 }
-                pending = provider->requests.size();
+                pending = std::min(limit, provider->requests.size());
             }
             size_t processed{};
             for (size_t i{}; i < pending; ++i) {
@@ -823,7 +1003,6 @@ namespace pnm::msg
             return processed;
         }
 
-      private:
         friend class Service<Request, Response>;
         explicit ServiceServer(std::shared_ptr<Provider> provider)
           : m_provider{ std::move(provider) }
@@ -852,6 +1031,7 @@ namespace pnm::msg
     template<utils::memory::Serializable Request, utils::memory::Serializable Response>
     class Service
     {
+        friend struct detail::MessagingAccess;
         static_assert(std::same_as<Request, std::remove_cvref_t<Request>> &&
                         std::same_as<Response, std::remove_cvref_t<Response>>,
                       "Service messages must be unqualified value types");
@@ -881,23 +1061,9 @@ namespace pnm::msg
         [[nodiscard]] auto serveDeferred(Handler&& function, ServiceOptions options = {}) const
           -> ServiceServer<Request, Response>
         {
-            if (!m_state) {
-                throw std::logic_error{ "Cannot serve through a moved-from service" };
-            }
-            auto handler{ detail::own_function<void(const Request&, Reply<Response>)>(
-              std::forward<Handler>(function)) };
-            if (!handler || options.max_pending == 0) {
-                throw std::invalid_argument{ "A service requires a handler and a positive pending limit" };
-            }
-            auto provider{ std::make_shared<Provider>(std::move(handler), options) };
-            std::shared_ptr<Provider> previous;
-            std::scoped_lock lock{ m_state->mutex };
-            previous = m_state->provider.lock();
-            if (previous && previous->open()) {
-                throw std::logic_error{ "Service already has a provider" };
-            }
-            m_state->provider = provider;
-            return ServiceServer<Request, Response>{ std::move(provider) };
+            return registerProvider(
+              detail::own_function<void(Request&, Reply<Response>)>(std::forward<Handler>(function)),
+              options);
         }
 
         template<typename Rep, typename Period>
@@ -939,6 +1105,25 @@ namespace pnm::msg
         {
         }
 
+        auto registerProvider(typename Provider::Handler handler, ServiceOptions options) const
+          -> ServiceServer<Request, Response>
+        {
+            if (!m_state)
+                throw std::logic_error{ "Cannot serve through a moved-from service" };
+            if (!handler || options.max_pending == 0) {
+                throw std::invalid_argument{ "A service requires a handler and a positive pending limit" };
+            }
+            auto provider{ std::make_shared<Provider>(std::move(handler), options) };
+            std::shared_ptr<Provider> previous;
+            std::scoped_lock lock{ m_state->mutex };
+            previous = m_state->provider.lock();
+            if (previous && previous->open()) {
+                throw std::logic_error{ "Service already has a provider" };
+            }
+            m_state->provider = provider;
+            return ServiceServer<Request, Response>{ std::move(provider) };
+        }
+
         auto submit(const Request& value,
                     detail::MessageClock::time_point deadline,
                     detail::ServiceCompletion<Response> callback,
@@ -949,6 +1134,7 @@ namespace pnm::msg
             }
             auto state{ std::make_shared<detail::ServiceCallState<Response>>(
               deadline, stop, std::move(callback)) };
+            state->watchStop(state);
             auto pending{ PendingCall<Response>{ state } };
             if (!state->pending()) {
                 return pending;
@@ -1053,6 +1239,8 @@ namespace pnm::msg
         template<typename Feedback, typename Result>
         struct ActionGoalState
         {
+            auto readiness() -> Readiness& { return m_activity; }
+            friend struct MessagingAccess;
             struct Completion
             {
                 MessageBytes bytes;
@@ -1068,6 +1256,7 @@ namespace pnm::msg
 
             auto pending() -> bool
             {
+                NotificationBatch notifications{};
                 std::scoped_lock lock{ m_mutex };
                 refreshLocked();
                 return !m_finished;
@@ -1075,17 +1264,20 @@ namespace pnm::msg
 
             auto accept() -> bool
             {
+                NotificationBatch notifications{};
                 std::scoped_lock lock{ m_mutex };
                 refreshLocked();
                 if (m_finished || m_accepted) {
                     return false;
                 }
                 m_accepted = true;
+                m_activity.notify();
                 return true;
             }
 
             auto canPublish() -> bool
             {
+                NotificationBatch notifications{};
                 std::scoped_lock lock{ m_mutex };
                 refreshLocked();
                 return m_accepted && !m_finished;
@@ -1093,16 +1285,19 @@ namespace pnm::msg
 
             auto publish(MessageBytes bytes) -> bool
             {
+                NotificationBatch notifications{};
                 std::scoped_lock lock{ m_mutex };
                 if (m_finished || !m_accepted) {
                     return false;
                 }
-                m_feedback = std::move(bytes); // Bound undelivered feedback to one value per goal.
+                m_feedback = std::move(bytes);
+                m_activity.notify(); // Bound undelivered feedback to one value per goal.
                 return true;
             }
 
             auto finish(MessageBytes bytes, ActionStatus outcome) -> bool
             {
+                NotificationBatch notifications{};
                 std::scoped_lock lock{ m_mutex };
                 refreshLocked();
                 if (m_finished || (!m_accepted && outcome != ActionStatus::Cancelled)) {
@@ -1111,11 +1306,13 @@ namespace pnm::msg
                 m_result = std::move(bytes);
                 m_status = outcome;
                 m_finished = true;
+                m_activity.notify();
                 return true;
             }
 
             auto fail(ActionError failure) -> bool
             {
+                NotificationBatch notifications{};
                 std::scoped_lock lock{ m_mutex };
                 refreshLocked();
                 if (m_finished || (failure == ActionError::Rejected && m_accepted)) {
@@ -1127,17 +1324,22 @@ namespace pnm::msg
 
             auto requestCancel() -> bool
             {
+                NotificationBatch notifications{};
                 std::scoped_lock lock{ m_mutex };
                 refreshLocked();
                 if (m_finished) {
                     return false;
                 }
-                m_cancelRequested = true;
+                if (!m_cancelRequested) {
+                    m_cancelRequested = true;
+                    m_activity.notify();
+                }
                 return true;
             }
 
             auto cancelRequested() -> bool
             {
+                NotificationBatch notifications{};
                 std::scoped_lock lock{ m_mutex };
                 refreshLocked();
                 return m_cancelRequested;
@@ -1145,15 +1347,18 @@ namespace pnm::msg
 
             auto abandon() -> void
             {
+                NotificationBatch notifications{};
                 std::scoped_lock lock{ m_mutex };
                 m_abandoned = true;
                 if (!m_finished) {
                     m_cancelRequested = true;
+                    m_activity.notify();
                 }
             }
 
             auto remainingAcceptanceTime() -> MessageClock::duration
             {
+                NotificationBatch notifications{};
                 std::scoped_lock lock{ m_mutex };
                 refreshLocked();
                 return m_accepted || m_finished
@@ -1163,6 +1368,7 @@ namespace pnm::msg
 
             auto takeAcceptance() -> bool
             {
+                NotificationBatch notifications{};
                 std::scoped_lock lock{ m_mutex };
                 refreshLocked();
                 if (m_abandoned || !m_accepted || m_acceptanceDelivered) {
@@ -1174,6 +1380,7 @@ namespace pnm::msg
 
             auto takeFeedback() -> MessageBytes
             {
+                NotificationBatch notifications{};
                 std::scoped_lock lock{ m_mutex };
                 if (m_abandoned || m_consumed || !m_acceptanceDelivered) {
                     return {};
@@ -1183,6 +1390,7 @@ namespace pnm::msg
 
             auto takeCompletion() -> std::optional<Completion>
             {
+                NotificationBatch notifications{};
                 std::scoped_lock lock{ m_mutex };
                 refreshLocked();
                 if (m_abandoned || m_consumed || !m_finished || (m_accepted && !m_acceptanceDelivered)) {
@@ -1195,12 +1403,14 @@ namespace pnm::msg
 
             auto delivered() -> bool
             {
+                NotificationBatch notifications{};
                 std::scoped_lock lock{ m_mutex };
                 return m_consumed;
             }
 
             auto deliveryFailed() -> void
             {
+                NotificationBatch notifications{};
                 std::scoped_lock lock{ m_mutex };
                 // A malformed feedback payload invalidates even an already-queued success.
                 failLocked(ActionError::HandlerFailed);
@@ -1209,6 +1419,7 @@ namespace pnm::msg
             }
 
           private:
+            Readiness m_activity;
             friend class pnm::msg::ActionExecution<Feedback, Result>;
             friend class pnm::msg::PendingGoal<Feedback, Result>;
 
@@ -1217,13 +1428,16 @@ namespace pnm::msg
             ActionCallbacks<Feedback, Result> m_callbacks;
             auto failLocked(ActionError failure) -> void
             {
+                NotificationBatch notifications{};
                 m_error = failure;
                 m_finished = true;
                 m_cancelRequested = true;
+                m_activity.notify();
             }
 
             auto refreshLocked() -> void
             {
+                NotificationBatch notifications{};
                 if (!m_finished && !m_accepted && MessageClock::now() >= m_deadline) {
                     failLocked(ActionError::Timeout);
                 }
@@ -1248,6 +1462,8 @@ namespace pnm::msg
     template<utils::memory::Serializable Feedback, utils::memory::Serializable Result>
     class ActionExecution
     {
+        friend struct detail::MessagingAccess;
+
       public:
         ~ActionExecution() { fail(ActionError::HandlerFailed); }
         ActionExecution(const ActionExecution&) = delete;
@@ -1323,6 +1539,7 @@ namespace pnm::msg
     template<utils::memory::Serializable Feedback, utils::memory::Serializable Result>
     class PendingGoal
     {
+        friend struct detail::MessagingAccess;
         using State = detail::ActionGoalState<Feedback, Result>;
 
       public:
@@ -1422,11 +1639,13 @@ namespace pnm::msg
         template<typename Goal, typename Feedback, typename Result>
         struct ActionProvider
         {
+            Readiness activity;
+            friend struct MessagingAccess;
             using State = ActionGoalState<Feedback, Result>;
             using Execution = ActionExecution<Feedback, Result>;
             using Step = std::function<void(Execution&)>;
             using Factory = std::function<std::expected<Step, ActionError>(const Goal&)>;
-            using Handler = std::function<void(const Goal&, Execution)>;
+            using Handler = std::function<void(Goal&, Execution)>;
             struct QueuedGoal
             {
                 MessageBytes bytes;
@@ -1447,12 +1666,14 @@ namespace pnm::msg
 
             auto open() -> bool
             {
+                NotificationBatch notifications{};
                 std::scoped_lock lock{ mutex };
                 return !closed;
             }
 
             auto enqueue(MessageBytes bytes, const std::shared_ptr<State>& state) -> void
             {
+                NotificationBatch notifications{};
                 std::vector<std::shared_ptr<State>> retained{};
                 std::deque<QueuedGoal> discarded{};
                 std::scoped_lock lock{ mutex };
@@ -1477,14 +1698,17 @@ namespace pnm::msg
                 }
                 goals.emplace_back(state);
                 queue.push_back(QueuedGoal{ std::move(bytes), state });
+                activity.notify();
             }
 
             auto requestStop() -> void
             {
+                NotificationBatch notifications{};
                 std::deque<QueuedGoal> discarded{};
                 std::vector<std::shared_ptr<State>> retained{};
                 std::scoped_lock lock{ mutex };
                 stopping = true;
+                activity.notify();
                 discarded.swap(queue);
                 for (const auto& queued : discarded) {
                     queued.state->fail(ActionError::Unavailable);
@@ -1499,6 +1723,7 @@ namespace pnm::msg
 
             auto idle() -> bool
             {
+                NotificationBatch notifications{};
                 std::vector<std::shared_ptr<State>> retained{};
                 std::scoped_lock lock{ mutex };
                 pruneLocked(retained);
@@ -1507,6 +1732,7 @@ namespace pnm::msg
 
             auto close() -> void
             {
+                NotificationBatch notifications{};
                 std::deque<QueuedGoal> discarded{};
                 std::vector<std::shared_ptr<Job>> removed{};
                 std::vector<std::weak_ptr<State>> outstanding{};
@@ -1514,6 +1740,7 @@ namespace pnm::msg
                     std::scoped_lock lock{ mutex };
                     closed = true;
                     stopping = true;
+                    activity.notify();
                     discarded.swap(queue);
                     removed.swap(jobs);
                     outstanding.swap(goals);
@@ -1540,6 +1767,7 @@ namespace pnm::msg
             // Strong references keep user callback destructors outside the provider lock.
             auto pruneLocked(std::vector<std::shared_ptr<State>>& retained) -> void
             {
+                NotificationBatch notifications{};
                 retained.reserve(goals.size());
                 std::erase_if(goals, [&](const auto& weak) {
                     auto state{ weak.lock() };
@@ -1579,6 +1807,7 @@ namespace pnm::msg
              utils::memory::Serializable Result>
     class ActionServer
     {
+        friend struct detail::MessagingAccess;
         using Provider = detail::ActionProvider<Goal, Feedback, Result>;
         using Execution = ActionExecution<Feedback, Result>;
 
@@ -1614,7 +1843,10 @@ namespace pnm::msg
 
         // One caller drives admission and all managed steps. No threads, waits, or implicit retries.
         // Returns the number of managed steps/deferred handlers invoked during this poll.
-        auto poll() -> size_t
+        auto poll() -> size_t { return pollSome(std::numeric_limits<size_t>::max()); }
+
+      private:
+        auto pollSome(size_t limit) -> size_t
         {
             auto provider{ m_provider };
             if (!provider) {
@@ -1624,7 +1856,10 @@ namespace pnm::msg
             std::deque<typename Provider::QueuedGoal> incoming{};
             {
                 std::scoped_lock lock{ provider->mutex };
-                incoming.swap(provider->queue);
+                for (size_t i{}; i < limit && !provider->queue.empty(); ++i) {
+                    incoming.push_back(std::move(provider->queue.front()));
+                    provider->queue.pop_front();
+                }
             }
             size_t invoked{};
             for (const auto& queued : incoming) {
@@ -1647,6 +1882,7 @@ namespace pnm::msg
                 ++invoked;
             }
             {
+                detail::NotificationBatch notifications{};
                 std::scoped_lock lock{ provider->mutex };
                 // The snapshot retains every removed callable until after unlocking.
                 std::erase_if(provider->jobs, [](const auto& job) { return !job->execution.pending(); });
@@ -1654,7 +1890,6 @@ namespace pnm::msg
             return invoked;
         }
 
-      private:
         friend class Action<Goal, Feedback, Result>;
         explicit ActionServer(std::shared_ptr<Provider> provider)
           : m_provider{ std::move(provider) }
@@ -1663,6 +1898,7 @@ namespace pnm::msg
         static auto dispatch(Provider& provider, const typename Provider::QueuedGoal& queued) -> size_t
         {
             {
+                detail::NotificationBatch notifications{};
                 std::scoped_lock lock{ provider.mutex };
                 if (provider.stopping) {
                     queued.state->fail(ActionError::Unavailable);
@@ -1692,6 +1928,7 @@ namespace pnm::msg
                     return 0;
                 }
                 auto job{ std::make_shared<typename Provider::Job>(std::move(execution), std::move(*step)) };
+                detail::NotificationBatch notifications{};
                 std::scoped_lock lock{ provider.mutex };
                 if (provider.stopping) {
                     job->execution.fail(ActionError::Unavailable);
@@ -1713,6 +1950,7 @@ namespace pnm::msg
              utils::memory::Serializable Result>
     class Action
     {
+        friend struct detail::MessagingAccess;
         static_assert(std::same_as<Goal, std::remove_cvref_t<Goal>> &&
                         std::same_as<Feedback, std::remove_cvref_t<Feedback>> &&
                         std::same_as<Result, std::remove_cvref_t<Result>>,
@@ -1828,6 +2066,103 @@ namespace pnm::msg
 
         std::shared_ptr<detail::ActionState<Goal, Feedback, Result>> m_state;
     };
+
+    namespace detail
+    {
+        // Private bridge for executors. No coroutine type or executor dependency enters messaging.
+        struct MessagingAccess
+        {
+            template<typename Handle>
+            static auto watch(Handle& handle, std::function<void()> callback) -> WakeupRegistration
+            {
+                if constexpr (requires { handle.m_provider; }) {
+                    return handle.m_provider->activity.watch(std::move(callback));
+                }
+                else {
+                    if constexpr (requires { handle.m_state->readiness(); }) {
+                        return handle.m_state->readiness().watch(std::move(callback));
+                    }
+                    else
+                        return handle.m_state->activity.watch(std::move(callback));
+                }
+            }
+            template<typename Handle>
+            static auto deadline(const Handle& handle) -> MessageClock::time_point
+            {
+                return handle.m_state->m_deadline;
+            }
+            template<typename F, typename R>
+            static auto accepted(const PendingGoal<F, R>& handle) -> bool
+            {
+                std::scoped_lock lock{ handle.m_state->m_mutex };
+                return handle.m_state->m_accepted;
+            }
+            template<typename T>
+            static auto take(Subscription<T>& subscription) -> MessageBytes
+            {
+                auto state{ subscription.m_state };
+                std::scoped_lock lock{ state->mutex };
+                if (state->closed || state->messages.empty())
+                    return {};
+                auto bytes{ std::move(state->messages.front()) };
+                state->messages.pop_front();
+                return bytes;
+            }
+            template<typename T>
+            static auto closed(const Subscription<T>& subscription) -> bool
+            {
+                auto state{ subscription.m_state };
+                std::scoped_lock lock{ state->mutex };
+                return state->closed;
+            }
+            template<typename T>
+            static auto replay(Subscription<T>& subscription) -> void
+            {
+                NotificationBatch notifications{};
+                auto state{ subscription.m_state };
+                std::scoped_lock lock{ state->mutex };
+                if (!state->closed && state->latest) {
+                    state->messages.push_back(state->latest);
+                    state->ready.notify_one();
+                    state->activity.notify();
+                }
+            }
+            template<typename Q, typename R, typename Handler>
+            static auto serve(const Service<Q, R>& service, Handler&& handler, ServiceOptions options)
+              -> ServiceServer<Q, R>
+            {
+                return service.registerProvider(
+                  own_function<void(Q&, Reply<R>)>(std::forward<Handler>(handler)), options);
+            }
+            template<typename G, typename F, typename R, typename Handler>
+            static auto serve(const Action<G, F, R>& action, Handler&& handler, ActionOptions options)
+              -> ActionServer<G, F, R>
+            {
+                return action.registerProvider(
+                  {}, own_function<void(G&, ActionExecution<F, R>)>(std::forward<Handler>(handler)), options);
+            }
+            template<typename Q, typename R>
+            static auto poll(ServiceServer<Q, R>& server, size_t limit) -> void
+            {
+                server.pollSome(std::chrono::milliseconds::zero(), limit);
+            }
+            template<typename G, typename F, typename R>
+            static auto poll(ActionServer<G, F, R>& server, size_t limit) -> void
+            {
+                server.pollSome(limit);
+            }
+            template<typename Server>
+            static auto queued(const Server& server) -> bool
+            {
+                auto provider{ server.m_provider };
+                std::scoped_lock lock{ provider->mutex };
+                if constexpr (requires { provider->requests; })
+                    return !provider->requests.empty();
+                else
+                    return !provider->queue.empty();
+            }
+        };
+    }
 
     class Bus
     {

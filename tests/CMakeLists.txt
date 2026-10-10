@@ -184,3 +184,7 @@ set_tests_properties(
     PROPERTIES
     RUN_SERIAL TRUE
 )
+
+add_executable(coroutines_messaging_tests coroutines_messaging_tests.cpp)
+target_link_libraries(coroutines_messaging_tests PRIVATE GTest::gtest_main pneumo::coroutines pneumo::compiler_warnings)
+gtest_discover_tests(coroutines_messaging_tests PROPERTIES TIMEOUT 15)

@@ -563,6 +563,167 @@ Tasks have one consumer and one result: await an unstarted task, or start it wit
 
 For the built-in async, timer, and channel waits, destroying a suspended `Task` disconnects its continuation safely. Detached workers and thread-based sleeps still run to completion; destroying a context-backed sleep cancels its queued timer. Any objects borrowed by worker callables must remain alive until the workers finish. Channel reads retain their shared state even when the original channel wrapper is moved or destroyed. Custom executors must outlive scheduling calls; the default `scheduleOwned` transfers frames to `schedule`, whose accepted work must eventually run. Executors that can abandon queued work should override `scheduleOwned` to retain and release that ownership.
 
+#### Coroutine messaging
+
+Include `<pneumo/coroutines_messaging.hpp>` and link `pneumo::coroutines` to use topics, services, and
+actions from coroutines. A `pnm::coro::Bus` binds an existing `pnm::msg::Bus` to a context. Names and
+payload types resolve to the same endpoints as ordinary messaging, so coroutine and non-coroutine
+modules can communicate directly.
+
+```cpp
+pnm::msg::Bus native;
+pnm::coro::Context context;
+pnm::coro::Bus messaging{ context, native };
+```
+
+The adapter creates no threads. Messaging readiness schedules context work; context timers enforce
+service and action-admission deadlines. There is no periodic messaging poller. Run `context.run()` on
+an application-owned thread, or drive `context.poll()` in an existing loop. Provider admission is
+limited to 64 requests/goals per dispatch so other work and timers can run.
+
+`pnm::msg` remains independent of coroutines. The existing `Channel`, `RawBinaryChannel`, and
+`BinaryChannel` APIs remain available with their existing semantics.
+
+**Topics.** Subscribe immediately, then await individual messages:
+
+```cpp
+auto topic{ messaging.topic<int>("sensor/temperature_mC") };
+auto subscription{ topic.subscribe() };
+subscription.latest(); // Explicitly queues the retained value for this subscription, if any.
+while (auto value{ co_await subscription.next(stop) }) {
+    use_temperature(*value);
+}
+```
+
+`next()` returns `Task<std::optional<T>>`; the stop token is optional. Each subscription retains its own
+native message queue, including publications received between awaits. There is no second stream queue.
+One read may be outstanding per subscription; overlapping reads throw `std::logic_error`. Cancelling a
+pending read returns `nullopt` without consuming a message. If delivery already claimed a message, that
+delivery wins the race. Cancellation does not unsubscribe; a subsequent read can continue.
+
+`latest()` appends an explicit replay without removing queued publications. It does not automatically
+replay on subscription, and does nothing without a retained value. `unsubscribe()` or destruction drops
+the queue and wakes a reader with `nullopt`. `publish()` and `setPublishOnlyOnChange()` retain their native
+behavior. Topic decoding exceptions propagate through `next()` and consume only that failing message.
+
+**Services.** A client awaits the existing `ServiceResult<Response>`. A provider owns a coroutine for
+each request, with an owned payload and a cancellation token:
+
+```cpp
+auto service{ messaging.service<int, int>("math/double") };
+auto server{ service.serve([](int request, std::stop_token stop) -> pnm::coro::Task<int> {
+    // Other awaitable work may use stop; short calculations can just return.
+    if (stop.stop_requested()) co_return 0;
+    co_return request * 2;
+}) };
+auto response{ co_await service.request(21, std::chrono::seconds{ 1 }, stop) };
+if (response) use_response(*response);
+```
+
+`request()` is lazy: it owns its input when called, but submits and starts its deadline when execution
+begins. The same context can host the client and provider because the wait suspends rather than blocks.
+Cancellation returns `ServiceError::Cancelled`; it also requests cancellation of an executing coroutine
+provider. Timeouts and abandoned clients similarly signal the provider's token once observed. A handler
+may ignore cancellation, so abandoning a response does not guarantee that side effects stop.
+
+`serve(handler, ServiceOptions{})` preserves the native pending limit, including suspended handlers.
+Exceptions from the handler become `HandlerFailed`. Request encoding exceptions propagate through the
+client task; native decoding/response-encoding failures remain `HandlerFailed`.
+
+**Actions.** Submission is immediate and returns a move-only goal handle. Acceptance and feedback
+callbacks run on the bound context, and the final result is awaited:
+
+```cpp
+auto action{ messaging.action<Goal, Feedback, Result>("robot/move") };
+auto goal{ action.sendGoal(target, pnm::msg::ActionGoalOptions{ std::chrono::seconds{ 1 } }, {
+    .on_accepted{ [] { report_accepted(); } },
+    .on_feedback{ [](const Feedback& value) { report_progress(value); } }
+}) };
+auto result{ co_await goal.result(stop) };
+```
+
+Both progress callbacks are optional and use copyable `std::function` captures. Feedback is coalesced,
+and acceptance precedes feedback and completion. `result()` has one active consumer and can be consumed
+once. `id()`, `ready()`, and `requestCancel()` are also available. A progress callback exception requests
+cancellation, suppresses further progress callbacks, and propagates through `result()`.
+
+An action provider receives an owned goal and a copyable execution view. It returns an explicit status
+and result instead of calling a terminal method on the execution:
+
+```cpp
+using Execution = pnm::coro::ActionExecution<Feedback, Result>;
+auto server{ action.serve([](Goal goal, Execution execution)
+    -> pnm::coro::Task<pnm::msg::ActionCompletion<Result>> {
+    // execution.id(), feedback(value), cancelRequested(), and stopToken() are available.
+    auto result{ co_await perform_steps(goal, execution) };
+    if (execution.cancelRequested()) {
+        co_await finish_cleanup();
+        co_return pnm::msg::ActionCompletion<Result>{ pnm::msg::ActionStatus::Cancelled, std::move(result) };
+    }
+    co_return pnm::msg::ActionCompletion<Result>{ pnm::msg::ActionStatus::Succeeded, std::move(result) };
+}) };
+```
+
+Acceptance occurs after successful creation and registration of the coroutine job. To reject before
+acceptance, use a factory returning
+`std::expected<Task<ActionCompletion<Result>>, pnm::msg::ActionError>`; validation happens in that
+factory before it returns the task. Empty tasks and handler exceptions produce `HandlerFailed`.
+`ActionOptions` still bounds queued/active goals, and the deadline only applies to admission.
+
+A stop request during `goal.result(stop)` requests provider cancellation and **continues waiting for the
+actual terminal outcome**. The provider must observe cancellation, finish cleanup, and return `Cancelled`.
+It may instead finish successfully if completion wins the race. An engaged result can also contain
+`Aborted`; always inspect its status. Destroying the goal handle requests cancellation and suppresses
+its progress callbacks, without waiting for remote cleanup.
+
+**Ownership and shutdown.** Provider callable objects stay alive until their jobs finish, including
+move-only captures and coroutine-lambda captures. Payloads must be serializable, default constructible,
+and movable; copying is not required. Keep referenced application objects alive yourself. Lazy task
+wrappers retain endpoint state and owned arguments rather than borrowing the wrapper's `this` pointer.
+
+Provider code, decoding, and action progress callbacks execute on their bound context. Awaiting tasks
+resume on their inherited executor; this can be a different context. Unbound tasks resume on the
+completion thread. As with other coroutine operations, rejected scheduling can resume a continuation
+inline to propagate an error; do not stop a context before its messaging work has drained.
+
+```cpp
+messaging.requestStop(); // Stop admission, close subscriptions, request cancellation.
+co_await messaging.join();
+context.stop();
+```
+
+Coroutine provider registrations also expose `requestStop()`, `join()`, and `close()`. `join()` requires
+stop to have been requested and permits multiple waiters. Keep driving the context until it finishes.
+Service shutdown unregisters the provider and fails outstanding calls while its coroutine jobs unwind;
+action shutdown rejects pending goals and permits active goals to finish cooperative cleanup.
+
+`close()` unregisters/abandons immediately, but retains executing local jobs while they unwind; use
+`join()` afterward to await their completion. Closing reports failure, not confirmed cancellation.
+Destruction is a fallback, not asynchronous cleanup. The underlying bus and context must outlive the
+bound view and its in-flight work. Synchronize destruction with context execution and in-flight API calls, and do not join a
+provider or bus from one of the jobs that the join itself must wait for. A handler that ignores
+cancellation, or a live remote goal that never responds, can prevent graceful shutdown from finishing.
+Dropping a remote client does not prove that the remote work stopped.
+
+See [`samples/coroutines_messaging_sample.cpp`](samples/coroutines_messaging_sample.cpp) for topics,
+an awaited service, two action jobs, cancellation with asynchronous cleanup, and shutdown using two
+application-owned context threads:
+
+```bash
+cmake --build --preset gcc-debug --target coroutines_messaging_sample coroutines_messaging_tests
+./build/gcc-debug/samples/coroutines_messaging_sample
+ctest --preset gcc-debug -R CoroutinesMessaging --output-on-failure
+```
+
+**Remote bridges.** Coroutine clients use the same named endpoints as the
+[SPI bridge outlines](#extending-local-messaging-over-spi). A native `serveDeferred()` proxy can retain
+its reply/execution token while frames travel across SPI. Calling `reply.respond()` or reporting an
+action event on the receive thread wakes the coroutine client's context automatically; it does not
+require a coroutine-aware transport. On the peer, a native client can call a coroutine provider in the
+same way. The bridge owner still drives its native proxy and transport, maps IDs, forwards cancellation,
+and validates frames. Two-bus integration tests cover service forwarding and action
+acceptance/feedback/cancellation/result forwarding. No SPI driver or portable wire codec is provided.
+
 ### CMake Targets and Headers
 
 | Target | Header(s) | Purpose |
@@ -573,7 +734,7 @@ For the built-in async, timer, and channel waits, destroying a suspended `Task` 
 | `pneumo::units` | `pneumo/units.hpp` | Strong quantity types, literals, conversions, and derived operations |
 | `pneumo::logging` | `pneumo/logging.hpp` | Asynchronous logging, routing, metadata, files, and custom sinks |
 | `pneumo::messaging` | `pneumo/messaging.hpp` | Named, typed topics, services, and actions with caller-driven dispatch |
-| `pneumo::coroutines` | `pneumo/coroutines.hpp` | Lazy tasks, executors, asynchronous work, timers, and channels |
+| `pneumo::coroutines` | `pneumo/coroutines.hpp`, `pneumo/coroutines_messaging.hpp` | Tasks, executors, timers, channels, and event-driven messaging adapters |
 | `pneumo::pneumo` | `pneumo/pneumo.hpp` | Convenience target and umbrella header for all modules |
 
 ## Requirements

@@ -222,12 +222,14 @@ target_sources(
     FILE_SET HEADERS
     BASE_DIRS ${CMAKE_CURRENT_LIST_DIR}/include
     FILES ${CMAKE_CURRENT_LIST_DIR}/include/pneumo/coroutines.hpp
+          ${CMAKE_CURRENT_LIST_DIR}/include/pneumo/coroutines_messaging.hpp
 )
 
 target_link_libraries(
     pneumo_coroutines
     INTERFACE
     pneumo::common
+    pneumo::messaging
 )
 
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Generic")

@@ -127,3 +127,6 @@ target_link_libraries(
     pneumo::coroutines
     pneumo::compiler_warnings
 )
+
+add_executable(coroutines_messaging_sample coroutines_messaging_sample.cpp)
+target_link_libraries(coroutines_messaging_sample PRIVATE pneumo::coroutines pneumo::compiler_warnings)

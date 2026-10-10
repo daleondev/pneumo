@@ -631,7 +631,9 @@ namespace pnm::coro
 
         inline auto Continuation::dispatch() -> void
         {
-            auto self{ shared_from_this() };
+            auto self{ weak_from_this().lock() };
+            if (!self)
+                std::terminate(); // Continuations are always created with shared ownership.
             if (!m_scheduler) {
                 resume();
                 return;
