@@ -327,6 +327,20 @@ TEST(CommonSerializationTests, StringsRoundTripAsContentBytes)
     }
 }
 
+TEST(CommonSerializationTests, StringDeserializationSupportsOverlappingInput)
+{
+    for (const auto& source : { std::string{ "abcd" },
+                                std::string{ "a\0bc", 4 },
+                                std::string(300, 'x') + "end" }) {
+        for (const auto offset : { 0UZ, 1UZ, source.size() / 2, source.size() }) {
+            std::string restored{ source };
+            const auto bytes{ std::as_bytes(std::span{ restored.data(), restored.size() }) };
+            ASSERT_TRUE(memory::deserialize(bytes.subspan(offset), restored));
+            EXPECT_EQ(restored, source.substr(offset));
+        }
+    }
+}
+
 TEST(CommonSerializationTests, StringSerializationRespectsDestinationBounds)
 {
     const std::string source{ "abc" };

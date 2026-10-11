@@ -80,9 +80,13 @@ namespace pnm
 
                 static auto deserialize(std::span<const std::byte> src, std::string& dest) -> void
                 {
-                    dest.resize(src.size());
-                    std::ranges::copy(src,
-                                      std::as_writable_bytes(std::span{ dest.data(), dest.size() }).begin());
+                    if (src.empty()) {
+                        dest.clear();
+                        return;
+                    }
+                    // assign also handles input that overlaps the string's own storage.
+                    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+                    dest.assign(reinterpret_cast<const char*>(src.data()), src.size());
                 }
             };
 

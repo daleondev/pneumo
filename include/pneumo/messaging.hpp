@@ -53,8 +53,9 @@ namespace pnm::msg
                           "A reflected endpoint must be a nonstatic catalog field");
 
           private:
-            static constexpr auto nameAnnotations{ std::define_static_array([] consteval {
+            static constexpr auto NAME_ANNOTATIONS{ std::define_static_array([] consteval {
                 std::vector<std::meta::info> names;
+                // NOLINTNEXTLINE(bugprone-reserved-identifier,readability-identifier-naming)
                 template for (constexpr auto annotation :
                               std::define_static_array(std::meta::annotations_of(Member)))
                 {
@@ -64,19 +65,21 @@ namespace pnm::msg
                 }
                 return names;
             }()) };
-            static_assert(nameAnnotations.size() <= 1,
+            static_assert(NAME_ANNOTATIONS.size() <= 1,
                           "An endpoint field accepts at most one FixedString name annotation");
 
           public:
+            // Keep the documented metadata API spelling.
+            // NOLINTNEXTLINE(readability-identifier-naming)
             static constexpr auto name{ [] consteval {
-                if constexpr (nameAnnotations.empty()) {
+                if constexpr (NAME_ANNOTATIONS.empty()) {
                     constexpr auto identifier{ std::meta::identifier_of(Member) };
                     meta::string::FixedString<identifier.size()> generated{ identifier.data() };
                     std::ranges::replace(generated.data, '_', '/');
                     return generated;
                 } else {
-                    return std::meta::extract<typename[:std::meta::type_of(nameAnnotations[0]):]>(
-                      nameAnnotations[0]);
+                    return std::meta::extract<typename[:std::meta::type_of(NAME_ANNOTATIONS[0]):]>(
+                      NAME_ANNOTATIONS[0]);
                 }
             }() };
             static_assert(std::convertible_to<decltype(name), std::string_view>,
