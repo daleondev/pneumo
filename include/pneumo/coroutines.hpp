@@ -2480,6 +2480,12 @@ namespace pnm::coro
         auto operator=(const Bus&) -> Bus& = delete;
         Bus(Bus&&) = delete;
         auto operator=(Bus&&) -> Bus& = delete;
+        template<std::meta::info Member>
+        auto topic() -> Topic<typename pnm::msg::TopicMetadata<Member>::Message>
+        {
+            using Metadata = pnm::msg::TopicMetadata<Member>;
+            return topic<typename Metadata::Message>(Metadata::name);
+        }
         template<utils::memory::Serializable T>
         auto topic(std::string_view name) -> Topic<T>
         {
@@ -2487,6 +2493,13 @@ namespace pnm::coro
                 throw std::logic_error{ "Endpoint was moved from" };
             m_runtime->checkOpen();
             return Topic<T>{ m_runtime, m_bus.topic<T>(name) };
+        }
+        template<std::meta::info Member>
+        auto service() -> Service<typename pnm::msg::ServiceMetadata<Member>::Request,
+                                  typename pnm::msg::ServiceMetadata<Member>::Response>
+        {
+            using Metadata = pnm::msg::ServiceMetadata<Member>;
+            return service<typename Metadata::Request, typename Metadata::Response>(Metadata::name);
         }
         template<utils::memory::Serializable Q, utils::memory::Serializable R>
         auto service(std::string_view name) -> Service<Q, R>
@@ -2503,6 +2516,14 @@ namespace pnm::coro
                 throw std::logic_error{ "Endpoint was moved from" };
             m_runtime->checkOpen();
             return Action<G, F, R>{ m_runtime, m_bus.action<G, F, R>(name) };
+        }
+        template<std::meta::info Member>
+        auto action() -> Action<typename pnm::msg::ActionMetadata<Member>::Goal,
+                                typename pnm::msg::ActionMetadata<Member>::Feedback,
+                                typename pnm::msg::ActionMetadata<Member>::Result>
+        {
+            using Metadata = pnm::msg::ActionMetadata<Member>;
+            return action<typename Metadata::Goal, typename Metadata::Feedback, typename Metadata::Result>(Metadata::name);
         }
         auto requestStop() -> void { m_runtime->stop(false); }
         auto close() -> void { m_runtime->stop(true); }

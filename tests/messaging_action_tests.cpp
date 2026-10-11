@@ -1313,3 +1313,33 @@ TEST(MessagingAction, TypedRejectionCannotReplaceAcceptedWork)
     });
     server.poll();goal.poll();EXPECT_TRUE(accepted);EXPECT_TRUE(completed);
 }
+
+TEST(MessagingActionTests, ReflectedCatalogResolvesTypesAndOptionalNames)
+{
+    using namespace pnm::meta::string::literals;
+    struct Actions
+    {
+        [[= 42]] pnm::msg::Action<int, std::string, double> motor_move;
+        [[= "motor/move"_fs]] pnm::msg::Action<int, std::string, double> alias;
+    };
+    static_assert(std::string_view(pnm::msg::ActionMetadata<^^Actions::motor_move>::name) == "motor/move");
+    pnm::msg::Bus bus;
+    auto provider = bus.action<^^Actions::motor_move>().serveDeferred(
+      [](int value, pnm::msg::ActionExecution<std::string, double> execution) {
+          execution.accept();
+          execution.feedback("progress");
+          execution.succeed(value / 2.0);
+      });
+    std::string feedback;
+    std::optional<pnm::msg::ActionResult<double>> result;
+    auto goal = bus.action<^^Actions::alias>().sendGoal(7, OPTIONS, {
+      .on_feedback = [&](const std::string& value) { feedback = value; },
+      .on_result = [&](pnm::msg::ActionResult<double> value) { result.emplace(std::move(value)); }
+    });
+    EXPECT_EQ(provider.poll(), 1UZ);
+    ASSERT_TRUE(goal.poll());
+    EXPECT_EQ(feedback, "progress");
+    ASSERT_TRUE(result && *result);
+    EXPECT_EQ((**result).value, 3.5);
+    EXPECT_THROW((bus.action<int, int, double>("motor/move")), std::invalid_argument);
+}

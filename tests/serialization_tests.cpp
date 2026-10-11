@@ -279,6 +279,24 @@ namespace
     static_assert(!memory::Serializable<ConstAutoMessage>);
 }
 
+TEST(CommonSerializationTests, BoolUsesObjectStorageWithBothBufferOverloads)
+{
+    for (const bool input : {false, true}) {
+        const auto owned = pnm::utils::memory::serialize(input);
+        ASSERT_EQ(owned.size(), sizeof(bool));
+        bool output = !input;
+        ASSERT_TRUE(pnm::utils::memory::deserialize(owned, output));
+        EXPECT_EQ(output, input);
+
+        std::array<std::byte, sizeof(bool)> buffer{};
+        ASSERT_TRUE(pnm::utils::memory::serialize(input, buffer));
+        EXPECT_TRUE(std::ranges::equal(owned, buffer));
+        output = !input;
+        ASSERT_TRUE(pnm::utils::memory::deserialize(buffer, output));
+        EXPECT_EQ(output, input);
+    }
+}
+
 TEST(CommonSerializationTests, RawValueRoundTripsThroughOwnedBuffer)
 {
     constexpr std::uint32_t source{ 0x1234ABCDU };

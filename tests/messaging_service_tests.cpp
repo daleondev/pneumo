@@ -14,6 +14,7 @@
 #include <span>
 #include <stdexcept>
 #include <stop_token>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -74,12 +75,74 @@ namespace
     using pnm::msg::ServiceError;
     using pnm::msg::ServiceResult;
 
+    using namespace pnm::meta::string::literals;
+    struct Services
+    {
+        [[= 42, = "format"_fs]] pnm::msg::Service<int, std::string> format;
+        [[= "other"_fs, = true]] pnm::msg::Service<int, std::string> other;
+        [[= "format"_fs]] pnm::msg::Service<float, std::string> wrongRequest;
+        [[= "format"_fs]] pnm::msg::Service<int, int> wrongResponse;
+        [[= 42]] pnm::msg::Service<int, std::string> demo_io_format;
+        pnm::msg::Service<int, int> plain;
+        [[= "custom_name/kept"_fs]] pnm::msg::Service<int, std::string> overridden_name;
+        Services() = delete;
+    };
+    static_assert(std::same_as<pnm::msg::ServiceMetadata<^^Services::format>::Request, int>);
+    static_assert(std::same_as<pnm::msg::ServiceMetadata<^^Services::format>::Response, std::string>);
+    static_assert(pnm::msg::ServiceMetadata<^^Services::format>::name == "format");
+    static_assert(pnm::msg::ServiceMetadata<^^Services::demo_io_format>::name == "demo/io/format");
+    static_assert(pnm::msg::ServiceMetadata<^^Services::plain>::name == "plain");
+    static_assert(pnm::msg::ServiceMetadata<^^Services::overridden_name>::name == "custom_name/kept");
+
     static_assert(!std::copy_constructible<pnm::msg::Reply<int>>);
     static_assert(!std::copy_constructible<pnm::msg::PendingCall<int>>);
     static_assert(!std::copy_constructible<pnm::msg::ServiceServer<int, int>>);
     static_assert(std::is_nothrow_move_constructible_v<pnm::msg::Reply<int>>);
     static_assert(std::is_nothrow_move_constructible_v<pnm::msg::PendingCall<int>>);
     static_assert(std::is_nothrow_move_constructible_v<pnm::msg::ServiceServer<int, int>>);
+}
+
+TEST(MessagingServiceTests, GeneratedNameAndExplicitOverrideResolveOrdinaryNamedServices)
+{
+    pnm::msg::Bus bus;
+    auto generatedServer{ bus.service<^^Services::demo_io_format>().serve(
+      [](int value) { return std::to_string(value); }) };
+    auto explicitServer{ bus.service<^^Services::overridden_name>().serve(
+      [](int value) { return std::to_string(value); }) };
+    auto generatedCall{ bus.service<int, std::string>("demo/io/format").request(42, 1s) };
+    auto explicitCall{ bus.service<int, std::string>("custom_name/kept").request(43, 1s) };
+    EXPECT_EQ(generatedServer.poll(), 1UZ);
+    EXPECT_EQ(explicitServer.poll(), 1UZ);
+    EXPECT_EQ(generatedCall.get(), "42");
+    EXPECT_EQ(explicitCall.get(), "43");
+    EXPECT_EQ((bus.service<int, std::string>("overridden/name").call(1, 1s).error()), ServiceError::Unavailable);
+}
+
+TEST(MessagingServiceTests, ReflectedFieldResolvesNamedServiceWithoutCatalogInstance)
+{
+    pnm::msg::Bus bus;
+    auto server{ bus.service<^^Services::format>().serve([](int value) { return std::to_string(value); }) };
+    auto call{ bus.service<int, std::string>("format").request(42, 1s) };
+    EXPECT_EQ(server.poll(), 1UZ);
+    EXPECT_EQ(call.get(), "42");
+    EXPECT_THROW(bus.service<^^Services::wrongRequest>(), std::invalid_argument);
+    EXPECT_THROW(bus.service<^^Services::wrongResponse>(), std::invalid_argument);
+
+    server.close();
+    auto namedServer{ bus.service<int, std::string>("format").serveDeferred(
+      [](int value, pnm::msg::Reply<std::string> reply) { reply.respond(std::to_string(value)); }) };
+    auto reflectedCall{ bus.service<^^Services::format>().request(43, 1s) };
+    EXPECT_EQ(namedServer.poll(), 1UZ);
+    EXPECT_EQ(reflectedCall.get(), "43");
+}
+
+TEST(MessagingServiceTests, ReflectedFieldsKeepNamesAndBusesIndependent)
+{
+    pnm::msg::Bus first, second;
+    auto server{ first.service<^^Services::format>().serve([](int value) { return std::to_string(value); }) };
+    EXPECT_EQ(first.service<^^Services::other>().call(1, 1s).error(), ServiceError::Unavailable);
+    EXPECT_EQ(second.service<^^Services::format>().call(2, 1s).error(), ServiceError::Unavailable);
+    EXPECT_EQ(server.poll(), 0UZ);
 }
 
 TEST(MessagingServiceTests, NamedServiceSharesProviderAndRejectsTypeMismatches)

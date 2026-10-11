@@ -190,6 +190,69 @@ returns the same endpoint if all message types match; a type mismatch or empty n
 `std::invalid_argument`. Different buses are independent. A service or action allows one registered
 provider at a time; registering another throws `std::logic_error`.
 
+Reflected catalog fields let callers specify a topic without repeating its name or payload type:
+
+```cpp
+using namespace pnm::meta::string::literals;
+struct Topics
+{
+    pnm::msg::Topic<int> sensors_temperature;
+    [[= "room/humidity"_fs]] pnm::msg::Topic<int> humidity;
+};
+bus.topic<^^Topics::sensors_temperature>().publish(23); // "sensors/temperature"
+```
+
+This accessor is available on native and coroutine buses. No catalog object is constructed.
+`TopicMetadata<^^Topics::sensors_temperature>` exposes the field's `Message` type and its `name`.
+Fields must be nonstatic `pnm::msg::Topic<T>` declarations. The native `Topic<T>` type exposes
+its payload as `Message`. By default, the name is generated at compile time from the field's
+identifier, replacing every underscore with `/`. A field without underscores keeps its name.
+One optional nonempty narrow `FixedString` annotation overrides that name verbatim; its
+underscores are not replaced. Multiple name annotations are rejected. Other annotations are
+ignored, regardless of order. Metadata owns the name with static storage.
+The accessor delegates to `topic<T>(name)`, preserving its per-bus registry and type checks.
+
+Services use the same reflected-field pattern, with the existing `Service<Request, Response>`
+type declaring both payload types:
+
+```cpp
+struct Services
+{
+    pnm::msg::Service<int, int> math_square;
+};
+auto server = bus.service<^^Services::math_square>().serve([](int value) { return value * value; });
+auto call = bus.service<^^Services::math_square>().request(5, std::chrono::seconds{1});
+server.poll();
+auto result = call.get(); // 25
+```
+
+`ServiceMetadata<^^Services::math_square>` exposes `Request`, `Response` and `name` (`math/square`).
+The same name and annotation rules apply as for topics. Neither the catalog nor its fields
+are instantiated; calling the accessor obtains the local bus handle without registering a
+provider or submitting a request. Both native and coroutine buses support this accessor,
+delegating to their existing `service<Request, Response>(name)` API. The native `Service`
+type also exposes its `Request` and `Response` aliases.
+
+Actions support the same reflected access on native and coroutine buses:
+
+```cpp
+struct Actions
+{
+    pnm::msg::Action<MoveGoal, MoveFeedback, MoveResult> motor_move;
+    [[= "robot/home"_fs]] pnm::msg::Action<HomeGoal, HomeFeedback, HomeResult> home;
+};
+
+auto move = bus.action<^^Actions::motor_move>(); // "motor/move"
+```
+
+`ActionMetadata<^^Actions::motor_move>` exposes `Goal`, `Feedback`, `Result`
+and `name`. This resolves the same local action as the explicit typed/name
+accessor; provider ownership annotations and transport routing belong to the
+application. Reflection does not submit or execute a goal.
+
+Renaming a field with an inferred name changes the endpoint name. Use an explicit name
+annotation when the endpoint name must remain stable through member renames.
+
 Payloads must be unqualified value types satisfying `pnm::utils::memory::Serializable`. Messages are
 serialized into owned buffers and decoded at dispatch, so the sender may reuse its input after
 submission. Subscribers need default-constructible payloads. Services and actions require all payloads

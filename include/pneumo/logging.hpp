@@ -404,7 +404,7 @@ namespace pnm::log
         consteval auto level_from_string() -> Level
         {
             static_assert(Lvl.size() > 0, "Log level string cannot be empty");
-            std::string str(Lvl);
+            std::string str(Lvl.begin(), Lvl.end());
             std::ranges::transform(str | std::views::take(1), str.begin(), [](char c) {
                 return (c >= 'a' && c <= 'z') ? (c - 'a' + 'A') : c;
             });

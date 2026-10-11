@@ -122,6 +122,71 @@ namespace
     static_assert(std::is_nothrow_move_constructible_v<pnm::msg::Subscription<int>>);
 }
 
+namespace
+{
+    using namespace pnm::meta::string::literals;
+    struct TopicCatalog
+    {
+        [[= 42, = "sensors/temperature"_fs]] pnm::msg::Topic<int> temperature;
+        [[= "sensors/humidity"_fs, = true]] pnm::msg::Topic<int> humidity;
+        [[= "sensors/temperature"_fs]] pnm::msg::Topic<float> incompatible;
+        [[= 42]] pnm::msg::Topic<int> demo_io_state;
+        pnm::msg::Topic<int> plain;
+        [[= "custom_name/kept"_fs]] pnm::msg::Topic<int> overridden_name;
+        TopicCatalog() = delete;
+    };
+
+    static_assert(std::same_as<pnm::msg::TopicMetadata<^^TopicCatalog::temperature>::Message, int>);
+    static_assert(pnm::msg::TopicMetadata<^^TopicCatalog::temperature>::name == "sensors/temperature");
+    static_assert(pnm::msg::TopicMetadata<^^TopicCatalog::demo_io_state>::name == "demo/io/state");
+    static_assert(pnm::msg::TopicMetadata<^^TopicCatalog::plain>::name == "plain");
+    static_assert(pnm::msg::TopicMetadata<^^TopicCatalog::overridden_name>::name == "custom_name/kept");
+}
+
+TEST(MessagingTopicTests, GeneratedNameAndExplicitOverrideResolveOrdinaryNamedTopics)
+{
+    pnm::msg::Bus bus;
+    int generated{}, explicitName{};
+    auto generatedSubscription{ bus.topic<int>("demo/io/state").subscribe([&](int value) { generated = value; }) };
+    auto explicitSubscription{ bus.topic<int>("custom_name/kept").subscribe([&](int value) { explicitName = value; }) };
+    auto unusedName{ bus.topic<int>("overridden/name").subscribe([](int) { FAIL() << "Override was ignored"; }) };
+    bus.topic<^^TopicCatalog::demo_io_state>().publish(42);
+    bus.topic<^^TopicCatalog::overridden_name>().publish(43);
+    EXPECT_EQ(generatedSubscription.poll(), 1UZ);
+    EXPECT_EQ(explicitSubscription.poll(), 1UZ);
+    EXPECT_EQ(unusedName.poll(), 0UZ);
+    EXPECT_EQ(generated, 42);
+    EXPECT_EQ(explicitName, 43);
+}
+
+TEST(MessagingTopicTests, ReflectedFieldResolvesNamedTopicWithoutCatalogInstance)
+{
+    pnm::msg::Bus bus;
+    auto publisher{ bus.topic<^^TopicCatalog::temperature>() };
+    int received{};
+    auto subscription{ bus.topic<int>("sensors/temperature").subscribe([&](int value) { received = value; }) };
+
+    publisher.publish(23);
+    EXPECT_EQ(subscription.poll(), 1UZ);
+    EXPECT_EQ(received, 23);
+    EXPECT_THROW(bus.topic<^^TopicCatalog::incompatible>(), std::invalid_argument);
+}
+
+TEST(MessagingTopicTests, ReflectedFieldsKeepNamesAndBusesIndependent)
+{
+    pnm::msg::Bus first, second;
+    int calls{};
+    auto subscription{ first.topic<^^TopicCatalog::temperature>().subscribe([&](int) { ++calls; }) };
+
+    first.topic<^^TopicCatalog::humidity>().publish(1);
+    second.topic<^^TopicCatalog::temperature>().publish(2);
+    EXPECT_EQ(subscription.poll(), 0UZ);
+    EXPECT_EQ(calls, 0);
+    first.topic<int>("sensors/temperature").publish(3);
+    EXPECT_EQ(subscription.poll(), 1UZ);
+    EXPECT_EQ(calls, 1);
+}
+
 TEST(MessagingTopicTests, NameResolvesSharedTopicAndOwnsItsString)
 {
     pnm::msg::Bus bus;

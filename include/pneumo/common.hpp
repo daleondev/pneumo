@@ -167,7 +167,7 @@ namespace pnm
                     detail::SerializationAdapterFor<T>::serialize(src, dest_bytes);
                 }
                 else {
-                    auto src_bytes{ std::as_bytes(std::span{ &src, 1 }) };
+                    auto src_bytes{ std::as_bytes(std::span(&src, 1)) };
                     if (dest_bytes.size() < src_bytes.size()) {
                         return false;
                     }
@@ -186,7 +186,7 @@ namespace pnm
                 }
                 else {
                     std::vector<std::byte> buffer{ sizeof(T) };
-                    auto src_bytes{ std::as_bytes(std::span{ &src, 1 }) };
+                    auto src_bytes{ std::as_bytes(std::span(&src, 1)) };
                     std::ranges::copy(src_bytes, buffer.begin());
                     return buffer;
                 }
@@ -199,7 +199,7 @@ namespace pnm
                     detail::SerializationAdapterFor<T>::deserialize(src_bytes, dest);
                 }
                 else {
-                    auto dest_bytes{ std::as_writable_bytes(std::span{ &dest, 1 }) };
+                    auto dest_bytes{ std::as_writable_bytes(std::span(&dest, 1)) };
                     if (dest_bytes.size() != src_bytes.size()) {
                         return false;
                     }
