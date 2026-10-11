@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common.hpp"
+#include "meta.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -31,6 +32,108 @@ namespace pnm::msg
 {
     class Bus;
 
+    template<utils::memory::Serializable T>
+    class Topic;
+
+    template<utils::memory::Serializable Request, utils::memory::Serializable Response>
+    class Service;
+
+    template<utils::memory::Serializable Goal, utils::memory::Serializable Feedback,
+             utils::memory::Serializable Result>
+    class Action;
+
+    namespace util
+    {
+        // Shared name resolution for reflected topic, service and action fields.
+        // Other annotations belong to the application and are ignored here.
+        template<std::meta::info Member>
+        struct EndpointName
+        {
+            static_assert(std::meta::is_nonstatic_data_member(Member),
+                          "A reflected endpoint must be a nonstatic catalog field");
+
+          private:
+            static constexpr auto NAME_ANNOTATIONS{ std::define_static_array([] consteval {
+                std::vector<std::meta::info> names;
+                // NOLINTNEXTLINE(bugprone-reserved-identifier,readability-identifier-naming)
+                template for (constexpr auto annotation :
+                              std::define_static_array(std::meta::annotations_of(Member)))
+                {
+                    using Annotation = std::remove_cvref_t<typename[:std::meta::type_of(annotation):]>;
+                    if constexpr (meta::string::FixedStringLike<Annotation>)
+                        names.push_back(annotation);
+                }
+                return names;
+            }()) };
+            static_assert(NAME_ANNOTATIONS.size() <= 1,
+                          "An endpoint field accepts at most one FixedString name annotation");
+
+          public:
+            // Keep the documented metadata API spelling.
+            // NOLINTNEXTLINE(readability-identifier-naming)
+            static constexpr auto name{ [] consteval {
+                if constexpr (NAME_ANNOTATIONS.empty()) {
+                    constexpr auto identifier{ std::meta::identifier_of(Member) };
+                    meta::string::FixedString<identifier.size()> generated{ identifier.data() };
+                    std::ranges::replace(generated.data, '_', '/');
+                    return generated;
+                } else {
+                    return std::meta::extract<typename[:std::meta::type_of(NAME_ANNOTATIONS[0]):]>(
+                      NAME_ANNOTATIONS[0]);
+                }
+            }() };
+            static_assert(std::convertible_to<decltype(name), std::string_view>,
+                          "An endpoint name must use narrow characters");
+            static_assert(!name.empty(), "An endpoint requires a nonempty name");
+        };
+    }
+
+    // Catalogs provide metadata only; no catalog instance or endpoint is created.
+    template<std::meta::info Member>
+    struct TopicMetadata : util::EndpointName<Member>
+    {
+      private:
+        using Endpoint = std::remove_cvref_t<typename[:std::meta::type_of(Member):]>;
+
+      public:
+        static_assert(requires { typename Endpoint::Message; },
+                      "A topic field must have type pnm::msg::Topic<Message>");
+        using Message = typename Endpoint::Message;
+        static_assert(std::same_as<Endpoint, Topic<Message>>,
+                      "A topic field must have type pnm::msg::Topic<Message>");
+    };
+
+    template<std::meta::info Member>
+    struct ServiceMetadata : util::EndpointName<Member>
+    {
+      private:
+        using Endpoint = std::remove_cvref_t<typename[:std::meta::type_of(Member):]>;
+
+      public:
+        static_assert(requires { typename Endpoint::Request; typename Endpoint::Response; },
+                      "A service field must have type pnm::msg::Service<Request, Response>");
+        using Request = typename Endpoint::Request;
+        using Response = typename Endpoint::Response;
+        static_assert(std::same_as<Endpoint, Service<Request, Response>>,
+                      "A service field must have type pnm::msg::Service<Request, Response>");
+    };
+
+    template<std::meta::info Member>
+    struct ActionMetadata : util::EndpointName<Member>
+    {
+      private:
+        using Endpoint = std::remove_cvref_t<typename[:std::meta::type_of(Member):]>;
+
+      public:
+        static_assert(requires { typename Endpoint::Goal; typename Endpoint::Feedback; typename Endpoint::Result; },
+                      "An action field must have type pnm::msg::Action<Goal, Feedback, Result>");
+        using Goal = typename Endpoint::Goal;
+        using Feedback = typename Endpoint::Feedback;
+        using Result = typename Endpoint::Result;
+        static_assert(std::same_as<Endpoint, Action<Goal, Feedback, Result>>,
+                      "An action field must have type pnm::msg::Action<Goal, Feedback, Result>");
+    };
+
     enum class OverflowPolicy : std::uint8_t
     {
         DropOldest,
@@ -53,9 +156,6 @@ namespace pnm::msg
         size_t queued{};
         std::uint64_t dropped{};
     };
-
-    template<utils::memory::Serializable T>
-    class Topic;
 
     enum class ServiceError : std::uint8_t
     {
@@ -85,9 +185,6 @@ namespace pnm::msg
 
     template<utils::memory::Serializable Request, utils::memory::Serializable Response>
     class ServiceServer;
-
-    template<utils::memory::Serializable Request, utils::memory::Serializable Response>
-    class Service;
 
     namespace detail
     {
@@ -481,6 +578,8 @@ namespace pnm::msg
                       "Topic messages must be unqualified value types");
 
       public:
+        using Message = T;
+
         // Configuration is shared by all handles to this topic. Equality compares the current
         // value with the decoded last publication, avoiding comparisons of object padding.
         auto setPublishOnlyOnChange(bool enabled, detail::MessageEqual<T> equal = {}) const -> void
@@ -1083,9 +1182,14 @@ namespace pnm::msg
         std::shared_ptr<Provider> m_provider;
     };
 
-    template<utils::memory::Serializable Request, utils::memory::Serializable Response>
+    template<utils::memory::Serializable RequestType, utils::memory::Serializable ResponseType>
     class Service
     {
+      public:
+        using Request = RequestType;
+        using Response = ResponseType;
+
+      private:
         friend struct detail::MessagingAccess;
         static_assert(std::same_as<Request, std::remove_cvref_t<Request>> &&
                         std::same_as<Response, std::remove_cvref_t<Response>>,
@@ -2029,11 +2133,17 @@ namespace pnm::msg
         std::shared_ptr<Provider> m_provider;
     };
 
-    template<utils::memory::Serializable Goal,
-             utils::memory::Serializable Feedback,
-             utils::memory::Serializable Result>
+    template<utils::memory::Serializable G,
+             utils::memory::Serializable F,
+             utils::memory::Serializable R>
     class Action
     {
+      public:
+        using Goal = G;
+        using Feedback = F;
+        using Result = R;
+
+      private:
         friend struct detail::MessagingAccess;
         static_assert(std::same_as<Goal, std::remove_cvref_t<Goal>> &&
                         std::same_as<Feedback, std::remove_cvref_t<Feedback>> &&
@@ -2286,6 +2396,23 @@ namespace pnm::msg
             return Action<Goal, Feedback, Result>{ std::move(state) };
         }
 
+        template<std::meta::info Member>
+        auto service() -> Service<typename ServiceMetadata<Member>::Request,
+                                  typename ServiceMetadata<Member>::Response>
+        {
+            using Metadata = ServiceMetadata<Member>;
+            return service<typename Metadata::Request, typename Metadata::Response>(Metadata::name);
+        }
+
+        template<std::meta::info Member>
+        auto action() -> Action<typename ActionMetadata<Member>::Goal,
+                                typename ActionMetadata<Member>::Feedback,
+                                typename ActionMetadata<Member>::Result>
+        {
+            using Metadata = ActionMetadata<Member>;
+            return action<typename Metadata::Goal, typename Metadata::Feedback, typename Metadata::Result>(Metadata::name);
+        }
+
         template<utils::memory::Serializable Request, utils::memory::Serializable Response>
         auto service(std::string_view name) -> Service<Request, Response>
         {
@@ -2304,6 +2431,13 @@ namespace pnm::msg
             auto state{ std::make_shared<State>() };
             m_services.emplace(std::move(key), Entry{ std::type_index{ typeid(State) }, state });
             return Service<Request, Response>{ std::move(state) };
+        }
+
+        template<std::meta::info Member>
+        auto topic() -> Topic<typename TopicMetadata<Member>::Message>
+        {
+            using Metadata = TopicMetadata<Member>;
+            return topic<typename Metadata::Message>(Metadata::name);
         }
 
         template<utils::memory::Serializable T>

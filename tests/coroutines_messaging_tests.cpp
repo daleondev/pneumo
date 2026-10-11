@@ -9,6 +9,7 @@
 #include <chrono>
 #include <latch>
 #include <limits>
+#include <string>
 #include <thread>
 
 namespace coroutines_messaging_tests
@@ -141,6 +142,29 @@ namespace
     }
 }
 
+TEST(CoroutinesMessagingTopics, ReflectedFieldUsesNativeTopicAndChecksClosure)
+{
+    struct Topics
+    {
+        pnm::msg::Topic<int> demo_io_value;
+    };
+    Environment env;
+    auto topic{ env.bus.topic<^^Topics::demo_io_value>() };
+    auto subscription{ topic.subscribe() };
+    auto next{ subscription.next() };
+    env.start(next);
+    env.native.topic<^^Topics::demo_io_value>().publish(42);
+    EXPECT_EQ(env.finish(next), 42);
+
+    int received{};
+    auto nativeSubscription{ env.native.topic<int>("demo/io/value").subscribe([&](int value) { received = value; }) };
+    topic.publish(43);
+    EXPECT_EQ(nativeSubscription.poll(), 1UZ);
+    EXPECT_EQ(received, 43);
+    env.bus.close();
+    EXPECT_THROW(env.bus.topic<^^Topics::demo_io_value>(), std::logic_error);
+}
+
 TEST(CoroutinesMessagingTopics, NativeInteroperabilityIndependentQueuesAndLatest)
 {
     Environment env;
@@ -203,6 +227,33 @@ TEST(CoroutinesMessagingTopics, DestroyedReaderDoesNotConsumeMessage)
     auto next{ sub.next() };
     env.start(next);
     EXPECT_EQ(env.finish(next), 42);
+}
+
+TEST(CoroutinesMessagingServices, ReflectedFieldUsesNativeServiceInBothDirectionsAndChecksClosure)
+{
+    struct Services
+    {
+        [[= 42]] pnm::msg::Service<int, std::string> demo_io_format;
+    };
+    Environment env;
+    auto service{ env.bus.service<^^Services::demo_io_format>() };
+    {
+        auto server{ env.native.service<int, std::string>("demo/io/format").serve(
+          [](int value) { return std::to_string(value); }) };
+        auto call{ service.request(42, 1s) };
+        env.start(call);
+        EXPECT_EQ(server.poll(), 1UZ);
+        EXPECT_EQ(env.finish(call), "42");
+    }
+    auto server{ service.serve([](int value, std::stop_token) -> Task<std::string> {
+        co_return std::to_string(value);
+    }) };
+    auto call{ env.native.service<^^Services::demo_io_format>().request(43, 1s) };
+    env.context.poll();
+    ASSERT_TRUE(call.ready());
+    EXPECT_EQ(call.get(), "43");
+    env.bus.close();
+    EXPECT_THROW(env.bus.service<^^Services::demo_io_format>(), std::logic_error);
 }
 
 TEST(CoroutinesMessagingServices, SameContextOwnsProviderAndReturnsResponse)
@@ -1335,6 +1386,29 @@ TEST(CoroutinesMessagingActions, NativeTypedRejectionPreservesTheReasonWithoutAc
     EXPECT_EQ(completion->status, ActionStatus::Rejected);
     EXPECT_EQ(completion->value, 42);
     EXPECT_EQ(accepted, 0);
+}
+
+TEST(CoroutinesMessagingActions, ReflectedAccessorUsesTheSameNativeAction)
+{
+    using namespace pnm::meta::string::literals;
+    struct Actions
+    {
+        pnm::msg::Action<int, int, int> motor_move;
+        [[= "motor/move"_fs]] pnm::msg::Action<int, int, int> alias;
+    };
+    Environment env{};
+    auto provider{ env.native.action<^^Actions::motor_move>().serveDeferred(
+      [](int value, pnm::msg::ActionExecution<int, int> execution) {
+          execution.accept(); execution.succeed(value * 2);
+      }) };
+    auto goal{ env.bus.action<^^Actions::alias>().sendGoal(21, {1s}) };
+    auto result{ goal.result() };
+    env.start(result);
+    provider.poll();
+    const auto completion{ env.finish(result) };
+    ASSERT_TRUE(completion);
+    EXPECT_EQ(completion->status, ActionStatus::Succeeded);
+    EXPECT_EQ(completion->value, 42);
 }
 
 // NOLINTEND(modernize-use-designated-initializers)

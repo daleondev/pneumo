@@ -44,6 +44,10 @@ The common module contains small reusable helpers that support the higher-level 
 *   Debug assertions and portable structure-packing macros.
 
 `memory::serialize`, `deserialize`, and `copy` use `SerializationAdapter<T>` when one is available.
+The public `memory::HasSerializationAdapter<T>` concept checks the complete adapter contract,
+ignoring cv/ref qualifiers. The built-in `SerializationAdapter<std::string>` encodes only the
+string's content bytes, preserving embedded NULs without adding a terminator or length prefix.
+Pass the exact string byte span to `deserialize`; enclosing messages supply any necessary length.
 An adapter provides `bufferSize(const T&)`, `serialize(const T&, std::span<std::byte>)`, and
 `deserialize(std::span<const std::byte>, T&)`; the latter two return `void` and can throw.
 For a non-trivially-copyable class, Pneumo automatically supplies an adapter when reflection confirms
@@ -185,6 +189,69 @@ Each `Bus` has separate topic, service, and action name registries. Reusing a na
 returns the same endpoint if all message types match; a type mismatch or empty name throws
 `std::invalid_argument`. Different buses are independent. A service or action allows one registered
 provider at a time; registering another throws `std::logic_error`.
+
+Reflected catalog fields let callers specify a topic without repeating its name or payload type:
+
+```cpp
+using namespace pnm::meta::string::literals;
+struct Topics
+{
+    pnm::msg::Topic<int> sensors_temperature;
+    [[= "room/humidity"_fs]] pnm::msg::Topic<int> humidity;
+};
+bus.topic<^^Topics::sensors_temperature>().publish(23); // "sensors/temperature"
+```
+
+This accessor is available on native and coroutine buses. No catalog object is constructed.
+`TopicMetadata<^^Topics::sensors_temperature>` exposes the field's `Message` type and its `name`.
+Fields must be nonstatic `pnm::msg::Topic<T>` declarations. The native `Topic<T>` type exposes
+its payload as `Message`. By default, the name is generated at compile time from the field's
+identifier, replacing every underscore with `/`. A field without underscores keeps its name.
+One optional nonempty narrow `FixedString` annotation overrides that name verbatim; its
+underscores are not replaced. Multiple name annotations are rejected. Other annotations are
+ignored, regardless of order. Metadata owns the name with static storage.
+The accessor delegates to `topic<T>(name)`, preserving its per-bus registry and type checks.
+
+Services use the same reflected-field pattern, with the existing `Service<Request, Response>`
+type declaring both payload types:
+
+```cpp
+struct Services
+{
+    pnm::msg::Service<int, int> math_square;
+};
+auto server = bus.service<^^Services::math_square>().serve([](int value) { return value * value; });
+auto call = bus.service<^^Services::math_square>().request(5, std::chrono::seconds{1});
+server.poll();
+auto result = call.get(); // 25
+```
+
+`ServiceMetadata<^^Services::math_square>` exposes `Request`, `Response` and `name` (`math/square`).
+The same name and annotation rules apply as for topics. Neither the catalog nor its fields
+are instantiated; calling the accessor obtains the local bus handle without registering a
+provider or submitting a request. Both native and coroutine buses support this accessor,
+delegating to their existing `service<Request, Response>(name)` API. The native `Service`
+type also exposes its `Request` and `Response` aliases.
+
+Actions support the same reflected access on native and coroutine buses:
+
+```cpp
+struct Actions
+{
+    pnm::msg::Action<MoveGoal, MoveFeedback, MoveResult> motor_move;
+    [[= "robot/home"_fs]] pnm::msg::Action<HomeGoal, HomeFeedback, HomeResult> home;
+};
+
+auto move = bus.action<^^Actions::motor_move>(); // "motor/move"
+```
+
+`ActionMetadata<^^Actions::motor_move>` exposes `Goal`, `Feedback`, `Result`
+and `name`. This resolves the same local action as the explicit typed/name
+accessor; provider ownership annotations and transport routing belong to the
+application. Reflection does not submit or execute a goal.
+
+Renaming a field with an inferred name changes the endpoint name. Use an explicit name
+annotation when the endpoint name must remain stable through member renames.
 
 Payloads must be unqualified value types satisfying `pnm::utils::memory::Serializable`. Messages are
 serialized into owned buffers and decoded at dispatch, so the sender may reuse its input after
@@ -548,6 +615,7 @@ Link `pneumo::coroutines` and include `<pneumo/coroutines.hpp>` to use the `pnm:
 
 *   `Task<T>` and `Task<void>` are lazy, move-only coroutine results with exception propagation.
 *   `Context` runs scheduled coroutine handles; `co_spawn(context, callable)` starts a task whose callable accepts the executor by reference.
+*   `co_spawn(context, std::move(task))` schedules an already-created, unstarted `Task<void>` and transfers ownership of its coroutine frame. A temporary task can be passed directly.
 *   `runAsync<T>(callable)` runs work on a detached thread and delivers its result or exception to the awaiting task.
 *   `sleep(duration)` uses a worker thread for positive durations; nonpositive durations complete immediately. Both sleep overloads round positive fractional clock ticks up, saturate oversized deadlines, and reject NaN durations.
 *   `sleep(context, duration, stop_token)` uses a context timer and returns `false` when cancelled. Oversized positive durations saturate to the clock's maximum deadline; NaN durations throw `std::invalid_argument`.

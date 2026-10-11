@@ -200,7 +200,7 @@ target_sources(
 target_link_libraries(
     pneumo_messaging
     INTERFACE
-    pneumo::common
+    pneumo::meta
 )
 
 target_compile_features(
