@@ -9,6 +9,7 @@
 #include <limits>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace serialization_tests
@@ -58,6 +59,12 @@ namespace serialization_tests
         AutoMessage message;
         std::array<Payload, 2> additional;
         Payload values[2];
+    };
+
+    struct NamedMessage
+    {
+        std::string topic;
+        std::uint32_t value;
     };
 
     struct NonTrivialValue
@@ -244,6 +251,14 @@ namespace
 
     static_assert(memory::Serializable<Payload>);
     static_assert(memory::Serializable<const Payload>);
+    static_assert(memory::HasSerializationAdapter<Payload>);
+    static_assert(memory::HasSerializationAdapter<const Payload&>);
+    static_assert(memory::HasSerializationAdapter<std::string>);
+    static_assert(memory::HasSerializationAdapter<const std::string&>);
+    static_assert(memory::Serializable<std::string>);
+    static_assert(!memory::HasSerializationAdapter<std::uint32_t>);
+    static_assert(!memory::HasSerializationAdapter<IncompleteAdapter>);
+    static_assert(!memory::HasSerializationAdapter<InvalidAdapter>);
     static_assert(memory::Serializable<EncodedValue>);
     static_assert(!memory::Serializable<IncompleteAdapter>);
     static_assert(!memory::Serializable<InvalidAdapter>);
@@ -252,13 +267,13 @@ namespace
     static_assert(!CanCopy<std::uint32_t, std::vector<int>>);
     static_assert(!CanCopy<std::vector<int>, std::uint32_t>);
     static_assert(!std::is_trivially_copyable_v<AutoMessage>);
-    static_assert(memory::detail::HasSerializationAdapter<AutoMessage>);
-    static_assert(memory::detail::HasSerializationAdapter<NonTrivialValue>);
-    static_assert(memory::detail::HasSerializationAdapter<NestedAutoMessage>);
+    static_assert(memory::HasSerializationAdapter<AutoMessage>);
+    static_assert(memory::HasSerializationAdapter<NonTrivialValue>);
+    static_assert(memory::HasSerializationAdapter<NestedAutoMessage>);
     static_assert(memory::Serializable<AutoMessage>);
     static_assert(memory::Serializable<const AutoMessage>);
     static_assert(memory::Serializable<PrivateAutoMessage>);
-    static_assert(!memory::detail::HasSerializationAdapter<TrivialEnvelope>);
+    static_assert(!memory::HasSerializationAdapter<TrivialEnvelope>);
     static_assert(!memory::Serializable<UnsafeAutoMessage>);
     static_assert(!memory::Serializable<ReferenceAutoMessage>);
     static_assert(!memory::Serializable<ConstAutoMessage>);
@@ -276,6 +291,62 @@ TEST(CommonSerializationTests, RawValueRoundTripsThroughOwnedBuffer)
     std::uint32_t restored{};
     ASSERT_TRUE(memory::deserialize(bytes, restored));
     EXPECT_EQ(restored, source);
+}
+
+TEST(CommonSerializationTests, StringsRoundTripAsContentBytes)
+{
+    for (const auto& source : { std::string{},
+                                std::string{ "motor/state" },
+                                std::string{ "a\0b\xFF", 4 },
+                                std::string(300, 'x') }) {
+        const auto bytes = memory::serialize(source);
+        EXPECT_EQ(bytes.size(), source.size());
+        EXPECT_TRUE(std::ranges::equal(bytes, std::as_bytes(std::span{ source.data(), source.size() })));
+
+        std::string restored{ "Previous contents must be replaced" };
+        ASSERT_TRUE(memory::deserialize(bytes, restored));
+        EXPECT_EQ(restored, source);
+    }
+}
+
+TEST(CommonSerializationTests, StringSerializationRespectsDestinationBounds)
+{
+    const std::string source{ "abc" };
+    std::array<std::byte, 5> bytes;
+    bytes.fill(std::byte{ 0xAA });
+    const auto original = bytes;
+    auto tooSmall = std::span{ bytes }.first(2);
+
+    EXPECT_FALSE(memory::serialize(source, tooSmall));
+    EXPECT_THROW(memory::SerializationAdapter<std::string>::serialize(source, tooSmall), std::length_error);
+    EXPECT_EQ(bytes, original);
+
+    for (const auto size : { source.size(), bytes.size() }) {
+        ASSERT_TRUE(memory::serialize(source, std::span{ bytes }.first(size)));
+        EXPECT_TRUE(std::ranges::equal(std::span{ bytes }.first(source.size()),
+                                       std::as_bytes(std::span{ source.data(), source.size() })));
+        EXPECT_EQ(bytes[source.size()], std::byte{ 0xAA });
+        EXPECT_EQ(bytes.back(), std::byte{ 0xAA });
+    }
+}
+
+TEST(CommonSerializationTests, EmptyStringSupportsEmptySpans)
+{
+    EXPECT_TRUE(memory::serialize(std::string{}, {}));
+    std::string restored{ "old" };
+    ASSERT_TRUE(memory::deserialize({}, restored));
+    EXPECT_TRUE(restored.empty());
+}
+
+TEST(CommonSerializationTests, GeneratedAdapterSupportsStringMembers)
+{
+    for (const auto& name : { std::string{}, std::string{ "motor/state" }, std::string{ "a\0b", 3 } }) {
+        const NamedMessage source{ name, 42 };
+        NamedMessage restored{ "old", 99 };
+        ASSERT_TRUE(memory::copy(restored, source));
+        EXPECT_EQ(restored.topic, source.topic);
+        EXPECT_EQ(restored.value, source.value);
+    }
 }
 
 TEST(CommonSerializationTests, RawSerializationSupportsExactAndLargerBuffers)
@@ -521,7 +592,7 @@ TEST(CommonSerializationTests, GeneratedAdapterSupportsEmptyNonTrivialClass)
     Empty source;
     Empty destination;
 
-    static_assert(memory::detail::HasSerializationAdapter<Empty>);
+    static_assert(memory::HasSerializationAdapter<Empty>);
     EXPECT_TRUE(memory::serialize(source).empty());
     EXPECT_TRUE(memory::serialize(source, {}));
     EXPECT_TRUE(memory::deserialize({}, destination));

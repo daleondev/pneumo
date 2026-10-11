@@ -146,6 +146,67 @@ TEST(CoroutinesContextTests, SpawnSchedulesMoveOnlyCallablesAndDrainsReadyQueueO
     EXPECT_EQ(order, (std::vector<int>{ 1, 2 }));
 }
 
+TEST(CoroutinesContextTests, SpawnTakesOwnershipOfAnUnstartedTask)
+{
+    pnm::coro::Context context;
+    auto value{ std::make_shared<int>(42) };
+    auto task{ hold(value) };
+
+    pnm::coro::co_spawn(context, std::move(task));
+
+    EXPECT_FALSE(task.getHandle());
+    EXPECT_EQ(value.use_count(), 2);
+    EXPECT_EQ(context.poll(), 1);
+    EXPECT_EQ(value.use_count(), 1);
+}
+
+TEST(CoroutinesContextTests, SpawnedTaskResumesOnItsContextAfterSuspension)
+{
+    pnm::coro::Context context;
+    pnm::coro::Channel<int> channel;
+    int result{};
+    std::thread::id resumed_on;
+    auto work = [&]() -> pnm::coro::Task<void> {
+        result = (co_await channel.next()).value();
+        resumed_on = std::this_thread::get_id();
+    };
+
+    pnm::coro::co_spawn(context, work());
+    context.poll();
+    EXPECT_EQ(result, 0);
+
+    std::jthread producer{ [&] { channel.push(42); } };
+    producer.join();
+    EXPECT_EQ(result, 0);
+
+    context.poll();
+    EXPECT_EQ(result, 42);
+    EXPECT_EQ(resumed_on, std::this_thread::get_id());
+}
+
+TEST(CoroutinesContextTests, AbandoningASpawnedTaskReleasesItsFrame)
+{
+    auto value{ std::make_shared<int>(42) };
+    {
+        pnm::coro::Context context;
+        pnm::coro::co_spawn(context, hold(value));
+        EXPECT_EQ(value.use_count(), 2);
+    }
+    EXPECT_EQ(value.use_count(), 1);
+}
+
+TEST(CoroutinesContextTests, RejectingASpawnedTaskReleasesItsFrame)
+{
+    pnm::coro::Context context;
+    context.stop();
+    auto value{ std::make_shared<int>(42) };
+    auto task{ hold(value) };
+
+    EXPECT_THROW(pnm::coro::co_spawn(context, std::move(task)), std::runtime_error);
+    EXPECT_FALSE(task.getHandle());
+    EXPECT_EQ(value.use_count(), 1);
+}
+
 TEST(CoroutinesContextTests, StopWakesIdleRunner)
 {
     pnm::coro::Context context;

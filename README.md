@@ -44,6 +44,10 @@ The common module contains small reusable helpers that support the higher-level 
 *   Debug assertions and portable structure-packing macros.
 
 `memory::serialize`, `deserialize`, and `copy` use `SerializationAdapter<T>` when one is available.
+The public `memory::HasSerializationAdapter<T>` concept checks the complete adapter contract,
+ignoring cv/ref qualifiers. The built-in `SerializationAdapter<std::string>` encodes only the
+string's content bytes, preserving embedded NULs without adding a terminator or length prefix.
+Pass the exact string byte span to `deserialize`; enclosing messages supply any necessary length.
 An adapter provides `bufferSize(const T&)`, `serialize(const T&, std::span<std::byte>)`, and
 `deserialize(std::span<const std::byte>, T&)`; the latter two return `void` and can throw.
 For a non-trivially-copyable class, Pneumo automatically supplies an adapter when reflection confirms
@@ -548,6 +552,7 @@ Link `pneumo::coroutines` and include `<pneumo/coroutines.hpp>` to use the `pnm:
 
 *   `Task<T>` and `Task<void>` are lazy, move-only coroutine results with exception propagation.
 *   `Context` runs scheduled coroutine handles; `co_spawn(context, callable)` starts a task whose callable accepts the executor by reference.
+*   `co_spawn(context, std::move(task))` schedules an already-created, unstarted `Task<void>` and transfers ownership of its coroutine frame. A temporary task can be passed directly.
 *   `runAsync<T>(callable)` runs work on a detached thread and delivers its result or exception to the awaiting task.
 *   `sleep(duration)` uses a worker thread for positive durations; nonpositive durations complete immediately. Both sleep overloads round positive fractional clock ticks up, saturate oversized deadlines, and reject NaN durations.
 *   `sleep(context, duration, stop_token)` uses a context timer and returns `false` when cancelled. Oversized positive durations saturate to the clock's maximum deadline; NaN durations throw `std::invalid_argument`.

@@ -1108,6 +1108,15 @@ namespace pnm::coro
         executor.scheduleOwned(std::move(task));
     }
 
+    // Transfer ownership of an unstarted task to the executor. Rejected or
+    // abandoned launches release its frame, just like the callable overload.
+    // Exceptions escaping the task retain the detached-task termination policy.
+    template<Executor Ex>
+    auto co_spawn(Ex& executor, Task<void> task) -> void
+    {
+        co_spawn(executor, [work{ std::move(task) }](Ex&) mutable { return std::move(work); });
+    }
+
     // Coroutine protocol calls implicitly access static promise hooks through an instance.
     // NOLINTBEGIN(readability-static-accessed-through-instance)
     namespace detail::msg
