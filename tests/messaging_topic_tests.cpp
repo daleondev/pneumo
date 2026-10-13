@@ -912,6 +912,28 @@ TEST(MessagingTopicTests, BoundedSubscriptionsKeepTheirSelectedHistory)
     EXPECT_EQ(b.statistics().dropped, 8UZ);
 }
 
+TEST(MessagingTopicTests, LimitedDispatchPreservesFifoAndBoundsReentrantPublications)
+{
+    pnm::msg::Bus bus{};
+    auto topic{ bus.topic<int>("dispatch-budget") };
+    std::vector<int> received;
+    auto subscription = topic.subscribe([&](int value) {
+        received.push_back(value);
+        if (value == 1) { topic.publish(4); }
+    }, { .capacity = 4 });
+    for (int value : { 1, 2, 3 }) { topic.publish(value); }
+    EXPECT_EQ(subscription.pollSome(0), 0UZ);
+    EXPECT_EQ(subscription.statistics().queued, 3UZ);
+    EXPECT_EQ(subscription.pollSome(1), 1UZ);
+    EXPECT_EQ(received, (std::vector<int>{ 1 }));
+    EXPECT_EQ(subscription.statistics().queued, 3UZ);
+    EXPECT_EQ(subscription.pollSome(2), 2UZ);
+    EXPECT_EQ(received, (std::vector<int>{ 1, 2, 3 }));
+    EXPECT_EQ(subscription.poll(), 1UZ);
+    EXPECT_EQ(received.back(), 4);
+    EXPECT_EQ(subscription.statistics().dropped, 0UZ);
+}
+
 TEST(MessagingTopicTests, PublicReadinessRegistrationIsInitialAndDisconnectable)
 {
     pnm::msg::Bus bus{};
