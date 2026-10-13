@@ -494,6 +494,12 @@ namespace pnm::msg
 
         auto poll() -> size_t { return poll(std::chrono::milliseconds::zero()); }
 
+        // Bound one dispatch turn without draining the remaining FIFO entries.
+        auto pollSome(size_t max_messages) -> size_t
+        {
+            return poll(std::chrono::milliseconds::zero(), max_messages);
+        }
+
         // Invoke the callback with the latest publication, without consuming queued messages.
         // A late subscriber can explicitly retrieve the value published before subscribing.
         auto latest() -> void
@@ -520,10 +526,11 @@ namespace pnm::msg
         // Wait for the first message, then process the queue size observed on waking.
         // Callbacks run here, outside queue locks. Concurrent or recursive dispatching is rejected.
         template<typename Rep, typename Period>
-        auto poll(const std::chrono::duration<Rep, Period>& timeout) -> size_t
+        auto poll(const std::chrono::duration<Rep, Period>& timeout,
+                  size_t max_messages = std::numeric_limits<size_t>::max()) -> size_t
         {
             auto state{ m_state };
-            if (!state) {
+            if (!state || max_messages == 0) {
                 return 0;
             }
             detail::DispatchGuard dispatching{ state->dispatching };
@@ -536,7 +543,7 @@ namespace pnm::msg
                     state->ready.wait_until(
                       lock, deadline, [&] { return state->closed || !state->messages.empty(); });
                 }
-                pending = state->messages.size();
+                pending = std::min(state->messages.size(), max_messages);
             }
 
             size_t processed{};
