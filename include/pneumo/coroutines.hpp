@@ -1002,6 +1002,13 @@ namespace pnm::coro
         {
             return detail::read_channel(m_state, std::move(stop));
         }
+        // Directly await in the caller's coroutine, without allocating a nested
+        // Task and its execution mutex. Same delivery/cancellation semantics as
+        // next(); keep next() when an independently owned Task is needed.
+        auto wait(std::stop_token stop = {}) -> detail::ChannelAwaiter<T>
+        {
+            return detail::ChannelAwaiter<T>{ m_state, std::move(stop) };
+        }
 
       private:
         std::shared_ptr<detail::ChannelState<T>> m_state{ std::make_shared<detail::ChannelState<T>>() };

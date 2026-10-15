@@ -307,6 +307,65 @@ TEST(CoroutinesChannelTests, BufferedValuesDrainInOrderAfterClose)
     EXPECT_FALSE(closed.await_resume());
 }
 
+TEST(CoroutinesChannelTests, DirectWaitDrainsAndCancelsWithoutConsumingBufferedValues)
+{
+    pnm::coro::Channel<std::unique_ptr<int>> channel;
+    std::stop_source stop;
+    stop.request_stop();
+    channel.push(std::make_unique<int>(42));
+    channel.close();
+    run_on_context([&]() -> pnm::coro::Task<void> {
+        EXPECT_FALSE(co_await channel.wait(stop.get_token()));
+        auto value = co_await channel.wait();
+        EXPECT_TRUE(value && *value);
+        if (value && *value) { EXPECT_EQ(**value, 42); }
+        EXPECT_FALSE(co_await channel.wait());
+    });
+}
+
+TEST(CoroutinesChannelTests, DirectWaitCancellationAndDestructionUnregisterConsumers)
+{
+    pnm::coro::Channel<int> channel;
+    std::stop_source stop;
+    bool completed{};
+    auto read = [&]() -> pnm::coro::Task<void> {
+        EXPECT_FALSE(co_await channel.wait(stop.get_token()));
+        completed = true;
+    };
+    {
+        auto abandoned = read();
+        abandoned.resume();
+        EXPECT_FALSE(abandoned.getHandle().done());
+    }
+    auto cancelled = read();
+    cancelled.resume();
+    stop.request_stop();
+    EXPECT_TRUE(cancelled.getHandle().done());
+    EXPECT_TRUE(completed);
+    channel.push(17);
+    auto remaining = channel.next();
+    remaining.resume();
+    ASSERT_TRUE(remaining.getHandle().done());
+    EXPECT_EQ(remaining.await_resume(), 17);
+}
+
+TEST(CoroutinesChannelTests, DirectWaitSchedulesCrossThreadDeliveryOnItsContext)
+{
+    pnm::coro::Context context;
+    pnm::coro::Channel<int> channel;
+    std::latch waiting{ 1 };
+    std::thread::id resumed;
+    pnm::coro::co_spawn(context, [&](pnm::coro::Context&) -> pnm::coro::Task<void> {
+        waiting.count_down();
+        EXPECT_EQ(co_await channel.wait(), 23);
+        resumed = std::this_thread::get_id();
+        context.stop();
+    });
+    std::jthread producer([&] { waiting.wait(); channel.push(23); });
+    context.run();
+    EXPECT_EQ(resumed, std::this_thread::get_id());
+}
+
 TEST(CoroutinesChannelTests, PushDeliversToOneWaitingConsumerAtATime)
 {
     pnm::coro::Channel<std::unique_ptr<int>> channel;
