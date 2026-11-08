@@ -335,6 +335,70 @@ TEST(CoroutinesExecution, ScopeCancellationJoinsAfterAsynchronousCleanup)
     });
 }
 
+TEST(CoroutinesExecution, DirectChannelWaitCancellationWaitsForCleanup)
+{
+    pnm::coro::Context context;
+    pnm::coro::Channel<int> input;
+    pnm::coro::Channel<bool> cleanup;
+    std::stop_source source;
+    Completion output;
+    bool cancelled{};
+    bool cleaned{};
+    const auto owner{ std::this_thread::get_id() };
+    auto capture{ std::make_shared<int>(42) };
+    std::weak_ptr lifetime{ capture };
+    auto sender{ pnm::coro::asSender(context,
+                                     [&, owned{ std::move(capture) }](std::stop_token stop) -> Task<void> {
+        EXPECT_FALSE(co_await input.wait(stop));
+        EXPECT_EQ(std::this_thread::get_id(), owner);
+        cancelled = true;
+        // Cancellation must leave the task alive until its explicit cleanup finishes.
+        EXPECT_TRUE(co_await cleanup.wait());
+        EXPECT_EQ(*owned, 42);
+        cleaned = true;
+    }) };
+    auto operation{ ex::connect(std::move(sender), Receiver{ &output, source.get_token() }) };
+    ex::start(operation);
+    context.poll();
+    std::jthread cancel{ [&] { source.request_stop(); } };
+    cancel.join();
+    EXPECT_FALSE(cancelled); // The cancellation continuation is queued on the context.
+    context.poll();
+    EXPECT_TRUE(cancelled);
+    EXPECT_FALSE(cleaned);
+    EXPECT_FALSE(lifetime.expired());
+    EXPECT_EQ(output.values + output.errors + output.stopped, 0);
+    cleanup.push(true);
+    context.poll();
+    EXPECT_TRUE(cleaned);
+    EXPECT_TRUE(lifetime.expired());
+    EXPECT_EQ(output.values, 1);
+    EXPECT_EQ(output.errors + output.stopped, 0);
+    EXPECT_EQ(output.thread, owner);
+}
+
+TEST(CoroutinesExecution, DirectChannelWaitAbandonmentCompletesItsSender)
+{
+    auto context{ std::make_unique<pnm::coro::Context>() };
+    pnm::coro::Channel<int> channel;
+    Completion output;
+    auto capture{ std::make_shared<int>(42) };
+    std::weak_ptr lifetime{ capture };
+    auto sender{ pnm::coro::asSender(*context,
+                                     [&, owned{ std::move(capture) }](std::stop_token stop) -> Task<void> {
+        EXPECT_EQ(co_await channel.wait(stop), *owned);
+    }) };
+    auto operation{ ex::connect(std::move(sender), Receiver{ &output, {} }) };
+    ex::start(operation);
+    context->poll();
+    channel.push(42);
+    EXPECT_EQ(output.values + output.errors + output.stopped, 0);
+    context.reset();
+    EXPECT_EQ(output.errors, 1);
+    EXPECT_EQ(output.values + output.stopped, 0);
+    EXPECT_TRUE(lifetime.expired());
+}
+
 TEST(CoroutinesExecution, ExplicitWorkersReturnToContextAndRespectPoolSize)
 {
     pnm::coro::ThreadPool pool{ 2 };
