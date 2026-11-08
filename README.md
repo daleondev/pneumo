@@ -616,7 +616,7 @@ Link `pneumo::coroutines` and include `<pneumo/coroutines.hpp>` to use the `pnm:
 *   `Task<T>` and `Task<void>` are lazy, move-only coroutine results with exception propagation.
 *   `Context` runs scheduled coroutine handles; `co_spawn(context, callable)` starts a task whose callable accepts the executor by reference.
 *   `co_spawn(context, std::move(task))` schedules an already-created, unstarted `Task<void>` and transfers ownership of its coroutine frame. A temporary task can be passed directly.
-*   `runAsync<T>(callable)` runs work on a detached thread and delivers its result or exception to the awaiting task.
+*   `runAsync<T>(callable)` runs work on a detached thread and delivers its result or exception to the awaiting task. With execution enabled, `runAsync<T>(scheduler, callable)` uses a selected execution resource instead.
 *   `sleep(duration)` uses a worker thread for positive durations; nonpositive durations complete immediately. Both sleep overloads round positive fractional clock ticks up, saturate oversized deadlines, and reject NaN durations.
 *   `sleep(context, duration, stop_token)` uses a context timer and returns `false` when cancelled. Oversized positive durations saturate to the clock's maximum deadline; NaN durations throw `std::invalid_argument`.
 *   `Context::poll(limit)` processes ready work without waiting, with a default limit of 64 callbacks or resumptions. Due timers and queued tasks alternate when both are ready, preserving deadline order and queue order respectively. `scheduleAt(deadline, callback)` returns a timer whose destruction cancels its queued callback.
@@ -631,7 +631,7 @@ cmake --build --preset gcc-debug --target coroutines_sample coroutines_tests
 ctest --preset gcc-debug -R Coroutines --output-on-failure
 ```
 
-The larger [`samples/coroutines_pipeline_sample.cpp`](samples/coroutines_pipeline_sample.cpp) processes nine jobs with three workers. It demonstrates move-only jobs, application-level backpressure with channel permits, nested async calculations, timed retries, per-job error handling, and broadcast results consumed by independent dashboard and metrics observers. Acknowledgements ensure both observers receive every broadcast; a completion channel joins all seven pipeline tasks before stopping the context.
+The larger [`samples/coroutines_pipeline_sample.cpp`](samples/coroutines_pipeline_sample.cpp) processes nine jobs with three workers. It demonstrates move-only jobs, application-level backpressure with channel permits, nested async calculations, timed retries, per-job error handling, and broadcast results consumed by independent dashboard and metrics observers. Acknowledgements ensure both observers receive every broadcast. With execution enabled, a fixed worker pool performs calculations, context timers handle delays, and `when_all` joins the tasks. The execution-disabled path retains its completion channel and detached workers.
 
 ```bash
 cmake --build --preset gcc-debug --target coroutines_pipeline_sample
@@ -649,6 +649,152 @@ Catch errors there when the application needs to report or recover from them. `r
 worker thread per call; it does not provide a bounded worker pool.
 
 For the built-in async, timer, and channel waits, destroying a suspended `Task` disconnects its continuation safely. Detached workers and thread-based sleeps still run to completion; destroying a context-backed sleep cancels its queued timer. Any objects borrowed by worker callables must remain alive until the workers finish. Channel reads retain their shared state even when the original channel wrapper is moved or destroyed. Custom executors must outlive scheduling calls; the default `scheduleOwned` transfers frames to `schedule`, whose accepted work must eventually run. Executors that can abandon queued work should override `scheduleOwned` to retain and release that ownership.
+
+#### Execution integration
+
+`PNM_CORO_ENABLE_EXECUTION=ON` is the default CMake configuration. It supplies a pinned
+[stdexec implementation](https://github.com/NVIDIA/stdexec/tree/00648922a30caa7872c6dae372018ee13a2b545f)
+of the C++26 execution library through `pneumo::coroutines`. The dependency is header-only, including
+its parallel scheduler backend. `pnm::coro::execution` aliases `stdexec`; the C++26 algorithms used
+below are the portable subset. There is currently no native-standard-library backend selection.
+
+Set `PNM_CORO_ENABLE_EXECUTION=OFF` to build the existing coroutine API without stdexec. Direct
+header consumers default to disabled; enabling it manually requires the stdexec include directory,
+`PNM_CORO_ENABLE_EXECUTION=1`, and `STDEXEC_PARALLEL_SCHEDULER_HEADER_ONLY` before inclusion.
+Use the same configuration in every translation unit. Execution integration creates no worker
+threads until an application constructs a `ThreadPool` or uses the parallel scheduler.
+
+Pneumo tasks can directly await senders. They retain their existing executor affinity:
+
+```cpp
+namespace ex = pnm::coro::execution;
+pnm::coro::Context context;
+pnm::coro::ThreadPool workers{ 2 }; // Keep alive until all pool operations finish.
+
+pnm::coro::co_spawn(context, [&](auto&) -> pnm::coro::Task<void> {
+    auto value{ co_await pnm::coro::runAsync<int>(workers.getExecutionScheduler(), [] { return 42; }) };
+    // This continuation runs on context's thread.
+    auto [first, second]{ co_await ex::when_all(ex::just(value), ex::just(7)) };
+    context.stop();
+});
+context.run();
+```
+
+The scheduler overload preserves the callable's ownership and exception behavior. Cancellation can
+prevent queued work from starting; a running blocking callable must cooperate through a captured
+stop token. `ThreadPool` requires a positive worker count and joins its workers on destruction.
+Its scheduler handles must not outlive it, and the pool must not be destroyed on one of its own workers.
+The original `runAsync(callable)` still creates one detached thread per invocation.
+
+`Context::getExecutionScheduler()` schedules sender work on the existing context queue, with the
+same polling limits and timer fairness. `IExecutor` provides a default adapter, so existing custom
+executors need no additional override. Scheduling failure is an error completion; cancellation is
+a stopped completion. Queued cancellation is checked during dispatch. Destroying a context reports
+errors for abandoned queued sender operations. Keep a context alive and driven until its active work
+finishes; `stop()` still rejects new work and drains its queue without cancelling active operations.
+
+Awaiting a scheduling sender does not permanently switch a context-bound task to another thread.
+Put work inside `ex::on(scheduler, sender)` or use the scheduler-taking `runAsync` overload. This
+context scheduler can report errors, so it is not an [infallible scheduler](https://eel.is/c++draft/exec.sched) for the default standard
+`task_scheduler`. Run a foreign `ex::task` with an explicitly compatible scheduler, for example
+`co_await ex::starts_on(workers.getExecutionScheduler(), foreign_task())`.
+
+Sender values become `void`, a single owned value, or a tuple of owned values. Use `ex::into_variant`
+for alternative value signatures. Error completions throw at `co_await`: exception pointers preserve
+their exception, error codes become `std::system_error`, and other error types retain their type.
+Stopped completion throws `pnm::coro::OperationStopped`, which can be caught. Perform asynchronous
+cleanup after leaving the catch block; C++ does not allow `co_await` inside a catch handler.
+`ex::unstoppable(sender)` permits sender-based cleanup after a stop request.
+
+Use `asSender(context, std::move(task))` to transfer an unstarted task into a lazy sender. Empty,
+started, or consumed tasks are rejected. Alternatively, provide a factory that receives a
+`std::stop_token` and returns a task. The adapter owns the factory and keeps its captures alive until
+the task finishes. Factories run on the selected context only after the sender starts:
+
+```cpp
+auto [first, second]{ co_await ex::when_all(
+    pnm::coro::asSender(context, [service](std::stop_token stop) {
+        return service.request(20, 1s, stop);
+    }),
+    pnm::coro::asSender(context, [service](std::stop_token stop) {
+        return service.request(21, 1s, stop);
+    })) };
+```
+
+Forward the factory's token to existing timer, channel, and messaging waits to make them cooperative.
+Inside nested tasks, `co_await ex::read_env(ex::get_stop_token)` retrieves the task's execution token.
+Existing waits keep their explicit-token behavior, so a cleanup timer with an empty token remains
+usable after cancellation. An uncaught `OperationStopped` becomes a stopped completion when crossing
+back through `asSender`; other exceptions become error completions. Detached `co_spawn` retains its
+termination policy for any uncaught exception, including `OperationStopped`.
+
+`ServiceResult` and `ActionResult` remain value completions, including domain failures and partial
+results. Action cancellation remains a request followed by provider cleanup and acknowledgment.
+`when_all` requests sibling cancellation after an execution error or stopped completion and waits
+for all children. A domain error stored in an expected result does not trigger that cancellation.
+
+For dynamic work, use the standard scope primitives directly:
+
+```cpp
+ex::counting_scope scope;
+std::exception_ptr child_error;
+ex::spawn(pnm::coro::asSender(context, factory)
+    | ex::upon_error([&](std::exception_ptr error) noexcept { child_error = error; }),
+    scope.get_token());
+scope.request_stop(); // Optional cooperative cancellation.
+scope.close();
+co_await scope.join();
+```
+
+`spawn` requires a sender with no remaining error completion: its error handler must also be
+`noexcept`. Use `spawn_future` when the caller needs the result. A [counting scope](https://eel.is/c++draft/exec.counting.scopes) must be joined
+before destruction; its destructor does not asynchronously join. Catch launch failures, then close
+and join any already-started work before propagating the failure.
+
+Destroying a suspended pneumo task disconnects its sender continuation and requests cancellation.
+Started operation states remain alive until terminal completion. This does not extend the lifetime
+of borrowed objects or scopes; their owners must keep them alive. In particular, a task containing
+an active counting scope must finish joining that scope before the task itself is destroyed.
+Receiver notification happens after adapted coroutine frames and factory captures have been released.
+
+Shut down by stopping admission, requesting cancellation where needed, joining operations and
+providers, then stopping the context and destroying execution resources. Do not call blocking
+`ex::sync_wait(asSender(context, ...))` on the only thread that could drive that context.
+
+[`samples/coroutines_execution_sample.cpp`](samples/coroutines_execution_sample.cpp) demonstrates
+concurrent service calls, a counting scope, cancellation cleanup, and explicit child error handling:
+
+```bash
+cmake --build --preset gcc-debug --target coroutines_execution_sample coroutines_execution_tests
+./build/gcc-debug/samples/coroutines_execution_sample
+ctest --preset gcc-debug -R CoroutinesExecution --output-on-failure
+```
+
+An optional `coroutines_execution_benchmark` target compares detached-thread calls, fixed-pool
+calls, and composed pool operations. It reports elapsed time and ordinary `operator new` calls
+(aligned allocations are excluded), including the ownership overhead needed for safe task destruction.
+Build it in Release mode for useful comparisons; no speedup is assumed.
+
+```bash
+cmake --build --preset gcc-release --target coroutines_execution_benchmark
+./build/gcc-release/tests/coroutines_execution_benchmark
+```
+
+An initial Linux devcontainer measurement with GCC 16.0.1, `-O3`, and 500 iterations per run
+gave these medians across three runs. Times include scheduling and returning to the context.
+
+| Work per iteration | Time | Ordinary allocations | Worker threads |
+| --- | ---: | ---: | --- |
+| One detached no-op call | 6.39 µs | 10.08 | One newly created per call |
+| One pooled no-op call | 2.82 µs | 15.08 | Two reused workers |
+| Two pooled calls joined with `when_all` | 4.74 µs | 63.33 | The same two workers |
+
+These numbers describe tiny synthetic workloads on one machine. Composition and safe operation
+ownership add allocations; application performance depends on work size and contention.
+
+The `gcc-asan` preset enables ASan/UBSan, `gcc-tsan` enables TSan separately, and
+`gcc-release-no-execution` validates the opt-out. CI runs coroutine and messaging tests under
+both sanitizer presets, including destruction/completion races and cancellation cleanup.
 
 #### Coroutine messaging
 
@@ -1751,6 +1897,7 @@ runtime source-registry mutex before `main()`.
 | `PFMT_ENABLE_YAML` | Enable YAML support via Glaze | `OFF` |
 | `PNM_BUILD_SAMPLES` | Build sample executables | `ON` for top-level builds, otherwise `OFF` |
 | `PNM_BUILD_TESTS` | Build unit tests | `ON` for top-level builds, otherwise `OFF` |
+| `PNM_CORO_ENABLE_EXECUTION` | Enable stdexec integration in coroutines | `ON` |
 | `ENABLE_CLANG_TIDY` | Run Clang-Tidy during the build when a Clang-Tidy executable is configured | `OFF` |
 
 ## Build Instructions

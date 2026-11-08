@@ -12,6 +12,7 @@ project(
 
 option(PNM_BUILD_SAMPLES "Build the Pneumo sample executables." ${PROJECT_IS_TOP_LEVEL})
 option(PNM_BUILD_TESTS "Build the Pneumo tests." ${PROJECT_IS_TOP_LEVEL})
+option(PNM_CORO_ENABLE_EXECUTION "Enable sender/receiver integration in coroutines." ON)
 
 option(PFMT_ENABLE_JSON "Enable JSON formatting support." OFF)
 option(PFMT_ENABLE_YAML "Enable YAML formatting support." OFF)
@@ -215,6 +216,12 @@ target_compile_features(
 
 add_library(pneumo_coroutines INTERFACE)
 add_library(pneumo::coroutines ALIAS pneumo_coroutines)
+
+target_compile_definitions(pneumo_coroutines INTERFACE
+    PNM_CORO_ENABLE_EXECUTION=$<BOOL:${PNM_CORO_ENABLE_EXECUTION}>)
+if(PNM_CORO_ENABLE_EXECUTION)
+    target_link_libraries(pneumo_coroutines INTERFACE pneumo_execution_dependency)
+endif()
 
 target_sources(
     pneumo_coroutines

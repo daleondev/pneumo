@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <chrono>
 #include <cmath>
@@ -17,6 +18,7 @@
 #include <exception>
 #include <expected>
 #include <functional>
+#include <limits>
 #include <list>
 #include <map>
 #include <memory>
@@ -24,14 +26,219 @@
 #include <optional>
 #include <stdexcept>
 #include <stop_token>
+#include <system_error>
 #include <thread>
+#include <tuple>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
+#ifndef PNM_CORO_ENABLE_EXECUTION
+#define PNM_CORO_ENABLE_EXECUTION 0
+#endif
+
+#if PNM_CORO_ENABLE_EXECUTION
+#include <exec/static_thread_pool.hpp>
+#include <stdexec/execution.hpp>
+#endif
+
 namespace pnm::coro
 {
+#if PNM_CORO_ENABLE_EXECUTION
+    namespace execution = ::stdexec;
+
+    class OperationStopped : public std::exception
+    {
+      public:
+        auto what() const noexcept -> const char* override { return "Coroutine operation stopped"; }
+    };
+
+    namespace detail::exec
+    {
+        struct Work
+        {
+            Work() = default;
+            virtual ~Work() = default;
+            Work(const Work&) = delete;
+            auto operator=(const Work&) -> Work& = delete;
+            Work(Work&&) = delete;
+            auto operator=(Work&&) -> Work& = delete;
+            virtual auto run() noexcept -> void = 0;
+            virtual auto fail(std::exception_ptr error) noexcept -> void = 0;
+        };
+
+        // An accepted ticket either runs or reports abandonment to its receiver.
+        class Ticket
+        {
+          public:
+            Ticket() = default;
+            explicit Ticket(std::shared_ptr<Work> work)
+              : m_work{ std::move(work) }
+            {
+            }
+            Ticket(const Ticket&) = delete;
+            auto operator=(const Ticket&) -> Ticket& = delete;
+            Ticket(Ticket&&) noexcept = default;
+            auto operator=(Ticket&& other) noexcept -> Ticket&
+            {
+                if (this != &other) {
+                    abandon();
+                    m_work = std::move(other.m_work);
+                }
+                return *this;
+            }
+            ~Ticket() { abandon(); }
+            explicit operator bool() const noexcept { return bool(m_work); }
+            auto run() noexcept -> void
+            {
+                auto work{ std::move(m_work) };
+                work->run();
+            }
+
+          private:
+            auto abandon() noexcept -> void
+            {
+                if (auto work{ std::move(m_work) }) {
+                    try {
+                        throw std::runtime_error{ "Executor abandoned queued work" };
+                    } catch (...) {
+                        work->fail(std::current_exception());
+                    }
+                }
+            }
+            std::shared_ptr<Work> m_work;
+        };
+        struct Binding
+        {
+            std::weak_ptr<void> identity;
+            std::function<void(Ticket&)> enqueue;
+        };
+        struct ScheduleSender;
+    }
+
+    class ExecutionScheduler
+    {
+      public:
+        using scheduler_concept = execution::scheduler_tag;
+        ExecutionScheduler() = default; // Inline scheduling for unbound tasks.
+        explicit ExecutionScheduler(std::shared_ptr<detail::exec::Binding> binding)
+          : m_binding{ std::move(binding) }
+        {
+        }
+        auto schedule() const noexcept -> detail::exec::ScheduleSender;
+        auto query(execution::get_completion_scheduler_t<execution::set_value_t> /*unused*/) const noexcept
+          -> ExecutionScheduler
+        {
+            return *this;
+        }
+        static auto query(execution::get_forward_progress_guarantee_t /*unused*/) noexcept
+        {
+            return execution::forward_progress_guarantee::weakly_parallel;
+        }
+        friend auto operator==(const ExecutionScheduler& a, const ExecutionScheduler& b) noexcept -> bool
+        {
+            if (!a.m_binding || !b.m_binding)
+                return !a.m_binding && !b.m_binding;
+            return !a.m_binding->identity.owner_before(b.m_binding->identity) &&
+                   !b.m_binding->identity.owner_before(a.m_binding->identity);
+        }
+        // Internal submission primitive; enqueue must throw before transferring its ticket.
+        auto submit(const std::shared_ptr<detail::exec::Work>& pending) const noexcept -> void
+        {
+            // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
+            auto work{ pending }; // Receiver completion may destroy the caller and its argument.
+            detail::exec::Ticket ticket{ work };
+            try {
+                if (!m_binding) {
+                    ticket.run();
+                }
+                else {
+                    if (m_binding->identity.expired())
+                        throw std::runtime_error{ "Coroutine executor is no longer alive" };
+                    m_binding->enqueue(ticket);
+                }
+            } catch (...) {
+                work->fail(std::current_exception());
+            }
+        }
+
+      private:
+        std::shared_ptr<detail::exec::Binding> m_binding;
+    };
+
+    namespace detail::exec
+    {
+        template<typename Receiver>
+        struct ScheduleState final : Work
+        {
+            explicit ScheduleState(Receiver value)
+              : receiver{ std::move(value) }
+            {
+            }
+            auto run() noexcept -> void override
+            {
+                if (completed.exchange(true))
+                    return;
+                if (execution::get_stop_token(execution::get_env(receiver)).stop_requested())
+                    execution::set_stopped(std::move(receiver));
+                else
+                    execution::set_value(std::move(receiver));
+            }
+            auto fail(std::exception_ptr error) noexcept -> void override
+            {
+                if (!completed.exchange(true))
+                    execution::set_error(std::move(receiver), std::move(error));
+            }
+            Receiver receiver;
+            std::atomic<bool> completed{ false };
+        };
+        struct ScheduleSender
+        {
+            using sender_concept = execution::sender_tag;
+            using completion_signatures =
+              execution::completion_signatures<execution::set_value_t(),
+                                               execution::set_error_t(std::exception_ptr),
+                                               execution::set_stopped_t()>;
+            ExecutionScheduler scheduler;
+            struct Env
+            {
+                ExecutionScheduler scheduler;
+                auto query(
+                  execution::get_completion_scheduler_t<execution::set_value_t> /*unused*/) const noexcept
+                {
+                    return scheduler;
+                }
+            };
+            auto get_env() const noexcept -> Env { return { scheduler }; }
+            template<typename Receiver>
+            struct Operation
+            {
+                using operation_state_concept = execution::operation_state_tag;
+                ExecutionScheduler scheduler;
+                std::shared_ptr<ScheduleState<Receiver>> state;
+                auto start() noexcept -> void
+                {
+                    auto keep_alive{ state };
+                    if (execution::get_stop_token(execution::get_env(keep_alive->receiver)).stop_requested())
+                        keep_alive->run();
+                    else
+                        scheduler.submit(std::move(keep_alive));
+                }
+            };
+            template<typename Receiver>
+            auto connect(Receiver receiver) const -> Operation<Receiver>
+            {
+                return { scheduler, std::make_shared<ScheduleState<Receiver>>(std::move(receiver)) };
+            }
+        };
+    }
+    inline auto ExecutionScheduler::schedule() const noexcept -> detail::exec::ScheduleSender
+    {
+        return { *this };
+    }
+#endif
+
     class DetachedTask;
     using Scheduler = std::function<void(DetachedTask)>;
 
@@ -46,6 +253,9 @@ namespace pnm::coro
         // Throw only before accepting work. Override this to retain ownership of queued frames.
         virtual auto scheduleOwned(DetachedTask task) -> void;
         virtual auto getScheduler() -> Scheduler;
+#if PNM_CORO_ENABLE_EXECUTION
+        virtual auto getExecutionScheduler() -> ExecutionScheduler;
+#endif
 
       protected:
         IExecutor() = default;
@@ -60,6 +270,101 @@ namespace pnm::coro
 
     namespace detail
     {
+#if PNM_CORO_ENABLE_EXECUTION
+        // BasicLockable: defer teardown until the outermost resume/destruction lock is released.
+        class ExecutionGate
+        {
+          public:
+            struct Action
+            {
+                explicit Action(std::function<void()> function)
+                  : callback{ std::move(function) }
+                {
+                }
+                std::function<void()> callback;
+                std::unique_ptr<Action> next;
+            };
+            auto lock() -> void
+            {
+                m_mutex.lock();
+                ++m_depth;
+            }
+            auto unlock() noexcept -> void
+            {
+                std::unique_ptr<Action> actions;
+                Action* tail{};
+                if (--m_depth == 0) {
+                    actions = std::move(m_actions);
+                    tail = std::exchange(m_tail, nullptr);
+                }
+                m_mutex.unlock();
+                // No member access after unlocking: actions may release the gate's last owner.
+                drain(std::move(actions), tail);
+            }
+            auto defer(std::unique_ptr<Action> action) -> void
+            {
+                std::scoped_lock lock{ *this };
+                auto* tail{ action.get() };
+                if (m_tail)
+                    m_tail->next = std::move(action);
+                else
+                    m_actions = std::move(action);
+                m_tail = tail;
+            }
+
+          private:
+            static auto drain(std::unique_ptr<Action> actions, Action* tail) noexcept -> void
+            {
+                if (!actions)
+                    return;
+                struct Pending
+                {
+                    std::unique_ptr<Action> head;
+                    Action* tail{};
+                    bool active{};
+                };
+                // Nested resumptions append work instead of recursively destroying/resuming frames.
+                static thread_local Pending pending;
+                if (pending.tail)
+                    pending.tail->next = std::move(actions);
+                else
+                    pending.head = std::move(actions);
+                pending.tail = tail;
+                if (pending.active)
+                    return;
+                pending.active = true;
+                while (pending.head) {
+                    auto action{ std::move(pending.head) };
+                    pending.head = std::move(action->next);
+                    if (!pending.head)
+                        pending.tail = nullptr;
+                    try {
+                        action->callback();
+                    } catch (...) {
+                        std::terminate();
+                    }
+                }
+                pending.active = false;
+            }
+            std::recursive_mutex m_mutex;
+            std::size_t m_depth{};
+            std::unique_ptr<Action> m_actions;
+            Action* m_tail{};
+        };
+#else
+        using ExecutionGate = std::recursive_mutex;
+#endif
+
+#if PNM_CORO_ENABLE_EXECUTION
+        namespace exec
+        {
+            template<typename Sender>
+            class SenderAwaiter;
+            template<typename T>
+            concept ForeignSender =
+              execution::sender<T> && (!requires { typename std::remove_cvref_t<T>::pnm_task_tag; });
+        }
+#endif
         struct DetachedTaskPromise;
         template<typename T>
         struct TaskPromise;
@@ -76,8 +381,21 @@ namespace pnm::coro
         {
             IExecutor* executor{ nullptr };
             Scheduler scheduler;
-            std::shared_ptr<std::recursive_mutex> execution_mutex{ std::make_shared<std::recursive_mutex>() };
+            std::shared_ptr<ExecutionGate> execution_mutex{ std::make_shared<ExecutionGate>() };
             bool started{};
+
+#if PNM_CORO_ENABLE_EXECUTION
+            ExecutionScheduler execution_scheduler;
+            std::optional<std::stop_source> execution_stop;
+            template<exec::ForeignSender Sender>
+            auto await_transform(Sender&& sender) -> exec::SenderAwaiter<std::decay_t<Sender>>;
+            template<typename Awaitable>
+                requires(!exec::ForeignSender<Awaitable>)
+            static auto await_transform(Awaitable&& value) noexcept -> Awaitable&&
+            {
+                return std::forward<Awaitable>(value);
+            }
+#endif
 
             auto initial_suspend() noexcept -> InitialAwaiter { return { &started }; }
         };
@@ -127,6 +445,8 @@ namespace pnm::coro
     class Task
     {
       public:
+        using pnm_task_tag = void;
+        using value_type = T;
         using promise_type = detail::TaskPromise<T>;
         using handle_type = std::coroutine_handle<promise_type>;
 
@@ -236,6 +556,10 @@ namespace pnm::coro
                 promise.execution_mutex = waiter.promise().execution_mutex;
                 promise.executor = waiter.promise().executor;
                 promise.scheduler = waiter.promise().scheduler;
+#if PNM_CORO_ENABLE_EXECUTION
+                promise.execution_scheduler = waiter.promise().execution_scheduler;
+                promise.execution_stop = waiter.promise().execution_stop;
+#endif
             }
             promise.waiter = waiter;
             return handle;
@@ -351,12 +675,38 @@ namespace pnm::coro
         };
     }
 
+#if PNM_CORO_ENABLE_EXECUTION
+    namespace detail::exec
+    {
+        // Coroutine protocol hooks are implicitly invoked through the promise/awaiter objects.
+        // NOLINTBEGIN(readability-static-accessed-through-instance)
+        inline auto dispatch_ticket(Ticket ticket) -> DetachedTask
+        {
+            ticket.run();
+            co_return;
+        }
+        // NOLINTEND(readability-static-accessed-through-instance)
+    }
+    inline auto IExecutor::getExecutionScheduler() -> ExecutionScheduler
+    {
+        return ExecutionScheduler{ std::make_shared<detail::exec::Binding>(
+          getLifeToken(), [scheduler{ getScheduler() }](detail::exec::Ticket& ticket) {
+            scheduler(detail::exec::dispatch_ticket(std::move(ticket)));
+        }) };
+    }
+#endif
+
     class Context : public IExecutor
     {
         struct Work
         {
             std::coroutine_handle<> handle;
             DetachedTask owner;
+#if PNM_CORO_ENABLE_EXECUTION
+            // Keep existing partial aggregate initializers warning-free when execution is enabled.
+            // NOLINTNEXTLINE(readability-redundant-member-init)
+            detail::exec::Ticket sender{};
+#endif
         };
         struct TimerEntry
         {
@@ -518,6 +868,27 @@ namespace pnm::coro
             };
         }
 
+#if PNM_CORO_ENABLE_EXECUTION
+        auto getExecutionScheduler() -> ExecutionScheduler override
+        {
+            return ExecutionScheduler{ std::make_shared<detail::exec::Binding>(
+              getLifeToken(), [weak{ std::weak_ptr {
+                  m_state
+              } }](detail::exec::Ticket& ticket) {
+                auto state{ weak.lock() };
+                if (!state)
+                    throw std::runtime_error{ "Coroutine context is no longer alive" };
+                std::scoped_lock lock{ state->mutex };
+                if (state->stopped)
+                    throw std::runtime_error{ "Cannot schedule work on a stopped context" };
+                // Allocate before transferring ownership, so failure leaves the ticket with submit().
+                state->queue.emplace_back();
+                state->queue.back().sender = std::move(ticket);
+                state->wake.notify_one();
+            }) };
+        }
+#endif
+
       private:
         static auto runOne(const std::shared_ptr<State>& state, bool wait) -> bool
         {
@@ -556,12 +927,17 @@ namespace pnm::coro
             if (timer) {
                 timer->callback();
             }
+#if PNM_CORO_ENABLE_EXECUTION
+            else if (work.sender) {
+                work.sender.run();
+            }
+#endif
             else if (work.handle && !work.handle.done()) {
                 // Owned launches share this lock with nested tasks and their continuations.
                 // In particular, scheduler rejection may resume a completion on another thread.
                 auto mutex{ work.owner.getHandle() ? work.owner.getHandle().promise().execution_mutex
                                                    : nullptr };
-                std::unique_lock<std::recursive_mutex> execution;
+                std::unique_lock<detail::ExecutionGate> execution;
                 if (mutex)
                     execution = std::unique_lock{ *mutex };
                 static_cast<void>(work.owner.release());
@@ -624,7 +1000,7 @@ namespace pnm::coro
 
           private:
             std::coroutine_handle<> m_handle;
-            std::shared_ptr<std::recursive_mutex> m_mutex{ std::make_shared<std::recursive_mutex>() };
+            std::shared_ptr<ExecutionGate> m_mutex{ std::make_shared<ExecutionGate>() };
             Scheduler m_scheduler;
             std::exception_ptr m_exception;
         };
@@ -730,6 +1106,450 @@ namespace pnm::coro
     {
         co_return co_await detail::AsyncAwaiter<Function, T>{ std::move(function) };
     }
+
+#if PNM_CORO_ENABLE_EXECUTION
+    namespace detail::exec
+    {
+        template<typename T>
+        auto required(std::optional<T>& value) -> T&
+        {
+            if (!value.has_value())
+                throw std::bad_optional_access{};
+            return *value;
+        }
+
+        using Environment =
+          execution::env<execution::prop<execution::get_start_scheduler_t, ExecutionScheduler>,
+                         execution::prop<execution::get_stop_token_t, std::stop_token>>;
+
+        inline auto environment(ExecutionScheduler scheduler, std::stop_token token) -> Environment
+        {
+            return { execution::prop{ execution::get_start_scheduler, std::move(scheduler) },
+                     execution::prop{ execution::get_stop_token, std::move(token) } };
+        }
+
+        template<typename... Values>
+        using OwnedTuple = std::tuple<std::decay_t<Values>...>;
+        template<typename... Alternatives>
+        struct SingleValue
+        {
+            static_assert(sizeof...(Alternatives) == 0,
+                          "Awaiting alternative value signatures requires execution::into_variant");
+            using type = std::tuple<>;
+        };
+        template<typename Value>
+        struct SingleValue<Value>
+        {
+            using type = Value;
+        };
+
+        template<typename Error>
+        auto exception(Error&& error) noexcept -> std::exception_ptr
+        {
+            if constexpr (std::same_as<std::decay_t<Error>, std::exception_ptr>) {
+                return std::forward<Error>(error);
+            }
+            else {
+                try {
+                    if constexpr (std::same_as<std::decay_t<Error>, std::error_code>)
+                        throw std::system_error{ error };
+                    else
+                        throw std::forward<Error>(error);
+                } catch (...) {
+                    return std::current_exception();
+                }
+            }
+        }
+
+        template<typename Sender>
+        struct AwaitState : std::enable_shared_from_this<AwaitState<Sender>>
+        {
+            using Values =
+              typename execution::value_types_of_t<Sender, Environment, OwnedTuple, SingleValue>::type;
+            struct Receiver
+            {
+                using receiver_concept = execution::receiver_tag;
+                AwaitState* state;
+                auto get_env() const noexcept -> Environment
+                {
+                    return environment(state->scheduler, state->stop.get_token());
+                }
+                template<typename... Args>
+                auto set_value(Args&&... args) && noexcept -> void
+                {
+                    auto self{ state->keep_alive };
+                    try {
+                        self->values.emplace(std::forward<Args>(args)...);
+                    } catch (...) {
+                        self->error = std::current_exception();
+                    }
+                    self->finish();
+                }
+                template<typename Error>
+                auto set_error(Error&& failure) && noexcept -> void
+                {
+                    auto self{ state->keep_alive };
+                    self->error = exception(std::forward<Error>(failure));
+                    self->finish();
+                }
+                auto set_stopped() && noexcept -> void
+                {
+                    auto self{ state->keep_alive };
+                    self->stopped = true;
+                    self->finish();
+                }
+            };
+            using Operation = execution::connect_result_t<Sender, Receiver>;
+            AwaitState(Sender sender,
+                       ExecutionScheduler target,
+                       std::stop_source source,
+                       std::shared_ptr<Continuation> ticket)
+              : scheduler{ std::move(target) }
+              , stop{ std::move(source) }
+              , continuation{ std::move(ticket) }
+              // Direct initialization supports immovable operation states through guaranteed elision.
+              , operation{ new Operation(execution::connect(std::move(sender), Receiver{ this })) }
+            {
+            }
+
+            auto finish() noexcept -> void
+            {
+                auto self{ std::move(keep_alive) };
+                gate->defer(std::move(completion));
+            }
+            ExecutionScheduler scheduler;
+            std::stop_source stop;
+            std::optional<Values> values;
+            std::exception_ptr error;
+            bool stopped{};
+            std::atomic<bool> completed{ false };
+            std::shared_ptr<Continuation> continuation;
+            std::shared_ptr<AwaitState> keep_alive;
+            std::shared_ptr<ExecutionGate> gate;
+            std::unique_ptr<Operation> operation;
+            std::unique_ptr<ExecutionGate::Action> completion;
+        };
+
+        template<typename Sender>
+        class SenderAwaiter
+        {
+            using State = AwaitState<Sender>;
+
+          public:
+            SenderAwaiter(PromiseBase& promise, Sender sender)
+              : m_sender{ std::move(sender) }
+              , m_scheduler{ promise.execution_scheduler }
+              , m_source{ required(promise.execution_stop) }
+              , m_gate{ promise.execution_mutex }
+            {
+            }
+            SenderAwaiter(const SenderAwaiter&) = delete;
+            auto operator=(const SenderAwaiter&) -> SenderAwaiter& = delete;
+            SenderAwaiter(SenderAwaiter&&) = delete;
+            auto operator=(SenderAwaiter&&) -> SenderAwaiter& = delete;
+            ~SenderAwaiter()
+            {
+                if (m_state)
+                    m_state->continuation->cancel();
+                if (m_cleanup && !m_state->completed.load(std::memory_order_acquire))
+                    m_gate->defer(std::move(m_cleanup));
+            }
+            static auto await_ready() noexcept -> bool { return false; }
+            template<typename Promise>
+            auto await_suspend(std::coroutine_handle<Promise> handle) -> void
+            {
+                m_state = std::make_shared<State>(
+                  std::move(m_sender), m_scheduler, m_source, std::make_shared<Continuation>(handle));
+                auto state{ m_state };
+                state->gate = m_gate;
+                m_cleanup = std::make_unique<ExecutionGate::Action>([state] {
+                    if (!state->completed.load(std::memory_order_acquire))
+                        state->stop.request_stop();
+                });
+                state->completion = std::make_unique<ExecutionGate::Action>([state] {
+                    state->operation.reset();
+                    state->completed.store(true, std::memory_order_release);
+                    state->continuation->dispatch();
+                });
+                state->keep_alive = state;
+                execution::start(*state->operation);
+                // Inline completion is drained after start() and the coroutine execution lock return.
+            }
+            auto await_resume()
+            {
+                m_state->continuation->rethrowError();
+                if (m_state->error)
+                    std::rethrow_exception(m_state->error);
+                if (m_state->stopped)
+                    throw OperationStopped{};
+                constexpr auto count{ std::tuple_size_v<typename State::Values> };
+                if constexpr (count == 1)
+                    return std::move(std::get<0>(required(m_state->values)));
+                else if constexpr (count > 1)
+                    return std::move(required(m_state->values));
+            }
+
+          private:
+            Sender m_sender;
+            ExecutionScheduler m_scheduler;
+            std::stop_source m_source;
+            std::shared_ptr<ExecutionGate> m_gate;
+            std::shared_ptr<State> m_state;
+            std::unique_ptr<ExecutionGate::Action> m_cleanup;
+        };
+    }
+
+    template<detail::exec::ForeignSender Sender>
+    auto detail::PromiseBase::await_transform(Sender&& sender) -> exec::SenderAwaiter<std::decay_t<Sender>>
+    {
+        if (!execution_stop)
+            execution_stop.emplace();
+        return exec::SenderAwaiter<std::decay_t<Sender>>{ *this, std::forward<Sender>(sender) };
+    }
+
+    class ThreadPool
+    {
+      public:
+        explicit ThreadPool(std::size_t worker_count)
+          : m_pool{ checked(worker_count) }
+        {
+        }
+        auto getExecutionScheduler() noexcept { return m_pool.get_scheduler(); }
+
+      private:
+        static auto checked(std::size_t count) -> std::uint32_t
+        {
+            if (count == 0 || count > std::numeric_limits<std::uint32_t>::max())
+                throw std::invalid_argument{ "Invalid thread pool worker count" };
+            return static_cast<std::uint32_t>(count);
+        }
+        ::exec::static_thread_pool m_pool;
+    };
+
+    template<typename T, execution::scheduler Sch, typename Function>
+        requires std::invocable<Function&>
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    auto runAsync(Sch scheduler, Function function) -> Task<T>
+    {
+        co_return co_await execution::starts_on(std::move(scheduler),
+                                                execution::just() | execution::then(std::move(function)));
+    }
+
+    namespace detail::exec
+    {
+        template<typename T>
+        auto validate_task(const Task<T>& task) -> void
+        {
+            const auto handle{ task.getHandle() };
+            if (!handle)
+                throw std::logic_error{ "Cannot adapt an empty task" };
+            std::scoped_lock lock{ *handle.promise().execution_mutex };
+            if (handle.promise().started || handle.promise().waiter || handle.promise().consumed)
+                throw std::logic_error{ "Only an unstarted task can be adapted" };
+        }
+
+        template<typename T>
+        struct TaskFactory
+        {
+            Task<T> task;
+            auto operator()(const std::stop_token& /*unused*/) -> Task<T> { return std::move(task); }
+        };
+
+        template<typename Factory>
+        using FactoryTask = std::invoke_result_t<Factory&, std::stop_token>;
+
+        template<typename Factory, typename Receiver>
+        struct TaskState final
+          : Work
+          , std::enable_shared_from_this<TaskState<Factory, Receiver>>
+        {
+            using Value = typename FactoryTask<Factory>::value_type;
+            using Stored = std::conditional_t<std::is_void_v<Value>, bool, Value>;
+            struct ForwardStop
+            {
+                std::weak_ptr<TaskState> state;
+                auto operator()() const noexcept -> void
+                {
+                    if (auto self{ state.lock() })
+                        self->stop.request_stop();
+                }
+            };
+            using Token = execution::stop_token_of_t<execution::env_of_t<Receiver>>;
+            using StopCallback = execution::stop_callback_for_t<Token, ForwardStop>;
+
+            TaskState(Factory function,
+                      Receiver target,
+                      ExecutionScheduler execution_target,
+                      Scheduler legacy_target)
+              : factory{ std::move(function) }
+              , receiver{ std::move(target) }
+              , scheduler{ std::move(execution_target) }
+              , legacy{ std::move(legacy_target) }
+            {
+            }
+
+            auto startOperation() noexcept -> void
+            {
+                try {
+                    auto self{ this->shared_from_this() };
+                    cancellation.emplace(execution::get_stop_token(execution::get_env(receiver)),
+                                         ForwardStop{ self });
+                    if (stop.stop_requested()) {
+                        stopped = true;
+                        complete();
+                    }
+                    else {
+                        scheduler.submit(std::move(self));
+                    }
+                } catch (...) {
+                    fail(std::current_exception());
+                }
+            }
+            auto run() noexcept -> void override
+            {
+                try {
+                    if (stop.stop_requested()) {
+                        stopped = true;
+                        complete();
+                        return;
+                    }
+                    auto self{ this->shared_from_this() };
+                    driver.emplace(runTask(self));
+                    auto& promise{ driver->getHandle().promise() };
+                    gate = promise.execution_mutex;
+                    finish_action = std::make_unique<ExecutionGate::Action>([self] { self->complete(); });
+                    promise.scheduler = legacy;
+                    promise.execution_scheduler = scheduler;
+                    promise.execution_stop = stop;
+                    driver->resume();
+                } catch (...) {
+                    fail(std::current_exception());
+                }
+            }
+            auto fail(std::exception_ptr failure) noexcept -> void override
+            {
+                if (completed.load())
+                    return;
+                error = failure;
+                complete();
+            }
+            static auto runTask(std::shared_ptr<TaskState> self) -> Task<void>
+            {
+                try {
+                    auto task{ std::invoke(required(self->factory), self->stop.get_token()) };
+                    validate_task(task);
+                    if constexpr (std::is_void_v<Value>)
+                        co_await task;
+                    else
+                        self->value.emplace(co_await task);
+                } catch (const OperationStopped&) {
+                    self->stopped = true;
+                } catch (...) {
+                    self->error = std::current_exception();
+                }
+                self->gate->defer(std::move(self->finish_action));
+            }
+            auto complete() noexcept -> void
+            {
+                if (completed.exchange(true))
+                    return;
+                // Called after the driver releases its execution lock, before notifying the receiver.
+                driver.reset();
+                finish_action.reset();
+                factory.reset();
+                cancellation.reset();
+                if (error)
+                    execution::set_error(std::move(receiver), std::move(error));
+                else if (stopped)
+                    execution::set_stopped(std::move(receiver));
+                else if constexpr (std::is_void_v<Value>)
+                    execution::set_value(std::move(receiver));
+                else {
+                    if (!value.has_value())
+                        std::terminate();
+                    execution::set_value(std::move(receiver), std::move(*value));
+                }
+            }
+            std::optional<Factory> factory;
+            Receiver receiver;
+            ExecutionScheduler scheduler;
+            Scheduler legacy;
+            std::stop_source stop;
+            std::optional<StopCallback> cancellation;
+            std::optional<Task<void>> driver;
+            std::shared_ptr<ExecutionGate> gate;
+            std::unique_ptr<ExecutionGate::Action> finish_action;
+            std::optional<Stored> value;
+            std::exception_ptr error;
+            bool stopped{};
+            std::atomic<bool> completed{ false };
+        };
+
+        template<typename T>
+        struct TaskCompletions
+        {
+            using type = execution::completion_signatures<execution::set_value_t(T),
+                                                          execution::set_error_t(std::exception_ptr),
+                                                          execution::set_stopped_t()>;
+        };
+        template<>
+        struct TaskCompletions<void>
+        {
+            using type = execution::completion_signatures<execution::set_value_t(),
+                                                          execution::set_error_t(std::exception_ptr),
+                                                          execution::set_stopped_t()>;
+        };
+        template<typename Factory>
+        struct TaskSender
+        {
+            using sender_concept = execution::sender_tag;
+            using completion_signatures =
+              typename TaskCompletions<typename FactoryTask<Factory>::value_type>::type;
+            Factory factory;
+            ExecutionScheduler scheduler;
+            Scheduler legacy;
+            auto get_env() const noexcept -> ScheduleSender::Env { return { scheduler }; }
+            template<typename Receiver>
+            struct Operation
+            {
+                using operation_state_concept = execution::operation_state_tag;
+                std::shared_ptr<TaskState<Factory, Receiver>> state;
+                auto start() noexcept -> void
+                {
+                    auto self{ state };
+                    self->startOperation();
+                }
+            };
+            template<typename Receiver>
+            auto connect(Receiver receiver) && -> Operation<Receiver>
+            {
+                return { std::make_shared<TaskState<Factory, Receiver>>(
+                  std::move(factory), std::move(receiver), std::move(scheduler), std::move(legacy)) };
+            }
+        };
+    }
+
+    template<typename Factory>
+        requires std::invocable<std::decay_t<Factory>&, std::stop_token> &&
+                 requires { typename detail::exec::FactoryTask<std::decay_t<Factory>>::pnm_task_tag; }
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    auto asSender(Context& context, Factory&& factory)
+    {
+        auto scheduler{ context.getExecutionScheduler() };
+        auto legacy{ context.getScheduler() };
+        return detail::exec::TaskSender<std::decay_t<Factory>>{ std::forward<Factory>(factory),
+                                                                std::move(scheduler),
+                                                                std::move(legacy) };
+    }
+
+    template<typename T>
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    auto asSender(Context& context, Task<T> task)
+    {
+        detail::exec::validate_task(task);
+        return asSender(context, detail::exec::TaskFactory<T>{ std::move(task) });
+    }
+#endif
 
     namespace detail
     {
@@ -1105,6 +1925,9 @@ namespace pnm::coro
         auto task{ detail::co_spawn_impl(&executor, std::forward<Coro>(coro)) };
         task.getHandle().promise().executor = &executor;
         task.getHandle().promise().scheduler = executor.getScheduler();
+#if PNM_CORO_ENABLE_EXECUTION
+        task.getHandle().promise().execution_scheduler = executor.getExecutionScheduler();
+#endif
         executor.scheduleOwned(std::move(task));
     }
 
@@ -1679,8 +2502,8 @@ namespace pnm::coro
             if (!m_runtime)
                 throw std::logic_error{ "Endpoint was moved from" };
             m_runtime->checkOpen();
-            auto node{ std::make_shared<detail::msg::TopicNode<T>>(m_runtime,
-                                                                   m_native.subscribe([](const T&) {}, options)) };
+            auto node{ std::make_shared<detail::msg::TopicNode<T>>(
+              m_runtime, m_native.subscribe([](const T&) {}, options)) };
             try {
                 node->observe(node->native);
                 m_runtime->add(node);
@@ -1973,6 +2796,9 @@ namespace pnm::coro
             auto ticket{ launch(JobLease{ job }) };
             ticket.getHandle().promise().scheduler = job->runtime->scheduler;
             ticket.getHandle().promise().executor = &job->runtime->context;
+#if PNM_CORO_ENABLE_EXECUTION
+            ticket.getHandle().promise().execution_scheduler = job->runtime->context.getExecutionScheduler();
+#endif
             try {
                 job->runtime->scheduler(std::move(ticket));
             } catch (...) {
@@ -2523,7 +3349,8 @@ namespace pnm::coro
                                 typename pnm::msg::ActionMetadata<Member>::Result>
         {
             using Metadata = pnm::msg::ActionMetadata<Member>;
-            return action<typename Metadata::Goal, typename Metadata::Feedback, typename Metadata::Result>(Metadata::name);
+            return action<typename Metadata::Goal, typename Metadata::Feedback, typename Metadata::Result>(
+              Metadata::name);
         }
         auto requestStop() -> void { m_runtime->stop(false); }
         auto close() -> void { m_runtime->stop(true); }
