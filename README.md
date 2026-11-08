@@ -642,7 +642,7 @@ Job 3 deliberately fails once and retries; job 6 is rejected permanently. Comple
 
 Tasks have one consumer and one result: await an unstarted task, or start it with `Task::resume()` and retrieve its result after completion. Invalid operations on empty, running, or already-consumed tasks throw `std::logic_error`. Raw handles from `getHandle()` are borrowed; callers must manage their lifetime and synchronization. A separately owned task awaited by reference must outlive the await.
 
-`co_spawn` transfers ownership to the context, which releases queued, unstarted frames if destroyed. Nested tasks inherit the executor, so async work, timers, and channel waits resume on a thread running that context. Unbound tasks can resume on the worker or channel producer thread. Keep the context alive until spawned work finishes. `Context::stop()` rejects new scheduling and drains already queued work; it does not cancel outstanding operations. A rejected continuation resumes inline to propagate the scheduling exception to its awaiting task.
+`co_spawn` transfers ownership to the context, which releases queued, unstarted frames if destroyed. Nested tasks inherit the executor, so async work, timers, and channel waits resume on a thread running that context. Unbound tasks can resume on the worker or channel producer thread. Keep the context alive until spawned work finishes. `Context::stop()` rejects new scheduling and drains already queued work; it does not cancel outstanding operations. A rejected or abandoned continuation resumes inline to propagate the scheduling exception to its awaiting task.
 
 `co_spawn` is detached: an uncaught exception in its top-level coroutine terminates the process.
 Catch errors there when the application needs to report or recover from them. `runAsync` starts one
@@ -690,8 +690,9 @@ The original `runAsync(callable)` still creates one detached thread per invocati
 same polling limits and timer fairness. `IExecutor` provides a default adapter, so existing custom
 executors need no additional override. Scheduling failure is an error completion; cancellation is
 a stopped completion. Queued cancellation is checked during dispatch. Destroying a context reports
-errors for abandoned queued sender operations. Keep a context alive and driven until its active work
-finishes; `stop()` still rejects new work and drains its queue without cancelling active operations.
+errors for abandoned queued sender operations and task continuations. Keep a context alive and driven
+until its active work finishes; `stop()` still rejects new work and drains its queue without cancelling
+active operations.
 
 Awaiting a scheduling sender does not permanently switch a context-bound task to another thread.
 Put work inside `ex::on(scheduler, sender)` or use the scheduler-taking `runAsync` overload. This
@@ -780,14 +781,14 @@ cmake --build --preset gcc-release --target coroutines_execution_benchmark
 ./build/gcc-release/tests/coroutines_execution_benchmark
 ```
 
-An initial Linux devcontainer measurement with GCC 16.0.1, `-O3`, and 500 iterations per run
+A Linux devcontainer measurement with GCC 16.0.1, `-O3`, and 500 iterations per run
 gave these medians across three runs. Times include scheduling and returning to the context.
 
 | Work per iteration | Time | Ordinary allocations | Worker threads |
 | --- | ---: | ---: | --- |
-| One detached no-op call | 6.39 µs | 10.08 | One newly created per call |
-| One pooled no-op call | 2.82 µs | 15.08 | Two reused workers |
-| Two pooled calls joined with `when_all` | 4.74 µs | 63.33 | The same two workers |
+| One detached no-op call | 7.09 µs | 9.08 | One newly created per call |
+| One pooled no-op call | 2.87 µs | 14.08 | Two reused workers |
+| Two pooled calls joined with `when_all` | 4.82 µs | 56.33 | The same two workers |
 
 These numbers describe tiny synthetic workloads on one machine. Composition and safe operation
 ownership add allocations; application performance depends on work size and contention.

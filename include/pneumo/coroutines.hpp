@@ -147,16 +147,17 @@ namespace pnm::coro
         auto submit(const std::shared_ptr<detail::exec::Work>& pending) const noexcept -> void
         {
             // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
-            auto work{ pending }; // Receiver completion may destroy the caller and its argument.
+            auto work{ pending };      // Receiver completion may destroy the caller and its argument.
+            auto binding{ m_binding }; // The enqueue callback must also survive synchronous completion.
             detail::exec::Ticket ticket{ work };
             try {
-                if (!m_binding) {
+                if (!binding) {
                     ticket.run();
                 }
                 else {
-                    if (m_binding->identity.expired())
+                    if (binding->identity.expired())
                         throw std::runtime_error{ "Coroutine executor is no longer alive" };
-                    m_binding->enqueue(ticket);
+                    binding->enqueue(ticket);
                 }
             } catch (...) {
                 work->fail(std::current_exception());
@@ -368,21 +369,31 @@ namespace pnm::coro
         struct DetachedTaskPromise;
         template<typename T>
         struct TaskPromise;
+        struct PromiseBase;
 
         struct InitialAwaiter
         {
-            bool* started;
+            PromiseBase* promise;
             static auto await_ready() noexcept -> bool { return false; }
             static auto await_suspend(std::coroutine_handle<> /*handle*/) noexcept -> void {}
-            auto await_resume() const noexcept -> void { *started = true; }
+            auto await_resume() const -> void;
         };
 
         struct PromiseBase
         {
             IExecutor* executor{ nullptr };
             Scheduler scheduler;
-            std::shared_ptr<ExecutionGate> execution_mutex{ std::make_shared<ExecutionGate>() };
+            // Allocate only after the frame has an owner. The supported GCC leaks coroutine
+            // frames when construction of their promise throws. Children reuse their parent's gate.
+            std::shared_ptr<ExecutionGate> execution_mutex;
             bool started{};
+
+            auto getExecutionMutex() -> const std::shared_ptr<ExecutionGate>&
+            {
+                if (!execution_mutex)
+                    execution_mutex = std::make_shared<ExecutionGate>();
+                return execution_mutex;
+            }
 
 #if PNM_CORO_ENABLE_EXECUTION
             ExecutionScheduler execution_scheduler;
@@ -397,8 +408,15 @@ namespace pnm::coro
             }
 #endif
 
-            auto initial_suspend() noexcept -> InitialAwaiter { return { &started }; }
+            auto initial_suspend() noexcept -> InitialAwaiter { return { this }; }
         };
+
+        inline auto InitialAwaiter::await_resume() const -> void
+        {
+            promise->started = true;
+            // Also support callers resuming a borrowed raw handle instead of Task::resume().
+            static_cast<void>(promise->getExecutionMutex());
+        }
     }
 
     // Owns an unstarted frame until release() transfers it to an executor.
@@ -524,7 +542,7 @@ namespace pnm::coro
             if (!m_handle) {
                 throw std::logic_error{ "Cannot resume an empty task" };
             }
-            auto mutex{ m_handle.promise().execution_mutex };
+            auto mutex{ m_handle.promise().getExecutionMutex() };
             std::scoped_lock lock{ *mutex };
             if (m_handle.promise().started) {
                 throw std::logic_error{ "Task has already been started" };
@@ -540,7 +558,10 @@ namespace pnm::coro
             if (!handle) {
                 return true;
             }
-            std::scoped_lock lock{ *handle.promise().execution_mutex };
+            auto mutex{ handle.promise().execution_mutex };
+            std::unique_lock<detail::ExecutionGate> lock;
+            if (mutex)
+                lock = std::unique_lock{ *mutex };
             return handle.done();
         }
 
@@ -553,13 +574,16 @@ namespace pnm::coro
                 throw std::logic_error{ "A running task cannot be awaited again" };
             }
             if constexpr (std::derived_from<Promise, detail::PromiseBase>) {
-                promise.execution_mutex = waiter.promise().execution_mutex;
+                promise.execution_mutex = waiter.promise().getExecutionMutex();
                 promise.executor = waiter.promise().executor;
                 promise.scheduler = waiter.promise().scheduler;
 #if PNM_CORO_ENABLE_EXECUTION
                 promise.execution_scheduler = waiter.promise().execution_scheduler;
                 promise.execution_stop = waiter.promise().execution_stop;
 #endif
+            }
+            else {
+                static_cast<void>(promise.getExecutionMutex());
             }
             promise.waiter = waiter;
             return handle;
@@ -570,7 +594,10 @@ namespace pnm::coro
             if (!handle) {
                 throw std::logic_error{ "Cannot await an empty task" };
             }
-            std::scoped_lock lock{ *handle.promise().execution_mutex };
+            auto mutex{ handle.promise().execution_mutex };
+            std::unique_lock<detail::ExecutionGate> lock;
+            if (mutex)
+                lock = std::unique_lock{ *mutex };
             auto& promise{ handle.promise() };
             if (!handle.done() || promise.consumed) {
                 throw std::logic_error{ "Task result is not ready or has already been consumed" };
@@ -592,7 +619,9 @@ namespace pnm::coro
             if (m_handle) {
                 // Awaited children share this lock, including symmetric transfers back to their parents.
                 auto mutex{ m_handle.promise().execution_mutex };
-                std::scoped_lock lock{ *mutex };
+                std::unique_lock<detail::ExecutionGate> lock;
+                if (mutex)
+                    lock = std::unique_lock{ *mutex };
                 m_handle.destroy();
             }
         }
@@ -660,6 +689,8 @@ namespace pnm::coro
 
     inline auto IExecutor::scheduleOwned(DetachedTask task) -> void
     {
+        if (auto handle{ task.getHandle() })
+            static_cast<void>(handle.promise().getExecutionMutex());
         schedule(task.getHandle());
         static_cast<void>(task.release());
     }
@@ -680,9 +711,9 @@ namespace pnm::coro
     {
         // Coroutine protocol hooks are implicitly invoked through the promise/awaiter objects.
         // NOLINTBEGIN(readability-static-accessed-through-instance)
-        inline auto dispatch_ticket(Ticket ticket) -> DetachedTask
+        inline auto dispatch_ticket(std::shared_ptr<Ticket> ticket) -> DetachedTask
         {
-            ticket.run();
+            ticket->run();
             co_return;
         }
         // NOLINTEND(readability-static-accessed-through-instance)
@@ -691,7 +722,17 @@ namespace pnm::coro
     {
         return ExecutionScheduler{ std::make_shared<detail::exec::Binding>(
           getLifeToken(), [scheduler{ getScheduler() }](detail::exec::Ticket& ticket) {
-            scheduler(detail::exec::dispatch_ticket(std::move(ticket)));
+            // Retain the ticket while admission can still fail. Destruction of a rejected
+            // frame must not report abandonment before submit() can report the actual error.
+            auto pending{ std::make_shared<detail::exec::Ticket>(std::move(ticket)) };
+            try {
+                auto task{ detail::exec::dispatch_ticket(pending) };
+                static_cast<void>(task.getHandle().promise().getExecutionMutex());
+                scheduler(std::move(task));
+            } catch (...) {
+                ticket = std::move(*pending);
+                throw;
+            }
         }) };
     }
 #endif
@@ -721,7 +762,11 @@ namespace pnm::coro
             std::condition_variable wake;
             std::deque<Work> queue;
             Timers timers;
+#if PNM_CORO_ENABLE_EXECUTION
+            std::shared_ptr<detail::exec::Binding> execution_binding;
+#endif
             bool stopped{};
+            bool destroying{};
             bool prefer_ready_work{};
         };
 
@@ -729,14 +774,24 @@ namespace pnm::coro
         Context() = default;
         ~Context() override
         {
-            std::deque<Work> abandoned;
             {
                 std::scoped_lock lock{ m_state->mutex };
                 m_state->stopped = true;
-                abandoned.swap(m_state->queue);
+                m_state->destroying = true;
                 m_state->wake.notify_all();
             }
-            // Destroy unstarted owned frames after releasing the queue lock.
+            // Drain without allocating a replacement container in this noexcept destructor.
+            // Receivers and frame destructors run outside the lock and may re-enter poll().
+            for (;;) {
+                Work abandoned;
+                {
+                    std::scoped_lock lock{ m_state->mutex };
+                    if (m_state->queue.empty())
+                        break;
+                    abandoned = std::move(m_state->queue.front());
+                    m_state->queue.pop_front();
+                }
+            }
         }
         Context(const Context&) = delete;
         auto operator=(const Context&) -> Context& = delete;
@@ -851,6 +906,7 @@ namespace pnm::coro
         auto scheduleOwned(DetachedTask task) -> void override
         {
             if (auto handle{ task.getHandle() }) {
+                static_cast<void>(handle.promise().getExecutionMutex());
                 enqueue(m_state, Work{ .handle = handle, .owner = std::move(task) });
             }
         }
@@ -863,6 +919,7 @@ namespace pnm::coro
                     throw std::runtime_error{ "Coroutine context is no longer alive" };
                 }
                 if (auto handle{ task.getHandle() }) {
+                    static_cast<void>(handle.promise().getExecutionMutex());
                     enqueue(state, Work{ .handle = handle, .owner = std::move(task) });
                 }
             };
@@ -871,21 +928,26 @@ namespace pnm::coro
 #if PNM_CORO_ENABLE_EXECUTION
         auto getExecutionScheduler() -> ExecutionScheduler override
         {
-            return ExecutionScheduler{ std::make_shared<detail::exec::Binding>(
-              getLifeToken(), [weak{ std::weak_ptr {
-                  m_state
-              } }](detail::exec::Ticket& ticket) {
-                auto state{ weak.lock() };
-                if (!state)
-                    throw std::runtime_error{ "Coroutine context is no longer alive" };
-                std::scoped_lock lock{ state->mutex };
-                if (state->stopped)
-                    throw std::runtime_error{ "Cannot schedule work on a stopped context" };
-                // Allocate before transferring ownership, so failure leaves the ticket with submit().
-                state->queue.emplace_back();
-                state->queue.back().sender = std::move(ticket);
-                state->wake.notify_one();
-            }) };
+            std::scoped_lock binding_lock{ m_state->mutex };
+            if (!m_state->execution_binding) {
+                // Reuse the adapter without extending the lifetime of the context's state.
+                m_state->execution_binding =
+                  std::make_shared<detail::exec::Binding>(getLifeToken(), [weak{ std::weak_ptr {
+                                                              m_state
+                                                          } }](detail::exec::Ticket& ticket) {
+                    auto state{ weak.lock() };
+                    if (!state)
+                        throw std::runtime_error{ "Coroutine context is no longer alive" };
+                    std::scoped_lock lock{ state->mutex };
+                    if (state->stopped)
+                        throw std::runtime_error{ "Cannot schedule work on a stopped context" };
+                    // Allocate before transferring ownership, so failure leaves the ticket with submit().
+                    state->queue.emplace_back();
+                    state->queue.back().sender = std::move(ticket);
+                    state->wake.notify_one();
+                });
+            }
+            return ExecutionScheduler{ m_state->execution_binding };
         }
 #endif
 
@@ -897,6 +959,8 @@ namespace pnm::coro
             {
                 std::unique_lock lock{ state->mutex };
                 for (;;) {
+                    if (state->destroying)
+                        return false;
                     const bool timer_ready{ !state->timers.empty() &&
                                             state->timers.begin()->first <= Clock::now() };
                     // Alternate ready sources, including across separate poll() calls.
@@ -969,11 +1033,14 @@ namespace pnm::coro
               : m_handle{ handle }
             {
                 if constexpr (std::derived_from<Promise, PromiseBase>) {
-                    m_mutex = handle.promise().execution_mutex;
+                    m_mutex = handle.promise().getExecutionMutex();
                     m_scheduler = handle.promise().scheduler;
                     if (!m_scheduler && handle.promise().executor) {
                         m_scheduler = handle.promise().executor->getScheduler();
                     }
+                }
+                else {
+                    m_mutex = std::make_shared<ExecutionGate>();
                 }
             }
 
@@ -991,6 +1058,12 @@ namespace pnm::coro
                 }
             }
             auto dispatch() -> void;
+            auto reject(const std::exception_ptr& error) -> void
+            {
+                std::scoped_lock lock{ *m_mutex };
+                m_exception = error;
+                resume();
+            }
             auto rethrowError() const -> void
             {
                 if (m_exception) {
@@ -1000,16 +1073,46 @@ namespace pnm::coro
 
           private:
             std::coroutine_handle<> m_handle;
-            std::shared_ptr<ExecutionGate> m_mutex{ std::make_shared<ExecutionGate>() };
+            std::shared_ptr<ExecutionGate> m_mutex;
             Scheduler m_scheduler;
             std::exception_ptr m_exception;
         };
 
+        // The dispatcher retains this delivery until scheduling succeeds, so rejection keeps
+        // its original exception. Once accepted, its queued frame owns abandonment reporting.
+        struct ContinuationDelivery
+        {
+            explicit ContinuationDelivery(std::shared_ptr<Continuation> continuation)
+              : pending{ std::move(continuation) }
+            {
+            }
+            ContinuationDelivery(const ContinuationDelivery&) = delete;
+            auto operator=(const ContinuationDelivery&) -> ContinuationDelivery& = delete;
+            ContinuationDelivery(ContinuationDelivery&&) = delete;
+            auto operator=(ContinuationDelivery&&) -> ContinuationDelivery& = delete;
+            ~ContinuationDelivery()
+            {
+                if (pending) {
+                    try {
+                        throw std::runtime_error{ "Executor abandoned a queued continuation" };
+                    } catch (...) {
+                        pending->reject(std::current_exception());
+                    }
+                }
+            }
+            auto run() -> void
+            {
+                auto continuation{ std::move(pending) };
+                continuation->resume();
+            }
+            std::shared_ptr<Continuation> pending;
+        };
+
         // Implicit coroutine calls access static promise hooks through the promise object.
         // NOLINTBEGIN(readability-static-accessed-through-instance)
-        inline auto resume_later(std::shared_ptr<Continuation> continuation) -> DetachedTask
+        inline auto resume_later(std::shared_ptr<ContinuationDelivery> delivery) -> DetachedTask
         {
-            continuation->resume();
+            delivery->run();
             co_return;
         }
 
@@ -1024,13 +1127,17 @@ namespace pnm::coro
                 resume();
                 return;
             }
+            std::shared_ptr<ContinuationDelivery> delivery;
             try {
-                m_scheduler(resume_later(self));
+                delivery = std::make_shared<ContinuationDelivery>(self);
+                auto task{ resume_later(delivery) };
+                static_cast<void>(task.getHandle().promise().getExecutionMutex());
+                m_scheduler(std::move(task));
             } catch (...) {
                 // A rejected delivery must complete with an error rather than strand the task.
-                std::scoped_lock lock{ *m_mutex };
-                m_exception = std::current_exception();
-                resume();
+                if (delivery)
+                    delivery->pending.reset();
+                reject(std::current_exception());
             }
         }
 
@@ -1162,7 +1269,7 @@ namespace pnm::coro
         }
 
         template<typename Sender>
-        struct AwaitState : std::enable_shared_from_this<AwaitState<Sender>>
+        struct AwaitState
         {
             using Values =
               typename execution::value_types_of_t<Sender, Environment, OwnedTuple, SingleValue>::type;
@@ -1222,6 +1329,7 @@ namespace pnm::coro
             std::optional<Values> values;
             std::exception_ptr error;
             bool stopped{};
+            bool started{};
             std::atomic<bool> completed{ false };
             std::shared_ptr<Continuation> continuation;
             std::shared_ptr<AwaitState> keep_alive;
@@ -1240,7 +1348,7 @@ namespace pnm::coro
               : m_sender{ std::move(sender) }
               , m_scheduler{ promise.execution_scheduler }
               , m_source{ required(promise.execution_stop) }
-              , m_gate{ promise.execution_mutex }
+              , m_gate{ promise.getExecutionMutex() }
             {
             }
             SenderAwaiter(const SenderAwaiter&) = delete;
@@ -1263,7 +1371,7 @@ namespace pnm::coro
                 auto state{ m_state };
                 state->gate = m_gate;
                 m_cleanup = std::make_unique<ExecutionGate::Action>([state] {
-                    if (!state->completed.load(std::memory_order_acquire))
+                    if (state->started && !state->completed.load(std::memory_order_acquire))
                         state->stop.request_stop();
                 });
                 state->completion = std::make_unique<ExecutionGate::Action>([state] {
@@ -1272,6 +1380,7 @@ namespace pnm::coro
                     state->continuation->dispatch();
                 });
                 state->keep_alive = state;
+                state->started = true;
                 execution::start(*state->operation);
                 // Inline completion is drained after start() and the coroutine execution lock return.
             }
@@ -1343,7 +1452,10 @@ namespace pnm::coro
             const auto handle{ task.getHandle() };
             if (!handle)
                 throw std::logic_error{ "Cannot adapt an empty task" };
-            std::scoped_lock lock{ *handle.promise().execution_mutex };
+            auto mutex{ handle.promise().execution_mutex };
+            std::unique_lock<ExecutionGate> lock;
+            if (mutex)
+                lock = std::unique_lock{ *mutex };
             if (handle.promise().started || handle.promise().waiter || handle.promise().consumed)
                 throw std::logic_error{ "Only an unstarted task can be adapted" };
         }
@@ -1416,7 +1528,7 @@ namespace pnm::coro
                     auto self{ this->shared_from_this() };
                     driver.emplace(runTask(self));
                     auto& promise{ driver->getHandle().promise() };
-                    gate = promise.execution_mutex;
+                    gate = promise.getExecutionMutex();
                     finish_action = std::make_unique<ExecutionGate::Action>([self] { self->complete(); });
                     promise.scheduler = legacy;
                     promise.execution_scheduler = scheduler;
@@ -1923,6 +2035,7 @@ namespace pnm::coro
     auto co_spawn(Ex& executor, Coro&& coro) -> void
     {
         auto task{ detail::co_spawn_impl(&executor, std::forward<Coro>(coro)) };
+        static_cast<void>(task.getHandle().promise().getExecutionMutex());
         task.getHandle().promise().executor = &executor;
         task.getHandle().promise().scheduler = executor.getScheduler();
 #if PNM_CORO_ENABLE_EXECUTION

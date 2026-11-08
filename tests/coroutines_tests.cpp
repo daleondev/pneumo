@@ -524,6 +524,60 @@ TEST(CoroutinesContextTests, AbandonedAndRejectedSpawnsReleaseTheirCaptures)
     EXPECT_EQ(token.use_count(), 1);
 }
 
+TEST(CoroutinesContextTests, DestructionAllowsReentryWithoutDispatchingAbandonedWork)
+{
+    struct PollOnDestruction
+    {
+        pnm::coro::Context* context;
+        int* destroyed;
+        ~PollOnDestruction()
+        {
+            EXPECT_EQ(context->poll(), 0);
+            context->stop(); // This also checks that destruction is outside the queue lock.
+            ++*destroyed;
+        }
+    };
+    auto context{ std::make_unique<pnm::coro::Context>() };
+    int destroyed{};
+    int ran{};
+    for (int index{}; index < 2; ++index) {
+        pnm::coro::co_spawn(*context,
+                            [guard{ std::make_unique<PollOnDestruction>(context.get(), &destroyed) },
+                             &ran](auto&) -> pnm::coro::Task<void> {
+            static_cast<void>(guard);
+            ++ran;
+            co_return;
+        });
+    }
+    context.reset();
+    EXPECT_EQ(destroyed, 2);
+    EXPECT_EQ(ran, 0);
+}
+
+TEST(CoroutinesContextTests, AbandonedQueuedContinuationReportsAnError)
+{
+    auto context{ std::make_unique<pnm::coro::Context>() };
+    pnm::coro::Channel<int> channel;
+    bool failed{};
+    auto body{ [&]() -> pnm::coro::Task<void> {
+        try {
+            co_await channel.next();
+            ADD_FAILURE();
+        } catch (const std::runtime_error&) {
+            failed = true;
+        }
+    } };
+    auto task{ body() };
+    task.getHandle().promise().scheduler = context->getScheduler();
+    task.resume();
+    channel.push(1);
+    EXPECT_FALSE(task.await_ready());
+    context.reset();
+    EXPECT_TRUE(task.await_ready());
+    EXPECT_NO_THROW(task.await_resume());
+    EXPECT_TRUE(failed);
+}
+
 TEST(CoroutinesContextTests, DetachedFramesAreOwnedUntilScheduled)
 {
     auto token{ std::make_shared<int>(42) };
