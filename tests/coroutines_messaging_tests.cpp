@@ -157,7 +157,9 @@ TEST(CoroutinesMessagingTopics, ReflectedFieldUsesNativeTopicAndChecksClosure)
     EXPECT_EQ(env.finish(next), 42);
 
     int received{};
-    auto nativeSubscription{ env.native.topic<int>("demo/io/value").subscribe([&](int value) { received = value; }) };
+    auto nativeSubscription{ env.native.topic<int>("demo/io/value").subscribe([&](int value) {
+        received = value;
+    }) };
     topic.publish(43);
     EXPECT_EQ(nativeSubscription.poll(), 1UZ);
     EXPECT_EQ(received, 43);
@@ -238,16 +240,16 @@ TEST(CoroutinesMessagingServices, ReflectedFieldUsesNativeServiceInBothDirection
     Environment env;
     auto service{ env.bus.service<^^Services::demo_io_format>() };
     {
-        auto server{ env.native.service<int, std::string>("demo/io/format").serve(
-          [](int value) { return std::to_string(value); }) };
+        auto server{ env.native.service<int, std::string>("demo/io/format").serve([](int value) {
+            return std::to_string(value);
+        }) };
         auto call{ service.request(42, 1s) };
         env.start(call);
         EXPECT_EQ(server.poll(), 1UZ);
         EXPECT_EQ(env.finish(call), "42");
     }
-    auto server{ service.serve([](int value, std::stop_token) -> Task<std::string> {
-        co_return std::to_string(value);
-    }) };
+    auto server{ service.serve(
+      [](int value, std::stop_token) -> Task<std::string> { co_return std::to_string(value); }) };
     auto call{ env.native.service<^^Services::demo_io_format>().request(43, 1s) };
     env.context.poll();
     ASSERT_TRUE(call.ready());
@@ -1399,9 +1401,10 @@ TEST(CoroutinesMessagingActions, ReflectedAccessorUsesTheSameNativeAction)
     Environment env{};
     auto provider{ env.native.action<^^Actions::motor_move>().serveDeferred(
       [](int value, pnm::msg::ActionExecution<int, int> execution) {
-          execution.accept(); execution.succeed(value * 2);
-      }) };
-    auto goal{ env.bus.action<^^Actions::alias>().sendGoal(21, {1s}) };
+        execution.accept();
+        execution.succeed(value * 2);
+    }) };
+    auto goal{ env.bus.action<^^Actions::alias>().sendGoal(21, { 1s }) };
     auto result{ goal.result() };
     env.start(result);
     provider.poll();

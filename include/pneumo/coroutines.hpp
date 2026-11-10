@@ -369,11 +369,11 @@ namespace pnm::coro
             concept NativeAwaitable = requires(T& value) {
                 value.await_ready();
                 value.await_resume();
-            } || requires(T&& value) { std::forward<T>(value).operator co_await(); }
-              || requires(T&& value) { operator co_await(std::forward<T>(value)); };
+            } || requires(T&& value) { std::forward<T>(value).operator co_await(); } || requires(T&& value) {
+                operator co_await(std::forward<T>(value));
+            };
             template<typename T>
-            concept ForeignSender =
-              (!NativeAwaitable<T>) && execution::sender<T>;
+            concept ForeignSender = (!NativeAwaitable<T>) && execution::sender<T>;
         }
 #endif
         struct DetachedTaskPromise;
@@ -784,10 +784,14 @@ namespace pnm::coro
         Context() = default;
         ~Context() override
         {
+            Timers abandoned_timers;
             {
                 std::scoped_lock lock{ m_state->mutex };
                 m_state->stopped = true;
                 m_state->destroying = true;
+                // Release user captures while the context still owns its state. Their
+                // destructors may re-enter the context or cancel another timer.
+                abandoned_timers.swap(m_state->timers);
                 m_state->wake.notify_all();
             }
             // Drain without allocating a replacement container in this noexcept destructor.

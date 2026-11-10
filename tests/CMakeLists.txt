@@ -124,6 +124,8 @@ target_link_libraries(
 )
 
 add_executable(messaging_tests 
+    messaging_lifetime_tests.cpp
+    execution_allocation_probe.cpp
     messaging_topic_tests.cpp 
     messaging_service_tests.cpp 
     messaging_action_tests.cpp

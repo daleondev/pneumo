@@ -268,4 +268,89 @@ TEST(CoroutinesExecution, ConcurrentSchedulerQueriesShareOneAdapter)
     EXPECT_FALSE(allocated);
     EXPECT_EQ(cached, *first);
 }
+
+TEST(CoroutinesExecution, ServiceAdmissionAllocationFailuresReleaseJobsAndProviderSlots)
+{
+    bool exhausted{};
+    for (std::size_t allocation{}; allocation < 128; ++allocation) {
+        std::weak_ptr<int> lifetime;
+        {
+            pnm::coro::Context context;
+            pnm::msg::Bus native;
+            pnm::coro::Bus bus{ context, native };
+            auto capture{ std::make_shared<int>(42) };
+            lifetime = capture;
+            auto server{ bus.service<int, int>("allocation-service")
+                           .serve([owned{ std::move(capture) }](int, std::stop_token) -> Task<int> {
+                co_return *owned;
+            }) };
+            context.poll();
+            auto call{ native.service<int, int>("allocation-service").request(1, std::chrono::hours{ 1 }) };
+            allocation_probe::failAfter(allocation);
+            try {
+                context.poll(1024);
+            } catch (const std::bad_alloc&) {
+            }
+            exhausted = !allocation_probe::failureConsumed();
+            context.poll(1024);
+            EXPECT_TRUE(call.ready()) << "Allocation index " << allocation;
+            server.close();
+            auto joined{ server.join() };
+            joined.resume();
+            context.poll(1024);
+            EXPECT_TRUE(joined.await_ready()) << "Allocation index " << allocation;
+            if (joined.await_ready()) {
+                EXPECT_NO_THROW(joined.await_resume());
+            }
+        }
+        EXPECT_TRUE(lifetime.expired()) << "Allocation index " << allocation;
+        if (exhausted)
+            break;
+    }
+    EXPECT_TRUE(exhausted);
+}
+
+TEST(CoroutinesExecution, ActionAdmissionAllocationFailuresReleaseJobsAndProviderSlots)
+{
+    bool exhausted{};
+    for (std::size_t allocation{}; allocation < 128; ++allocation) {
+        std::weak_ptr<int> lifetime;
+        {
+            pnm::coro::Context context;
+            pnm::msg::Bus native;
+            pnm::coro::Bus bus{ context, native };
+            auto capture{ std::make_shared<int>(42) };
+            lifetime = capture;
+            auto server{ bus.action<int, int, int>("allocation-action")
+                           .serve([owned{ std::move(capture) }](int, pnm::coro::ActionExecution<int, int>)
+                                    -> Task<pnm::msg::ActionCompletion<int>> {
+                co_return pnm::msg::ActionCompletion<int>{ pnm::msg::ActionStatus::Succeeded, *owned };
+            }) };
+            context.poll();
+            auto goal{ native.action<int, int, int>("allocation-action")
+                         .sendGoal(
+                           1, { .accept_timeout = std::chrono::hours{ 1 } }, { .on_result = [](auto) {} }) };
+            allocation_probe::failAfter(allocation);
+            try {
+                context.poll(1024);
+            } catch (const std::bad_alloc&) {
+            }
+            exhausted = !allocation_probe::failureConsumed();
+            context.poll(1024);
+            EXPECT_TRUE(goal.poll()) << "Allocation index " << allocation;
+            server.close();
+            auto joined{ server.join() };
+            joined.resume();
+            context.poll(1024);
+            EXPECT_TRUE(joined.await_ready()) << "Allocation index " << allocation;
+            if (joined.await_ready()) {
+                EXPECT_NO_THROW(joined.await_resume());
+            }
+        }
+        EXPECT_TRUE(lifetime.expired()) << "Allocation index " << allocation;
+        if (exhausted)
+            break;
+    }
+    EXPECT_TRUE(exhausted);
+}
 // NOLINTEND

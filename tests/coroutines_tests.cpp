@@ -318,7 +318,9 @@ TEST(CoroutinesChannelTests, DirectWaitDrainsAndCancelsWithoutConsumingBufferedV
         EXPECT_FALSE(co_await channel.wait(stop.get_token()));
         auto value = co_await channel.wait();
         EXPECT_TRUE(value && *value);
-        if (value && *value) { EXPECT_EQ(**value, 42); }
+        if (value && *value) {
+            EXPECT_EQ(**value, 42);
+        }
         EXPECT_FALSE(co_await channel.wait());
     });
 }
@@ -361,7 +363,10 @@ TEST(CoroutinesChannelTests, DirectWaitSchedulesCrossThreadDeliveryOnItsContext)
         resumed = std::this_thread::get_id();
         context.stop();
     });
-    std::jthread producer([&] { waiting.wait(); channel.push(23); });
+    std::jthread producer([&] {
+        waiting.wait();
+        channel.push(23);
+    });
     context.run();
     EXPECT_EQ(resumed, std::this_thread::get_id());
 }
@@ -952,6 +957,28 @@ TEST(CoroutinesContextTests, TimerCancellationReleasesQueuedCallback)
     context.stop();
     EXPECT_THROW(static_cast<void>(context.scheduleAt(std::chrono::steady_clock::now(), [] {})),
                  std::runtime_error);
+}
+
+TEST(CoroutinesContextTests, TimerCaptureDestructionCanReenterTheContext)
+{
+    struct Capture
+    {
+        pnm::coro::Context* context;
+        bool* destroyed;
+        ~Capture()
+        {
+            EXPECT_EQ(context->poll(), 0);
+            context->stop();
+            *destroyed = true;
+        }
+    };
+    bool destroyed{};
+    auto context{ std::make_unique<pnm::coro::Context>() };
+    auto capture{ std::make_shared<Capture>(context.get(), &destroyed) };
+    auto timer{ context->scheduleAt(std::chrono::steady_clock::now() + 1h, [capture] {}) };
+    capture.reset();
+    context.reset();
+    EXPECT_TRUE(destroyed);
 }
 
 TEST(CoroutinesChannelTests, CancellationRemovesOnlyItsOwnWaiter)
