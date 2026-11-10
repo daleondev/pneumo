@@ -204,6 +204,49 @@ TEST(CoroutinesExecution, AwaitValuesMoveOnlyTuplesAndComposition)
     });
 }
 
+TEST(CoroutinesExecution, NativeAwaitersKeepTheirFrameAndDoNotAllocateSenderState)
+{
+    struct Awaiter
+    {
+        std::coroutine_handle<>* observed;
+        int* value;
+        static bool await_ready() noexcept { return false; }
+        bool await_suspend(std::coroutine_handle<> frame) const noexcept
+        {
+            *observed = frame;
+            return false;
+        }
+        int& await_resume() const noexcept { return *value; }
+    };
+    struct MemberAwaitable
+    {
+        Awaiter awaiter;
+        Awaiter operator co_await() const noexcept { return awaiter; }
+    };
+
+    std::coroutine_handle<> direct_frame, member_frame;
+    int value{ 7 };
+    int* direct_result{};
+    int* member_result{};
+    std::size_t allocations{};
+    auto body{ [&]() -> Task<void> {
+        allocation_probe::begin();
+        auto&& first{ co_await Awaiter{ &direct_frame, &value } };
+        auto&& second{ co_await MemberAwaitable{ { &member_frame, &value } } };
+        direct_result = &first;
+        member_result = &second;
+        allocations = allocation_probe::end();
+    } };
+    auto task{ body() };
+    task.resume();
+    ASSERT_TRUE(task.getHandle().done());
+    EXPECT_EQ(direct_frame, task.getHandle());
+    EXPECT_EQ(member_frame, task.getHandle());
+    EXPECT_EQ(direct_result, &value);
+    EXPECT_EQ(member_result, &value);
+    EXPECT_EQ(allocations, 0U);
+}
+
 TEST(CoroutinesExecution, AwaitErrorsAndCatchableStop)
 {
     run([](auto& context) -> Task<void> {

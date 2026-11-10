@@ -361,9 +361,19 @@ namespace pnm::coro
         {
             template<typename Sender>
             class SenderAwaiter;
+            // stdexec also classifies native coroutine awaitables as senders.
+            // Let the compiler apply their own await protocol: wrapping them in
+            // SenderAwaiter changes the suspended frame and reference results,
+            // and adds allocations to otherwise allocation-free awaits.
+            template<typename T>
+            concept NativeAwaitable = requires(T& value) {
+                value.await_ready();
+                value.await_resume();
+            } || requires(T&& value) { std::forward<T>(value).operator co_await(); }
+              || requires(T&& value) { operator co_await(std::forward<T>(value)); };
             template<typename T>
             concept ForeignSender =
-              execution::sender<T> && (!requires { typename std::remove_cvref_t<T>::pnm_task_tag; });
+              (!NativeAwaitable<T>) && execution::sender<T>;
         }
 #endif
         struct DetachedTaskPromise;

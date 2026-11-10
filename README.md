@@ -701,7 +701,9 @@ context scheduler can report errors, so it is not an [infallible scheduler](http
 `co_await ex::starts_on(workers.getExecutionScheduler(), foreign_task())`.
 
 Sender values become `void`, a single owned value, or a tuple of owned values. Use `ex::into_variant`
-for alternative value signatures. Error completions throw at `co_await`: exception pointers preserve
+for alternative value signatures. Native coroutine awaitables use their own await protocol directly,
+including member/ADL `operator co_await`; their frame identity and reference results are preserved,
+without allocating a sender adapter. Error completions throw at `co_await`: exception pointers preserve
 their exception, error codes become `std::system_error`, and other error types retain their type.
 Stopped completion throws `pnm::coro::OperationStopped`, which can be caught. Perform asynchronous
 cleanup after leaving the catch block; C++ does not allow `co_await` inside a catch handler.
