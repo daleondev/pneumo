@@ -471,6 +471,46 @@ TEST(CoroutinesExecution, ExplicitWorkersReturnToContextAndRespectPoolSize)
     });
 }
 
+TEST(CoroutinesExecution, AsyncVoidDiscardsCallableResultsOnEitherScheduler)
+{
+    pnm::coro::ThreadPool pool{ 1 };
+    run([&](auto&) -> Task<void> {
+        const auto owner{ std::this_thread::get_id() };
+        co_await pnm::coro::runAsync<void>([value{ std::make_unique<int>(42) }] {
+            EXPECT_EQ(*value, 42);
+            return *value;
+        });
+        EXPECT_EQ(std::this_thread::get_id(), owner);
+        co_await pnm::coro::runAsync<void>(pool.getExecutionScheduler(), [] { return 7; });
+        EXPECT_EQ(std::this_thread::get_id(), owner);
+    });
+}
+
+TEST(CoroutinesExecution, DefaultAsyncUsesTheTaskExecutionStopToken)
+{
+    pnm::coro::Context context;
+    std::stop_source source;
+    Completion output;
+    bool invoked{};
+    bool stopped{};
+    auto sender{ pnm::coro::asSender(context, [&](std::stop_token) -> Task<void> {
+        source.request_stop();
+        try {
+            co_await pnm::coro::runAsync<void>([&] { invoked = true; });
+        } catch (const pnm::coro::OperationStopped&) {
+            stopped = true;
+        }
+        context.stop();
+    }) };
+    auto operation{ ex::connect(std::move(sender), Receiver{ &output, source.get_token() }) };
+    ex::start(operation);
+    context.run();
+    EXPECT_FALSE(invoked);
+    EXPECT_TRUE(stopped);
+    EXPECT_EQ(output.values, 1);
+    EXPECT_EQ(output.errors + output.stopped, 0);
+}
+
 TEST(CoroutinesExecution, ForeignTaskRunsOnCompatibleScheduler)
 {
     pnm::coro::ThreadPool pool{ 1 };

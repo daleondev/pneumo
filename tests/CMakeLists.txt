@@ -196,15 +196,13 @@ add_executable(coroutines_messaging_tests coroutines_messaging_tests.cpp)
 target_link_libraries(coroutines_messaging_tests PRIVATE GTest::gtest_main pneumo::coroutines pneumo::compiler_warnings)
 gtest_discover_tests(coroutines_messaging_tests PROPERTIES TIMEOUT 15)
 
-if(PNM_CORO_ENABLE_EXECUTION)
-    add_executable(coroutines_execution_tests
-        coroutines_execution_tests.cpp
-        coroutines_execution_lifetime_tests.cpp
-        execution_tu_probe.cpp
-        execution_allocation_probe.cpp
-    )
-    target_link_libraries(coroutines_execution_tests PRIVATE GTest::gtest_main pneumo::coroutines pneumo::compiler_warnings)
-    gtest_discover_tests(coroutines_execution_tests PROPERTIES TIMEOUT 20)
-    add_executable(coroutines_execution_benchmark EXCLUDE_FROM_ALL execution_benchmark.cpp execution_allocation_probe.cpp)
-    target_link_libraries(coroutines_execution_benchmark PRIVATE pneumo::coroutines pneumo::compiler_warnings)
-endif()
+add_executable(coroutines_execution_tests
+    coroutines_execution_tests.cpp
+    coroutines_execution_lifetime_tests.cpp
+    execution_tu_probe.cpp
+    execution_allocation_probe.cpp
+)
+target_link_libraries(coroutines_execution_tests PRIVATE GTest::gtest_main pneumo::coroutines pneumo::compiler_warnings)
+gtest_discover_tests(coroutines_execution_tests PROPERTIES TIMEOUT 20)
+add_executable(coroutines_execution_benchmark EXCLUDE_FROM_ALL execution_benchmark.cpp execution_allocation_probe.cpp)
+target_link_libraries(coroutines_execution_benchmark PRIVATE pneumo::coroutines pneumo::compiler_warnings)

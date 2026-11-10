@@ -88,14 +88,6 @@
             }
         },
         {
-            "name": "gcc-release-no-execution",
-            "displayName": "GCC without execution",
-            "inherits": "gcc-release",
-            "cacheVariables": {
-                "PNM_CORO_ENABLE_EXECUTION": "OFF"
-            }
-        },
-        {
             "name": "gcc-asan",
             "displayName": "GCC ASan and UBSan",
             "inherits": "gcc-debug",
@@ -138,10 +130,6 @@
             "configurePreset": "clang-tidy"
         },
         {
-            "name": "gcc-release-no-execution",
-            "configurePreset": "gcc-release-no-execution"
-        },
-        {
             "name": "gcc-asan",
             "configurePreset": "gcc-asan"
         },
@@ -166,10 +154,6 @@
         {
             "name": "clang-release",
             "configurePreset": "clang-release"
-        },
-        {
-            "name": "gcc-release-no-execution",
-            "configurePreset": "gcc-release-no-execution"
         },
         {
             "name": "gcc-asan",

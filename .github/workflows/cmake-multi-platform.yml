@@ -76,9 +76,6 @@ jobs:
           - name: Clang P2996 Tidy
             preset: clang-tidy
             run_tests: false
-          - name: GCC 16 without execution
-            preset: gcc-release-no-execution
-            run_tests: true
           - name: GCC 16 ASan and UBSan
             preset: gcc-asan
             run_tests: true

@@ -131,7 +131,5 @@ target_link_libraries(
 add_executable(coroutines_messaging_sample coroutines_messaging_sample.cpp)
 target_link_libraries(coroutines_messaging_sample PRIVATE pneumo::coroutines pneumo::compiler_warnings)
 
-if(PNM_CORO_ENABLE_EXECUTION)
-    add_executable(coroutines_execution_sample coroutines_execution_sample.cpp)
-    target_link_libraries(coroutines_execution_sample PRIVATE pneumo::coroutines pneumo::compiler_warnings)
-endif()
+add_executable(coroutines_execution_sample coroutines_execution_sample.cpp)
+target_link_libraries(coroutines_execution_sample PRIVATE pneumo::coroutines pneumo::compiler_warnings)

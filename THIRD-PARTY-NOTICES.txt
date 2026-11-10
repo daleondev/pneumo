@@ -4,7 +4,7 @@ They are not vendored into the Pneumo source tree.
 The license texts below are reproduced from the exact versions pinned in
 cmake/deps.cmake.
 
-stdexec 00648922a30caa7872c6dae372018ee13a2b545f (optional coroutine execution dependency)
+stdexec 00648922a30caa7872c6dae372018ee13a2b545f (coroutine execution dependency)
 License: Apache-2.0 WITH LLVM-exception
 ----------------------------------------
 

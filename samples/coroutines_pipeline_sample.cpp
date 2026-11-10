@@ -62,19 +62,13 @@ namespace
         {
         }
         pnm::coro::Context& context;
-#if PNM_CORO_ENABLE_EXECUTION
         pnm::coro::ThreadPool pool{ WORKER_COUNT };
-#endif
         pnm::coro::Channel<std::unique_ptr<Job>> jobs;
         pnm::coro::Channel<Result> results;
         pnm::coro::RawBinaryChannel progress;
         pnm::coro::Channel<bool> permits;
         pnm::coro::Channel<std::string> observer_ready;
         pnm::coro::Channel<std::string> acknowledged;
-#if !PNM_CORO_ENABLE_EXECUTION
-        pnm::coro::Channel<std::string> finished;
-        int workers_remaining{ WORKER_COUNT };
-#endif
     };
 
     class TemporaryFailure : public std::runtime_error
@@ -86,14 +80,8 @@ namespace
     auto pause(Pipeline& pipeline, std::chrono::milliseconds duration, std::stop_token stop)
       -> pnm::coro::Task<void>
     {
-#if PNM_CORO_ENABLE_EXECUTION
         if (!co_await pnm::coro::sleep(pipeline.context, duration, stop))
             throw pnm::coro::OperationStopped{};
-#else
-        static_cast<void>(pipeline);
-        static_cast<void>(stop);
-        co_await pnm::coro::sleep(duration);
-#endif
     }
 
     auto produce(Pipeline& pipeline, std::stop_token stop = {}) -> pnm::coro::Task<void>
@@ -111,9 +99,6 @@ namespace
             co_await pause(pipeline, 5ms, stop);
         }
         pipeline.jobs.close(); // Workers drain queued jobs before next() returns nullopt.
-#if !PNM_CORO_ENABLE_EXECUTION
-        pipeline.finished.push("producer");
-#endif
     }
 
     auto calculate(Pipeline& pipeline, const Job& job, int attempt) -> pnm::coro::Task<std::int64_t>
@@ -130,13 +115,8 @@ namespace
             }
             return std::accumulate(samples.begin(), samples.end(), std::int64_t{});
         } };
-#if PNM_CORO_ENABLE_EXECUTION
         co_return co_await pnm::coro::runAsync<std::int64_t>(pipeline.pool.getExecutionScheduler(),
                                                              std::move(function));
-#else
-        static_cast<void>(pipeline);
-        co_return co_await pnm::coro::runAsync<std::int64_t>(std::move(function));
-#endif
     }
 
     auto process(Pipeline& pipeline, std::unique_ptr<Job> job, int worker, std::stop_token stop)
@@ -152,13 +132,9 @@ namespace
                 result.progress.succeeded = 1;
                 result.error.clear();
                 co_return result;
-            }
-#if PNM_CORO_ENABLE_EXECUTION
-            catch (const pnm::coro::OperationStopped&) {
+            } catch (const pnm::coro::OperationStopped&) {
                 throw;
-            }
-#endif
-            catch (const TemporaryFailure& error) {
+            } catch (const TemporaryFailure& error) {
                 result.error = error.what();
             } catch (const std::exception& error) {
                 result.error = error.what();
@@ -180,14 +156,6 @@ namespace
             std::cout << "[worker " << worker << "] processing job " << (*job)->id << '\n';
             pipeline.results.push(co_await process(pipeline, std::move(*job), worker, stop));
         }
-#if !PNM_CORO_ENABLE_EXECUTION
-        // Only the last worker closes results, after every job has produced an outcome.
-        // All coroutine continuations run on our single context thread, so no atomic is needed.
-        if (--pipeline.workers_remaining == 0) {
-            pipeline.results.close();
-        }
-        pipeline.finished.push("worker " + std::to_string(worker));
-#endif
     }
 
     auto publish(Pipeline& pipeline, std::stop_token stop = {}) -> pnm::coro::Task<void>
@@ -211,9 +179,6 @@ namespace
             pipeline.permits.push(true);
         }
         pipeline.progress.close();
-#if !PNM_CORO_ENABLE_EXECUTION
-        pipeline.finished.push("publisher");
-#endif
     }
 
     auto observe(Pipeline& pipeline, std::string name, auto on_progress, std::stop_token stop = {})
@@ -227,12 +192,8 @@ namespace
             pipeline.acknowledged.push(name);
             // No additional suspension between acknowledging and registering the next wait.
         }
-#if !PNM_CORO_ENABLE_EXECUTION
-        pipeline.finished.push(std::move(name));
-#endif
     }
 
-#if PNM_CORO_ENABLE_EXECUTION
     template<std::size_t... I>
     auto workers(Pipeline& pipeline, std::index_sequence<I...>) -> pnm::coro::Task<void>
     {
@@ -249,18 +210,6 @@ namespace
         if (failure)
             std::rethrow_exception(failure);
     }
-#else
-    auto join(pnm::coro::Context& context, Pipeline& pipeline) -> pnm::coro::Task<void>
-    {
-        for (int task{}; task < TASK_COUNT; ++task) {
-            if (auto name{ co_await pipeline.finished.next() }) {
-                std::cout << "[joined] " << *name << '\n';
-            }
-        }
-        // stop() rejects new scheduling. Call it only after workers, timers, and observers finish.
-        context.stop();
-    }
-#endif
 }
 
 int main()
@@ -297,7 +246,6 @@ int main()
         }, stop);
     } };
     std::exception_ptr error;
-#if PNM_CORO_ENABLE_EXECUTION
     pnm::coro::co_spawn(context, [&](auto&) -> pnm::coro::Task<void> {
         try {
             co_await pnm::coro::execution::when_all(
@@ -311,17 +259,6 @@ int main()
         }
         context.stop();
     });
-#else
-    pnm::coro::co_spawn(context, [&](auto&) { return dashboard({}); });
-    pnm::coro::co_spawn(context, [&](auto&) { return metrics_observer({}); });
-    pnm::coro::co_spawn(context, [&](pnm::coro::Context&) { return publish(pipeline); });
-    for (int worker{ 1 }; worker <= WORKER_COUNT; ++worker) {
-        // Copy the loop index; the spawned callable can start after this iteration ends.
-        pnm::coro::co_spawn(context, [&, worker](pnm::coro::Context&) { return work(pipeline, worker); });
-    }
-    pnm::coro::co_spawn(context, [&](pnm::coro::Context&) { return produce(pipeline); });
-    pnm::coro::co_spawn(context, [&](pnm::coro::Context& executor) { return join(executor, pipeline); });
-#endif
 
     // One event-loop thread owns pipeline bookkeeping and output. Blocking work runs elsewhere.
     context.run();

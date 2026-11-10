@@ -35,9 +35,9 @@ auto main() -> int
     pnm::coro::ThreadPool pool{ 2 };
     auto scheduler{ pool.getExecutionScheduler() };
     ex::sync_wait(ex::schedule(scheduler));
-    measure("Detached thread (one new worker per call)",
-            [](auto&) { return pnm::coro::runAsync<void>([] {}); });
-    measure("Fixed pool (two workers total)",
+    ex::sync_wait(ex::schedule(ex::get_parallel_scheduler()));
+    measure("Parallel scheduler (shared workers)", [](auto&) { return pnm::coro::runAsync<void>([] {}); });
+    measure("Fixed pool (two dedicated workers)",
             [&](auto&) { return pnm::coro::runAsync<void>(scheduler, [] {}); });
     measure("Two composed pool operations", [&](auto& context) -> Task<void> {
         co_await ex::when_all(pnm::coro::asSender(context, pnm::coro::runAsync<void>(scheduler, [] {})),

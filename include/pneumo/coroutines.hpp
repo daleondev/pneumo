@@ -34,18 +34,11 @@
 #include <utility>
 #include <vector>
 
-#ifndef PNM_CORO_ENABLE_EXECUTION
-#define PNM_CORO_ENABLE_EXECUTION 0
-#endif
-
-#if PNM_CORO_ENABLE_EXECUTION
 #include <exec/static_thread_pool.hpp>
 #include <stdexec/execution.hpp>
-#endif
 
 namespace pnm::coro
 {
-#if PNM_CORO_ENABLE_EXECUTION
     namespace execution = ::stdexec;
 
     class OperationStopped : public std::exception
@@ -238,7 +231,6 @@ namespace pnm::coro
     {
         return { *this };
     }
-#endif
 
     class DetachedTask;
     using Scheduler = std::function<void(DetachedTask)>;
@@ -254,9 +246,7 @@ namespace pnm::coro
         // Throw only before accepting work. Override this to retain ownership of queued frames.
         virtual auto scheduleOwned(DetachedTask task) -> void;
         virtual auto getScheduler() -> Scheduler;
-#if PNM_CORO_ENABLE_EXECUTION
         virtual auto getExecutionScheduler() -> ExecutionScheduler;
-#endif
 
       protected:
         IExecutor() = default;
@@ -271,7 +261,6 @@ namespace pnm::coro
 
     namespace detail
     {
-#if PNM_CORO_ENABLE_EXECUTION
         // BasicLockable: defer teardown until the outermost resume/destruction lock is released.
         class ExecutionGate
         {
@@ -352,11 +341,7 @@ namespace pnm::coro
             std::unique_ptr<Action> m_actions;
             Action* m_tail{};
         };
-#else
-        using ExecutionGate = std::recursive_mutex;
-#endif
 
-#if PNM_CORO_ENABLE_EXECUTION
         namespace exec
         {
             template<typename Sender>
@@ -375,7 +360,6 @@ namespace pnm::coro
             template<typename T>
             concept ForeignSender = (!NativeAwaitable<T>) && execution::sender<T>;
         }
-#endif
         struct DetachedTaskPromise;
         template<typename T>
         struct TaskPromise;
@@ -405,7 +389,6 @@ namespace pnm::coro
                 return execution_mutex;
             }
 
-#if PNM_CORO_ENABLE_EXECUTION
             ExecutionScheduler execution_scheduler;
             std::optional<std::stop_source> execution_stop;
             template<exec::ForeignSender Sender>
@@ -416,7 +399,6 @@ namespace pnm::coro
             {
                 return std::forward<Awaitable>(value);
             }
-#endif
 
             auto initial_suspend() noexcept -> InitialAwaiter { return { this }; }
         };
@@ -587,10 +569,8 @@ namespace pnm::coro
                 promise.execution_mutex = waiter.promise().getExecutionMutex();
                 promise.executor = waiter.promise().executor;
                 promise.scheduler = waiter.promise().scheduler;
-#if PNM_CORO_ENABLE_EXECUTION
                 promise.execution_scheduler = waiter.promise().execution_scheduler;
                 promise.execution_stop = waiter.promise().execution_stop;
-#endif
             }
             else {
                 static_cast<void>(promise.getExecutionMutex());
@@ -716,7 +696,6 @@ namespace pnm::coro
         };
     }
 
-#if PNM_CORO_ENABLE_EXECUTION
     namespace detail::exec
     {
         // Coroutine protocol hooks are implicitly invoked through the promise/awaiter objects.
@@ -745,7 +724,6 @@ namespace pnm::coro
             }
         }) };
     }
-#endif
 
     class Context : public IExecutor
     {
@@ -753,11 +731,9 @@ namespace pnm::coro
         {
             std::coroutine_handle<> handle;
             DetachedTask owner;
-#if PNM_CORO_ENABLE_EXECUTION
             // Keep existing partial aggregate initializers warning-free when execution is enabled.
             // NOLINTNEXTLINE(readability-redundant-member-init)
             detail::exec::Ticket sender{};
-#endif
         };
         struct TimerEntry
         {
@@ -772,9 +748,7 @@ namespace pnm::coro
             std::condition_variable wake;
             std::deque<Work> queue;
             Timers timers;
-#if PNM_CORO_ENABLE_EXECUTION
             std::shared_ptr<detail::exec::Binding> execution_binding;
-#endif
             bool stopped{};
             bool destroying{};
             bool prefer_ready_work{};
@@ -939,16 +913,13 @@ namespace pnm::coro
             };
         }
 
-#if PNM_CORO_ENABLE_EXECUTION
         auto getExecutionScheduler() -> ExecutionScheduler override
         {
             std::scoped_lock binding_lock{ m_state->mutex };
             if (!m_state->execution_binding) {
                 // Reuse the adapter without extending the lifetime of the context's state.
-                m_state->execution_binding =
-                  std::make_shared<detail::exec::Binding>(getLifeToken(), [weak{ std::weak_ptr {
-                                                              m_state
-                                                          } }](detail::exec::Ticket& ticket) {
+                m_state->execution_binding = std::make_shared<detail::exec::Binding>(
+                  getLifeToken(), [weak{ std::weak_ptr{ m_state } }](detail::exec::Ticket& ticket) {
                     auto state{ weak.lock() };
                     if (!state)
                         throw std::runtime_error{ "Coroutine context is no longer alive" };
@@ -963,7 +934,6 @@ namespace pnm::coro
             }
             return ExecutionScheduler{ m_state->execution_binding };
         }
-#endif
 
       private:
         static auto runOne(const std::shared_ptr<State>& state, bool wait) -> bool
@@ -1005,11 +975,9 @@ namespace pnm::coro
             if (timer) {
                 timer->callback();
             }
-#if PNM_CORO_ENABLE_EXECUTION
             else if (work.sender) {
                 work.sender.run();
             }
-#endif
             else if (work.handle && !work.handle.done()) {
                 // Owned launches share this lock with nested tasks and their continuations.
                 // In particular, scheduler rejection may resume a completion on another thread.
@@ -1155,80 +1123,8 @@ namespace pnm::coro
             }
         }
 
-        template<typename Function, typename T>
-        class AsyncAwaiter
-        {
-            struct State
-            {
-                Function function;
-                std::optional<std::conditional_t<std::is_void_v<T>, bool, T>> result;
-                std::exception_ptr exception;
-                std::shared_ptr<Continuation> continuation;
-            };
-
-          public:
-            explicit AsyncAwaiter(Function function)
-              : m_state{ std::make_shared<State>(std::move(function), std::nullopt, nullptr, nullptr) }
-            {
-            }
-            ~AsyncAwaiter()
-            {
-                if (m_state->continuation) {
-                    m_state->continuation->cancel();
-                }
-            }
-            AsyncAwaiter(const AsyncAwaiter&) = delete;
-            auto operator=(const AsyncAwaiter&) -> AsyncAwaiter& = delete;
-            AsyncAwaiter(AsyncAwaiter&&) = delete;
-            auto operator=(AsyncAwaiter&&) -> AsyncAwaiter& = delete;
-            static auto await_ready() noexcept -> bool { return false; }
-
-            template<typename Promise>
-            auto await_suspend(std::coroutine_handle<Promise> handle) -> void
-            {
-                m_state->continuation = std::make_shared<Continuation>(handle);
-                std::thread([state{ m_state }] {
-                    try {
-                        if constexpr (std::is_void_v<T>) {
-                            std::invoke(state->function);
-                        }
-                        else {
-                            state->result.emplace(std::invoke(state->function));
-                        }
-                    } catch (...) {
-                        state->exception = std::current_exception();
-                    }
-                    state->continuation->dispatch();
-                }).detach();
-            }
-            auto await_resume() -> T
-            {
-                m_state->continuation->rethrowError();
-                if (m_state->exception) {
-                    std::rethrow_exception(m_state->exception);
-                }
-                if constexpr (!std::is_void_v<T>) {
-                    if (!m_state->result) {
-                        throw std::bad_optional_access{};
-                    }
-                    return std::move(*m_state->result);
-                }
-            }
-
-          private:
-            std::shared_ptr<State> m_state;
-        };
     }
 
-    template<typename T, typename Function>
-        requires std::invocable<Function&>
-    // NOLINTNEXTLINE(readability-identifier-naming)
-    auto runAsync(Function function) -> Task<T>
-    {
-        co_return co_await detail::AsyncAwaiter<Function, T>{ std::move(function) };
-    }
-
-#if PNM_CORO_ENABLE_EXECUTION
     namespace detail::exec
     {
         template<typename T>
@@ -1454,8 +1350,31 @@ namespace pnm::coro
     // NOLINTNEXTLINE(readability-identifier-naming)
     auto runAsync(Sch scheduler, Function function) -> Task<T>
     {
-        co_return co_await execution::starts_on(std::move(scheduler),
-                                                execution::just() | execution::then(std::move(function)));
+        auto work{ execution::just() | execution::then([function{ std::move(function) }]() mutable -> T {
+            if constexpr (std::is_void_v<T>)
+                static_cast<void>(std::invoke(function));
+            else
+                return std::invoke(function);
+        }) };
+        if constexpr (std::is_void_v<T>) {
+            co_await execution::starts_on(std::move(scheduler), std::move(work));
+        }
+        else {
+            co_return co_await execution::starts_on(std::move(scheduler), std::move(work));
+        }
+    }
+
+    template<typename T, typename Function>
+        requires std::invocable<Function&>
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    auto runAsync(Function function) -> Task<T>
+    {
+        if constexpr (std::is_void_v<T>) {
+            co_await runAsync<T>(execution::get_parallel_scheduler(), std::move(function));
+        }
+        else {
+            co_return co_await runAsync<T>(execution::get_parallel_scheduler(), std::move(function));
+        }
     }
 
     namespace detail::exec
@@ -1506,11 +1425,11 @@ namespace pnm::coro
             TaskState(Factory function,
                       Receiver target,
                       ExecutionScheduler execution_target,
-                      Scheduler legacy_target)
+                      Scheduler continuation_target)
               : factory{ std::move(function) }
               , receiver{ std::move(target) }
               , scheduler{ std::move(execution_target) }
-              , legacy{ std::move(legacy_target) }
+              , continuation_scheduler{ std::move(continuation_target) }
             {
             }
 
@@ -1544,7 +1463,7 @@ namespace pnm::coro
                     auto& promise{ driver->getHandle().promise() };
                     gate = promise.getExecutionMutex();
                     finish_action = std::make_unique<ExecutionGate::Action>([self] { self->complete(); });
-                    promise.scheduler = legacy;
+                    promise.scheduler = continuation_scheduler;
                     promise.execution_scheduler = scheduler;
                     promise.execution_stop = stop;
                     driver->resume();
@@ -1599,7 +1518,7 @@ namespace pnm::coro
             std::optional<Factory> factory;
             Receiver receiver;
             ExecutionScheduler scheduler;
-            Scheduler legacy;
+            Scheduler continuation_scheduler;
             std::stop_source stop;
             std::optional<StopCallback> cancellation;
             std::optional<Task<void>> driver;
@@ -1633,7 +1552,7 @@ namespace pnm::coro
               typename TaskCompletions<typename FactoryTask<Factory>::value_type>::type;
             Factory factory;
             ExecutionScheduler scheduler;
-            Scheduler legacy;
+            Scheduler continuation_scheduler;
             auto get_env() const noexcept -> ScheduleSender::Env { return { scheduler }; }
             template<typename Receiver>
             struct Operation
@@ -1649,8 +1568,10 @@ namespace pnm::coro
             template<typename Receiver>
             auto connect(Receiver receiver) && -> Operation<Receiver>
             {
-                return { std::make_shared<TaskState<Factory, Receiver>>(
-                  std::move(factory), std::move(receiver), std::move(scheduler), std::move(legacy)) };
+                return { std::make_shared<TaskState<Factory, Receiver>>(std::move(factory),
+                                                                        std::move(receiver),
+                                                                        std::move(scheduler),
+                                                                        std::move(continuation_scheduler)) };
             }
         };
     }
@@ -1662,10 +1583,10 @@ namespace pnm::coro
     auto asSender(Context& context, Factory&& factory)
     {
         auto scheduler{ context.getExecutionScheduler() };
-        auto legacy{ context.getScheduler() };
+        auto continuation_scheduler{ context.getScheduler() };
         return detail::exec::TaskSender<std::decay_t<Factory>>{ std::forward<Factory>(factory),
                                                                 std::move(scheduler),
-                                                                std::move(legacy) };
+                                                                std::move(continuation_scheduler) };
     }
 
     template<typename T>
@@ -1675,7 +1596,6 @@ namespace pnm::coro
         detail::exec::validate_task(task);
         return asSender(context, detail::exec::TaskFactory<T>{ std::move(task) });
     }
-#endif
 
     namespace detail
     {
@@ -2059,9 +1979,7 @@ namespace pnm::coro
         static_cast<void>(task.getHandle().promise().getExecutionMutex());
         task.getHandle().promise().executor = &executor;
         task.getHandle().promise().scheduler = executor.getScheduler();
-#if PNM_CORO_ENABLE_EXECUTION
         task.getHandle().promise().execution_scheduler = executor.getExecutionScheduler();
-#endif
         executor.scheduleOwned(std::move(task));
     }
 
@@ -2930,9 +2848,7 @@ namespace pnm::coro
             auto ticket{ launch(JobLease{ job }) };
             ticket.getHandle().promise().scheduler = job->runtime->scheduler;
             ticket.getHandle().promise().executor = &job->runtime->context;
-#if PNM_CORO_ENABLE_EXECUTION
             ticket.getHandle().promise().execution_scheduler = job->runtime->context.getExecutionScheduler();
-#endif
             try {
                 job->runtime->scheduler(std::move(ticket));
             } catch (...) {
