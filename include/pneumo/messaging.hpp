@@ -1894,13 +1894,16 @@ namespace pnm::msg
             {
                 NotificationBatch notifications{};
                 std::vector<std::shared_ptr<State>> retained{};
-                std::deque<QueuedGoal> discarded{};
+                std::vector<QueuedGoal> discarded{};
                 std::scoped_lock lock{ mutex };
                 if (stopping) {
                     state->fail(ActionError::Unavailable);
                     return;
                 }
                 pruneLocked(retained);
+                // Reserve before moving entries: an allocation failure inside erase_if
+                // would leave moved-from goals in the provider's live queue.
+                discarded.reserve(queue.size());
                 std::erase_if(queue, [&](auto& queued) {
                     if (queued.state->pending()) {
                         return false;
@@ -2093,10 +2096,14 @@ namespace pnm::msg
                 return 0;
             }
             detail::DispatchGuard dispatching{ provider->dispatching };
-            std::deque<typename Provider::QueuedGoal> incoming{};
+            std::vector<typename Provider::QueuedGoal> incoming{};
             {
                 std::scoped_lock lock{ provider->mutex };
-                for (size_t i{}; i < limit && !provider->queue.empty(); ++i) {
+                const auto pending{ std::min(limit, provider->queue.size()) };
+                // Allocate before removing goals, preserving the queue on failure
+                // and deferring submissions made by handlers to a subsequent poll.
+                incoming.reserve(pending);
+                for (size_t i{}; i < pending; ++i) {
                     incoming.push_back(std::move(provider->queue.front()));
                     provider->queue.pop_front();
                 }

@@ -185,4 +185,81 @@ TEST(MessagingLifetimeTests, QueuedActionCaptureCanDestroyItsServerDuringClose)
     EXPECT_TRUE(released);
     EXPECT_FALSE(server);
 }
+
+TEST(MessagingLifetimeTests, ActionPollingAllocationFailuresDoNotLoseQueuedGoals)
+{
+    for (std::size_t failure{}; failure < 16; ++failure) {
+        SCOPED_TRACE(failure);
+        pnm::msg::Bus bus;
+        auto action{ bus.action<int, int, int>("poll-allocation") };
+        auto server{ action.serveDeferred([](int value, pnm::msg::ActionExecution<int, int> execution) {
+            execution.accept();
+            execution.succeed(value);
+        }) };
+        std::vector<pnm::msg::PendingGoal<int, int>> goals;
+        std::size_t completed{};
+        for (int value{}; value < 40; ++value) {
+            goals.push_back(
+              action.sendGoal(value, { .accept_timeout = 1h }, { .on_result = [&, value](auto result) {
+                if (result)
+                    EXPECT_EQ(result->value, value);
+                else
+                    EXPECT_EQ(result.error(), pnm::msg::ActionError::HandlerFailed);
+                ++completed;
+            } }));
+        }
+        allocation_probe::failAfter(failure);
+        try {
+            server.poll();
+        } catch (const std::bad_alloc&) {
+        }
+        static_cast<void>(allocation_probe::failureConsumed());
+        // Retry after transient allocation failure. Every admitted goal must still
+        // be dispatchable or have a terminal error, never silently disappear.
+        server.poll();
+        for (auto& goal : goals)
+            EXPECT_TRUE(goal.poll());
+        EXPECT_EQ(completed, goals.size());
+        EXPECT_TRUE(server.idle());
+    }
+}
+
+TEST(MessagingLifetimeTests, ActionQueuePruningAllocationFailuresPreserveRemainingGoals)
+{
+    using Provider = pnm::msg::detail::ActionProvider<int, int, int>;
+    using State = pnm::msg::detail::ActionGoalState<int, int>;
+    const auto deadline{ std::chrono::steady_clock::now() + 1h };
+    auto bytes{ std::make_shared<const std::vector<std::byte>>(pnm::utils::memory::serialize(1)) };
+    for (std::size_t failure{}; failure < 10; ++failure) {
+        SCOPED_TRACE(failure);
+        Provider provider{ {}, [](int&, auto) {}, {} };
+        std::vector<std::shared_ptr<State>> states;
+        for (std::size_t index{}; index < 40; ++index) {
+            auto state{ std::make_shared<State>(deadline, pnm::msg::ActionCallbacks<int, int>{}) };
+            provider.enqueue(bytes, state);
+            states.push_back(std::move(state));
+        }
+        // Model queued goals becoming terminal before the provider dispatches them.
+        for (std::size_t index{}; index < states.size(); index += 2)
+            states[index]->fail(pnm::msg::ActionError::Timeout);
+        auto next{ std::make_shared<State>(deadline, pnm::msg::ActionCallbacks<int, int>{}) };
+        allocation_probe::failAfter(failure);
+        try {
+            provider.enqueue(bytes, next);
+        } catch (const std::bad_alloc&) {
+        }
+        static_cast<void>(allocation_probe::failureConsumed());
+        for (const auto& queued : provider.queue) {
+            ASSERT_TRUE(queued.state);
+            ASSERT_TRUE(queued.bytes);
+        }
+        for (std::size_t index{ 1 }; index < states.size(); index += 2) {
+            EXPECT_EQ(std::ranges::count_if(
+                        provider.queue, [&](const auto& queued) { return queued.state == states[index]; }),
+                      1);
+        }
+        // Subsequent admission must safely retry pruning the remaining terminal entries.
+        provider.enqueue(bytes, std::make_shared<State>(deadline, pnm::msg::ActionCallbacks<int, int>{}));
+    }
+}
 // NOLINTEND
