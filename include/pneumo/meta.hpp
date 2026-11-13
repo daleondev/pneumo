@@ -1226,9 +1226,9 @@ namespace pnm::meta
 
         template<Iteration Dir = Iteration::Forward, typename Fn, Class T>
             requires ForEachMethodFn<Fn, T>
-        constexpr auto for_each_method(Fn&& fn, T&& cl) -> void
+        // NOLINTNEXTLINE(readability-named-parameter)
+        constexpr auto for_each_method(Fn&& fn, T&&) -> void
         {
-            static_cast<void>(cl);
             auto&& callable = std::forward<Fn>(fn);
 
             [&callable]<size_t... Is>(std::index_sequence<Is...>) {
