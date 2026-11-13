@@ -769,9 +769,9 @@ namespace pnm::meta
                 constexpr auto access_ctx{ std::meta::access_context::current() };
                 std::vector<std::meta::info> type_members{};
 #if defined(__clang__) && defined(_LIBCPP_META)
-                // Clang's <meta> maps type-alias declarations to type entities before returning from members_of.
-                // Select by the reflection header, including when used with libstdc++.
-                // Clang currently loses access metadata on aliases to class-template specializations there.
+                // Clang's <meta> maps type-alias declarations to type entities before returning from
+                // members_of. Select by the reflection header, including when used with libstdc++. Clang
+                // currently loses access metadata on aliases to class-template specializations there.
                 using Iterator =
                   std::meta::__range_of_infos::iterator<std::meta::__range_of_infos::front_member_of_fn,
                                                         std::meta::__range_of_infos::next_member_of_fn,
@@ -910,6 +910,30 @@ namespace pnm::meta
                 }(std::make_index_sequence<method_reflections<std::remove_cvref_t<T>>().size()>{});
             }
 
+            template<typename Fn, typename T, size_t... Is>
+            consteval auto for_each_field_fn(std::index_sequence<Is...> indices) -> bool
+            {
+                static_cast<void>(indices);
+                constexpr auto fields{ field_reflections<std::remove_cvref_t<T>>() };
+                return (std::invocable<Fn&, decltype((std::declval<T>().[:fields[Is]:]))> && ...);
+            }
+
+            template<typename Fn, typename T>
+            inline constexpr bool for_each_field_fn_v = for_each_field_fn<Fn, T>(
+              std::make_index_sequence<field_reflections<std::remove_cvref_t<T>>().size()>{});
+
+            template<typename Fn, typename T, size_t... Is>
+            consteval auto for_each_method_fn(std::index_sequence<Is...> indices) -> bool
+            {
+                static_cast<void>(indices);
+                constexpr auto methods{ method_reflections<std::remove_cvref_t<T>>() };
+                return (requires(Fn& fn) { fn.template operator()<methods[Is]>(); } && ...);
+            }
+
+            template<typename Fn, typename T>
+            inline constexpr bool for_each_method_fn_v = for_each_method_fn<Fn, T>(
+              std::make_index_sequence<method_reflections<std::remove_cvref_t<T>>().size()>{});
+
             template<auto Number>
             static consteval auto number_to_string()
             {
@@ -974,6 +998,12 @@ namespace pnm::meta
 
         template<typename T>
         concept Class = std::is_class_v<std::remove_cvref_t<T>>;
+
+        template<typename Fn, typename T>
+        concept ForEachFieldFn = Class<T> && detail::for_each_field_fn_v<Fn, T>;
+
+        template<typename Fn, typename T>
+        concept ForEachMethodFn = Class<T> && detail::for_each_method_fn_v<Fn, T>;
 
         template<Class T>
         constexpr auto field_count() -> size_t
@@ -1140,7 +1170,7 @@ namespace pnm::meta
         }
 
         template<size_t Index, Class T>
-        constexpr auto get(T& value) -> decltype(auto)
+        constexpr auto get(T&& value) -> decltype(auto)
         {
             constexpr auto members{ detail::field_reflections<std::remove_cvref_t<T>>() };
             static_assert(Index < members.size());
@@ -1162,6 +1192,66 @@ namespace pnm::meta
             static constexpr std::array METHOD_NAMES{ method_names<T>() };
             static consteval auto numMethods() -> size_t { return METHOD_NAMES.size(); }
         };
+
+        template<Iteration Dir = Iteration::Forward, typename Fn, Class T>
+            requires ForEachFieldFn<Fn, T>
+        // NOLINTNEXTLINE(readability-identifier-naming)
+        constexpr auto for_each_field(Fn&& fn, T&& cl) -> void
+        {
+            auto&& callable = std::forward<Fn>(fn);
+            auto&& cls = std::forward<T>(cl);
+
+            [&callable, &cls]<size_t... Is>(std::index_sequence<Is...>) {
+                // NOLINTNEXTLINE(bugprone-use-after-move)
+                (... && [&callable, &cls]<size_t I>() -> bool {
+                    constexpr auto i{ Dir == Iteration::Reverse ? field_count<T>() - 1 - I : I };
+
+                    auto&& field = get<i>(std::forward<decltype(cls)>(cls));
+                    using Ret = std::invoke_result_t<Fn&, decltype(field)>;
+
+                    if constexpr (std::is_void_v<Ret>) {
+                        std::invoke(callable, std::forward<decltype(field)>(field));
+                        return true;
+                    }
+                    else if constexpr (std::same_as<Ret, Loop>) {
+                        auto ret{ std::invoke(callable, std::forward<decltype(field)>(field)) };
+                        return static_cast<Loop>(ret) == Loop::Continue;
+                    }
+                    else {
+                        static_assert(false, "for_each_field fn must return 'void' or 'Loop' control token.");
+                    }
+                }.template operator()<Is>());
+            }(std::make_index_sequence<field_count<T>()>{});
+        }
+
+        template<Iteration Dir = Iteration::Forward, typename Fn, Class T>
+            requires ForEachMethodFn<Fn, T>
+        constexpr auto for_each_method(Fn&& fn, T&&) -> void
+        {
+            auto&& callable = std::forward<Fn>(fn);
+
+            [&callable]<size_t... Is>(std::index_sequence<Is...>) {
+                (... && [&callable]<size_t I>() -> bool {
+                    constexpr auto i{ Dir == Iteration::Reverse ? sizeof...(Is) - 1 - I : I };
+
+                    constexpr auto methods{ detail::method_reflections<std::remove_cvref_t<T>>() };
+                    constexpr auto method{ methods[i] };
+                    using Ret = decltype(callable.template operator()<method>());
+
+                    if constexpr (std::is_void_v<Ret>) {
+                        callable.template operator()<method>();
+                        return true;
+                    }
+                    else if constexpr (std::same_as<Ret, Loop>) {
+                        return callable.template operator()<method>() == Loop::Continue;
+                    }
+                    else {
+                        static_assert(false,
+                                      "for_each_method fn must return 'void' or 'Loop' control token.");
+                    }
+                }.template operator()<Is>());
+            }(std::make_index_sequence<method_count<T>()>{});
+        }
 
         template<Class T, pnm::meta::string::FixedString Identifier>
         constexpr auto dispatch(auto value)

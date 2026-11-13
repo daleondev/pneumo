@@ -45,6 +45,15 @@ struct SampleDispatcher
     static constexpr auto triple(int value) -> int { return value * 3; }
 };
 
+struct SampleStruct
+{
+    std::string name;
+    int value;
+
+    std::string getName() { return name; }
+    int getValue() { return value; }
+};
+
 namespace sample::detail
 {
     struct Widget
@@ -264,6 +273,16 @@ auto main() -> int
             return pnm::meta::Loop::Continue;
         }
     }, tuple);
+
+    SampleStruct sampleStruct{ .name = "Test", .value = 5 };
+    pnm::meta::structural::for_each_field([](auto& val) {
+        using Type = std::remove_cvref_t<decltype(val)>;
+        constexpr auto type_name{ pnm::meta::type::name<Type>() };
+        std::cout << "Struct field: type = " << type_name << ", value = " << val << '\n';
+    }, sampleStruct);
+    pnm::meta::structural::for_each_method([&sampleStruct]<std::meta::info Method>() {
+        std::cout << "Struct method return: " << sampleStruct.[:Method:]() << '\n';
+    }, sampleStruct);
 
     constexpr auto nested_names = pnm::meta::structural::nested_type_names<SampleNestedTypes>();
     std::cout << "SampleNestedTypes exposes " << nested_names.size() << " public nested types:\n";

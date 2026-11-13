@@ -701,6 +701,142 @@ TEST(StructMetaTests, InfoIncludesMethodCandidates)
     SUCCEED();
 }
 
+TEST(StructMetaTests, ForEachField)
+{
+    struct FieldSample
+    {
+        int integer{ 1 };
+        double floating{ 2.0 };
+        std::string text{ "3" };
+    };
+
+    FieldSample aggregate{};
+
+    pnm::meta::structural::for_each_field([](auto& val) {
+        using Type = std::remove_cvref_t<decltype(val)>;
+
+        if constexpr (std::same_as<Type, int>) {
+            EXPECT_EQ(val, 1);
+            val = 10;
+        }
+        else if constexpr (std::same_as<Type, double>) {
+            EXPECT_EQ(val, 2.0);
+            val = 20.0;
+        }
+        else if constexpr (std::same_as<Type, std::string>) {
+            EXPECT_EQ(val, "3");
+            val = "30";
+        }
+        else {
+            FAIL() << "Type not expected";
+        }
+    }, aggregate);
+
+    EXPECT_EQ(aggregate.integer, 10);
+    EXPECT_EQ(aggregate.floating, 20.0);
+    EXPECT_EQ(aggregate.text, "30");
+}
+
+TEST(StructMetaTests, ForEachFieldCanIterateReverseAndBreak)
+{
+    struct FieldOrderSample
+    {
+        int first{ 1 };
+        int second{ 2 };
+        int third{ 3 };
+        int fourth{ 4 };
+    };
+
+    FieldOrderSample aggregate{};
+    auto visited_values = std::vector<int>{};
+
+    pnm::meta::structural::for_each_field<pnm::meta::Iteration::Reverse>([&visited_values](int value) {
+        visited_values.push_back(value);
+        return value == 2 ? pnm::meta::Loop::Break : pnm::meta::Loop::Continue;
+    }, aggregate);
+
+    ASSERT_EQ(visited_values.size(), 3UZ);
+    EXPECT_EQ(visited_values[0], 4);
+    EXPECT_EQ(visited_values[1], 3);
+    EXPECT_EQ(visited_values[2], 2);
+}
+
+TEST(StructMetaTests, ForEachMethod)
+{
+    struct MethodSample
+    {
+        int integer{ 1 };
+        double floating{ 2.0 };
+        std::string text{ "3" };
+
+        void updateInteger() { integer = 10; }
+        void updateFloating() { floating = 20.0; }
+        void updateText() { text = "30"; }
+    };
+
+    MethodSample aggregate{};
+    auto visited_methods = std::vector<std::string_view>{};
+
+    pnm::meta::structural::for_each_method([&aggregate, &visited_methods]<std::meta::info Method>() {
+        constexpr auto name{ std::meta::identifier_of(Method) };
+
+        visited_methods.push_back(name);
+
+        if constexpr (name == "updateInteger") {
+            EXPECT_EQ(aggregate.integer, 1);
+        }
+        else if constexpr (name == "updateFloating") {
+            EXPECT_EQ(aggregate.floating, 2.0);
+        }
+        else if constexpr (name == "updateText") {
+            EXPECT_EQ(aggregate.text, "3");
+        }
+        else {
+            FAIL() << "Method not expected";
+        }
+
+        aggregate.[:Method:]();
+    }, aggregate);
+
+    ASSERT_EQ(visited_methods.size(), 3UZ);
+    EXPECT_EQ(visited_methods[0], "updateInteger");
+    EXPECT_EQ(visited_methods[1], "updateFloating");
+    EXPECT_EQ(visited_methods[2], "updateText");
+
+    EXPECT_EQ(aggregate.integer, 10);
+    EXPECT_EQ(aggregate.floating, 20.0);
+    EXPECT_EQ(aggregate.text, "30");
+}
+
+TEST(StructMetaTests, ForEachMethodCanIterateReverseAndBreak)
+{
+    struct MethodOrderSample
+    {
+        std::vector<int> visited{};
+
+        void first() { visited.push_back(1); }
+        void second() { visited.push_back(2); }
+        void third() { visited.push_back(3); }
+        void fourth() { visited.push_back(4); }
+    };
+
+    MethodOrderSample aggregate{};
+
+    pnm::meta::structural::for_each_method<pnm::meta::Iteration::Reverse>(
+      [&aggregate]<std::meta::info Method>() {
+        constexpr auto name{ std::meta::identifier_of(Method) };
+
+        aggregate.[:Method:]();
+
+        return name == "second" ? pnm::meta::Loop::Break : pnm::meta::Loop::Continue;
+    }, aggregate);
+
+    ASSERT_EQ(aggregate.visited.size(), 3UZ);
+    EXPECT_EQ(aggregate.visited[0], 4);
+    EXPECT_EQ(aggregate.visited[1], 3);
+    EXPECT_EQ(aggregate.visited[2], 2);
+}
+
 TEST(StructMetaTests, DispatchInvokesStaticMemberByName)
 {
     static_assert(pnm::meta::structural::dispatch<DispatchProbe, "triple">(7) == 21);
