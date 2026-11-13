@@ -747,6 +747,7 @@ namespace pnm::meta
     {
         namespace detail
         {
+            // NOLINTBEGIN(readability-identifier-naming)
             template<typename T>
                 requires std::is_class_v<T>
             consteval auto field_reflections()
@@ -994,6 +995,7 @@ namespace pnm::meta
                     return instance;
                 }
             };
+            // NOLINTEND(readability-identifier-naming)
         }
 
         template<typename T>
