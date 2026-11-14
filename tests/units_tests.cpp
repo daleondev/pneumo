@@ -1,4 +1,4 @@
-#include "pneumo/pneumo.hpp"
+#include "pneumo/units.hpp"
 
 #include <gtest/gtest.h>
 

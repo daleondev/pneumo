@@ -229,6 +229,7 @@ target_link_libraries(
     INTERFACE
     pneumo::common
     pneumo::messaging
+    pneumo_execution_dependency
 )
 
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Generic")

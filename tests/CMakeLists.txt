@@ -124,6 +124,8 @@ target_link_libraries(
 )
 
 add_executable(messaging_tests 
+    messaging_lifetime_tests.cpp
+    execution_allocation_probe.cpp
     messaging_topic_tests.cpp 
     messaging_service_tests.cpp 
     messaging_action_tests.cpp
@@ -193,3 +195,14 @@ set_tests_properties(
 add_executable(coroutines_messaging_tests coroutines_messaging_tests.cpp)
 target_link_libraries(coroutines_messaging_tests PRIVATE GTest::gtest_main pneumo::coroutines pneumo::compiler_warnings)
 gtest_discover_tests(coroutines_messaging_tests PROPERTIES TIMEOUT 15)
+
+add_executable(coroutines_execution_tests
+    coroutines_execution_tests.cpp
+    coroutines_execution_lifetime_tests.cpp
+    execution_tu_probe.cpp
+    execution_allocation_probe.cpp
+)
+target_link_libraries(coroutines_execution_tests PRIVATE GTest::gtest_main pneumo::coroutines pneumo::compiler_warnings)
+gtest_discover_tests(coroutines_execution_tests PROPERTIES TIMEOUT 20)
+add_executable(coroutines_execution_benchmark EXCLUDE_FROM_ALL execution_benchmark.cpp execution_allocation_probe.cpp)
+target_link_libraries(coroutines_execution_benchmark PRIVATE pneumo::coroutines pneumo::compiler_warnings)

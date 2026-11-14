@@ -76,6 +76,14 @@ jobs:
           - name: Clang P2996 Tidy
             preset: clang-tidy
             run_tests: false
+          - name: GCC 16 ASan and UBSan
+            preset: gcc-asan
+            run_tests: true
+            sanitizers: true
+          - name: GCC 16 ThreadSanitizer
+            preset: gcc-tsan
+            run_tests: true
+            sanitizers: true
     steps:
       - uses: actions/checkout@v7
 
@@ -95,11 +103,29 @@ jobs:
             -DPFMT_ENABLE_TOML=ON
 
       - name: Build
-        run: cmake --build --preset "${{ matrix.preset }}" --parallel 2
+        env:
+          SANITIZERS: ${{ matrix.sanitizers }}
+        run: |
+          if [[ "${SANITIZERS}" == "true" ]]; then
+            cmake --build --preset "${{ matrix.preset }}" --parallel 2 \
+              --target coroutines_tests coroutines_messaging_tests coroutines_execution_tests messaging_tests
+          else
+            cmake --build --preset "${{ matrix.preset }}" --parallel 2
+          fi
 
       - name: Test
         if: matrix.run_tests
-        run: ctest --preset "${{ matrix.preset }}" --output-on-failure
+        env:
+          SANITIZERS: ${{ matrix.sanitizers }}
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          TSAN_OPTIONS: halt_on_error=1
+        run: |
+          if [[ "${SANITIZERS}" == "true" ]]; then
+            ctest --preset "${{ matrix.preset }}" -R 'Coroutines|Messaging' --output-on-failure
+          else
+            ctest --preset "${{ matrix.preset }}" --output-on-failure
+          fi
 
   publish-release:
     runs-on: ubuntu-24.04

@@ -568,7 +568,7 @@ namespace pnm::units
         {
             auto index{ std::numeric_limits<size_t>::max() };
             meta::tuple::for_each<typename UnitsMeta::NestedTypes>([&index](auto i) {
-                using T = meta::tuple::at_t<i, typename UnitsMeta::NestedTypes>;
+                using T = meta::tuple::type_t<i, typename UnitsMeta::NestedTypes>;
                 if constexpr (!IsUnit<T>) {
                     throw std::logic_error("Not a unit: " + std::string(meta::type::name<T>()));
                 }
@@ -589,21 +589,21 @@ namespace pnm::units
         static consteval auto makeUnitFactors()
         {
             return []<size_t... Is>(std::index_sequence<Is...>) {
-                return std::array{ meta::tuple::at_t<Is, typename UnitsMeta::NestedTypes>::FACTOR... };
+                return std::array{ meta::tuple::type_t<Is, typename UnitsMeta::NestedTypes>::FACTOR... };
             }(std::make_index_sequence<UnitsMeta::numNestedTypes()>{});
         }
 
         static consteval auto makeUnitOffsets()
         {
             return []<size_t... Is>(std::index_sequence<Is...>) {
-                return std::array{ meta::tuple::at_t<Is, typename UnitsMeta::NestedTypes>::OFFSET... };
+                return std::array{ meta::tuple::type_t<Is, typename UnitsMeta::NestedTypes>::OFFSET... };
             }(std::make_index_sequence<UnitsMeta::numNestedTypes()>{});
         }
 
         static consteval auto makeUnitSuffixes()
         {
             return []<size_t... Is>(std::index_sequence<Is...>) {
-                return std::array{ meta::tuple::at_t<Is, typename UnitsMeta::NestedTypes>::SUFFIX... };
+                return std::array{ meta::tuple::type_t<Is, typename UnitsMeta::NestedTypes>::SUFFIX... };
             }(std::make_index_sequence<UnitsMeta::numNestedTypes()>{});
         }
 
@@ -773,7 +773,7 @@ namespace pnm::units
                 auto result{ -1Z };
                 meta::tuple::for_each<typename UnitsMeta::NestedTypes>([&result](auto i) {
                     if constexpr (std::same_as<std::remove_cvref_t<U>,
-                                               meta::tuple::at_t<i, typename UnitsMeta::NestedTypes>>) {
+                                               meta::tuple::type_t<i, typename UnitsMeta::NestedTypes>>) {
                         result = i;
                     }
                 });
