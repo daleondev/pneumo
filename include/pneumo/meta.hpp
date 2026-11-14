@@ -63,6 +63,13 @@ namespace pnm::meta
 
         template<typename T, typename... Ts>
         inline constexpr bool contains_v = contains<T, Ts...>::value;
+
+        template<typename Fn, typename T, size_t... Is>
+        consteval auto for_each_fn(std::index_sequence<Is...> indices) -> bool
+        {
+            static_cast<void>(indices);
+            return (std::invocable<Fn&, std::integral_constant<size_t, Is>> && ...);
+        }
         // NOLINTEND(readability-identifier-naming)
     }
 
@@ -133,7 +140,7 @@ namespace pnm::meta
             };
 
             template<std::size_t Size, Character Char>
-            struct is_fixed_string<pnm::meta::string::FixedString<Size, Char>> : std::true_type
+            struct is_fixed_string<meta::string::FixedString<Size, Char>> : std::true_type
             {
             };
 
@@ -170,7 +177,7 @@ namespace pnm::meta
             template<typename T, typename... Ts>
             struct tuple_contains_type<std::tuple<Ts...>, T>
               : std::bool_constant<
-                  pnm::meta::detail::contains_v<std::remove_cvref_t<T>, std::remove_cvref_t<Ts>...>>
+                  meta::detail::contains_v<std::remove_cvref_t<T>, std::remove_cvref_t<Ts>...>>
             {
             };
 
@@ -273,16 +280,9 @@ namespace pnm::meta
                 return {};
             }
 
-            template<typename Fn, typename T, size_t... Is>
-            consteval auto for_each_fn(std::index_sequence<Is...> indices) -> bool
-            {
-                static_cast<void>(indices);
-                return (std::invocable<Fn&, std::integral_constant<size_t, Is>> && ...);
-            }
-
             template<typename Fn, typename T>
             inline constexpr bool for_each_fn_v =
-              for_each_fn<Fn, T>(std::make_index_sequence<std::tuple_size_v<std::remove_cvref_t<T>>>{});
+              meta::detail::for_each_fn<Fn, T>(std::make_index_sequence<std::tuple_size_v<std::remove_cvref_t<T>>>{});
 
             template<typename Fn, typename T, size_t... Is>
             consteval auto for_each_element_fn(std::index_sequence<Is...> indices) -> bool
@@ -428,8 +428,8 @@ namespace pnm::meta
             struct variant_unique<std::variant<Ts...>>
             {
                 using raw_tuple = std::tuple<Ts...>;
-                using unique_tuple = pnm::meta::tuple::unique_types_t<raw_tuple>;
-                using type = pnm::meta::tuple::to_variant_t<unique_tuple>;
+                using unique_tuple = meta::tuple::unique_types_t<raw_tuple>;
+                using type = meta::tuple::to_variant_t<unique_tuple>;
             };
 
             template<typename Variant>
@@ -465,16 +465,9 @@ namespace pnm::meta
                 return {};
             }
 
-            template<typename Fn, typename T, size_t... Is>
-            consteval auto for_each_fn(std::index_sequence<Is...> indices) -> bool
-            {
-                static_cast<void>(indices);
-                return (std::invocable<Fn&, std::integral_constant<size_t, Is>> && ...);
-            }
-
             template<typename Fn, typename T>
             inline constexpr bool for_each_fn_v =
-              for_each_fn<Fn, T>(std::make_index_sequence<std::variant_size_v<std::remove_cvref_t<T>>>{});
+              meta::detail::for_each_fn<Fn, T>(std::make_index_sequence<std::variant_size_v<std::remove_cvref_t<T>>>{});
             // NOLINTEND(readability-identifier-naming)
         }
 
@@ -589,7 +582,7 @@ namespace pnm::meta
         }
 
         template<typename T>
-        constexpr auto namespace_name() -> pnm::meta::string::FixedString<detail::namespace_name_len<T>()>
+        constexpr auto namespace_name() -> meta::string::FixedString<detail::namespace_name_len<T>()>
         {
             std::array<char, detail::namespace_name_len<T>()> ns{};
             auto curr{ ^^T };
@@ -912,8 +905,12 @@ namespace pnm::meta
                 }(std::make_index_sequence<method_reflections<std::remove_cvref_t<T>>().size()>{});
             }
 
+            template<typename Fn, typename T>
+            inline constexpr bool for_each_field_fn_v =
+              meta::detail::for_each_fn<Fn, T>(std::make_index_sequence<field_reflections<std::remove_cvref_t<T>>().size()>{});
+
             template<typename Fn, typename T, size_t... Is>
-            consteval auto for_each_field_fn(std::index_sequence<Is...> indices) -> bool
+            consteval auto for_each_field_element_fn(std::index_sequence<Is...> indices) -> bool
             {
                 static_cast<void>(indices);
                 constexpr auto fields{ field_reflections<std::remove_cvref_t<T>>() };
@@ -921,11 +918,15 @@ namespace pnm::meta
             }
 
             template<typename Fn, typename T>
-            inline constexpr bool for_each_field_fn_v = for_each_field_fn<Fn, T>(
+            inline constexpr bool for_each_field_element_fn_v = for_each_field_element_fn<Fn, T>(
               std::make_index_sequence<field_reflections<std::remove_cvref_t<T>>().size()>{});
 
+              template<typename Fn, typename T>
+            inline constexpr bool for_each_method_fn_v =
+              meta::detail::for_each_fn<Fn, T>(std::make_index_sequence<method_reflections<std::remove_cvref_t<T>>().size()>{});
+
             template<typename Fn, typename T, size_t... Is>
-            consteval auto for_each_method_fn(std::index_sequence<Is...> indices) -> bool
+            consteval auto for_each_method_element_fn(std::index_sequence<Is...> indices) -> bool
             {
                 static_cast<void>(indices);
                 constexpr auto methods{ method_reflections<std::remove_cvref_t<T>>() };
@@ -933,7 +934,7 @@ namespace pnm::meta
             }
 
             template<typename Fn, typename T>
-            inline constexpr bool for_each_method_fn_v = for_each_method_fn<Fn, T>(
+            inline constexpr bool for_each_method_element_fn_v = for_each_method_element_fn<Fn, T>(
               std::make_index_sequence<method_reflections<std::remove_cvref_t<T>>().size()>{});
 
             template<auto Number>
@@ -1006,7 +1007,13 @@ namespace pnm::meta
         concept ForEachFieldFn = Class<T> && detail::for_each_field_fn_v<Fn, T>;
 
         template<typename Fn, typename T>
+        concept ForEachFieldElementFn = Class<T> && detail::for_each_field_element_fn_v<Fn, T>;
+
+        template<typename Fn, typename T>
         concept ForEachMethodFn = Class<T> && detail::for_each_method_fn_v<Fn, T>;
+
+        template<typename Fn, typename T>
+        concept ForEachMethodElementFn = Class<T> && detail::for_each_method_element_fn_v<Fn, T>;
 
         template<Class T>
         constexpr auto field_count() -> size_t
@@ -1196,10 +1203,44 @@ namespace pnm::meta
             static consteval auto numMethods() -> size_t { return METHOD_NAMES.size(); }
         };
 
-        template<Iteration Dir = Iteration::Forward, typename Fn, Class T>
+        template<Class T, Iteration Dir = Iteration::Forward, typename Fn>
             requires ForEachFieldFn<Fn, T>
+        constexpr auto for_each_field(Fn&& fn) -> void
+        {
+            auto&& callable = std::forward<Fn>(fn);
+            [&callable]<size_t... Is>(std::index_sequence<Is...>) {
+                (... && [&callable]<size_t I>() -> bool {
+                    constexpr auto i{
+                        std::integral_constant<size_t, Dir == Iteration::Reverse ? field_count<T>() - 1 - I : I>{}
+                    };
+
+                    using Ret = std::invoke_result_t<Fn, decltype(i)>;
+                    if constexpr (std::is_void_v<Ret>) {
+                        std::invoke(callable, i);
+                        return true;
+                    }
+                    else if constexpr (std::same_as<Ret, Loop>) {
+                        auto ret{ std::invoke(callable, i) };
+                        return static_cast<Loop>(ret) == Loop::Continue;
+                    }
+                    else {
+                        static_assert(false, "for_each_field fn must return 'void' or 'Loop' control token.");
+                    }
+                }.template operator()<Is>());
+            }(std::make_index_sequence<field_count<T>()>{});
+        }
+
+        template<typename Fn, Class T>
+        // NOLINTNEXTLINE(readability-named-parameter)
+        constexpr auto for_each_field(Fn&& fn, T&&) -> void
+        {
+            for_each_field<T>(std::forward<Fn>(fn));
+        }
+
+        template<Iteration Dir = Iteration::Forward, typename Fn, Class T>
+            requires ForEachFieldElementFn<Fn, T>
         // NOLINTNEXTLINE(readability-identifier-naming)
-        constexpr auto for_each_field(Fn&& fn, T&& cl) -> void
+        constexpr auto for_each_field_element(Fn&& fn, T&& cl) -> void
         {
             auto&& callable = std::forward<Fn>(fn);
             auto&& cls = std::forward<T>(cl);
@@ -1221,16 +1262,50 @@ namespace pnm::meta
                         return static_cast<Loop>(ret) == Loop::Continue;
                     }
                     else {
-                        static_assert(false, "for_each_field fn must return 'void' or 'Loop' control token.");
+                        static_assert(false, "for_each_field_element fn must return 'void' or 'Loop' control token.");
                     }
                 }.template operator()<Is>());
             }(std::make_index_sequence<field_count<T>()>{});
         }
 
-        template<Iteration Dir = Iteration::Forward, typename Fn, Class T>
-            requires ForEachMethodFn<Fn, T>
+        template<Class T, Iteration Dir = Iteration::Forward, typename Fn>
+            requires ForEachFieldFn<Fn, T>
+        constexpr auto for_each_method(Fn&& fn) -> void
+        {
+            auto&& callable = std::forward<Fn>(fn);
+            [&callable]<size_t... Is>(std::index_sequence<Is...>) {
+                (... && [&callable]<size_t I>() -> bool {
+                    constexpr auto i{
+                        std::integral_constant<size_t, Dir == Iteration::Reverse ? method_count<T>() - 1 - I : I>{}
+                    };
+
+                    using Ret = std::invoke_result_t<Fn, decltype(i)>;
+                    if constexpr (std::is_void_v<Ret>) {
+                        std::invoke(callable, i);
+                        return true;
+                    }
+                    else if constexpr (std::same_as<Ret, Loop>) {
+                        auto ret{ std::invoke(callable, i) };
+                        return static_cast<Loop>(ret) == Loop::Continue;
+                    }
+                    else {
+                        static_assert(false, "for_each_method fn must return 'void' or 'Loop' control token.");
+                    }
+                }.template operator()<Is>());
+            }(std::make_index_sequence<method_count<T>()>{});
+        }
+
+        template<typename Fn, Class T>
         // NOLINTNEXTLINE(readability-named-parameter)
         constexpr auto for_each_method(Fn&& fn, T&&) -> void
+        {
+            for_each_method<T>(std::forward<Fn>(fn));
+        }
+
+        template<Iteration Dir = Iteration::Forward, typename Fn, Class T>
+            requires ForEachMethodElementFn<Fn, T>
+        // NOLINTNEXTLINE(readability-named-parameter)
+        constexpr auto for_each_method_element(Fn&& fn, T&&) -> void
         {
             auto&& callable = std::forward<Fn>(fn);
 
@@ -1251,13 +1326,13 @@ namespace pnm::meta
                     }
                     else {
                         static_assert(false,
-                                      "for_each_method fn must return 'void' or 'Loop' control token.");
+                                      "for_each_method_element fn must return 'void' or 'Loop' control token.");
                     }
                 }.template operator()<Is>());
             }(std::make_index_sequence<method_count<T>()>{});
         }
 
-        template<Class T, pnm::meta::string::FixedString Identifier>
+        template<Class T, meta::string::FixedString Identifier>
         constexpr auto dispatch(auto value)
         {
             constexpr auto target_method{ []() consteval {

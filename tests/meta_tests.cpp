@@ -712,7 +712,28 @@ TEST(StructMetaTests, ForEachField)
 
     FieldSample aggregate{};
 
-    pnm::meta::structural::for_each_field([](auto& val) {
+    pnm::meta::structural::for_each_field<FieldSample>([&aggregate](auto index) {
+        using Type = pnm::meta::structural::field_type_t<index, FieldSample>;
+        auto val{ pnm::meta::structural::get<index>(aggregate) };
+
+        if constexpr (index == 0) {
+            static_assert(std::same_as<Type, int>);
+            EXPECT_EQ(val, 1);
+        }
+        else if constexpr (index == 1) {
+            static_assert(std::same_as<Type, double>);
+            EXPECT_EQ(val, 2.0);
+        }
+        else if constexpr (index == 2) {
+            static_assert(std::same_as<Type, std::string>);
+            EXPECT_EQ(val, "3");
+        }
+        else {
+            FAIL() << "Index out of range";
+        }
+    });
+
+    pnm::meta::structural::for_each_field_element([](auto& val) {
         using Type = std::remove_cvref_t<decltype(val)>;
 
         if constexpr (std::same_as<Type, int>) {
@@ -737,7 +758,7 @@ TEST(StructMetaTests, ForEachField)
     EXPECT_EQ(aggregate.text, "30");
 }
 
-TEST(StructMetaTests, ForEachFieldCanIterateReverseAndBreak)
+TEST(StructMetaTests, ForEachFieldElementCanIterateReverseAndBreak)
 {
     struct FieldOrderSample
     {
@@ -750,7 +771,7 @@ TEST(StructMetaTests, ForEachFieldCanIterateReverseAndBreak)
     FieldOrderSample aggregate{};
     auto visited_values = std::vector<int>{};
 
-    pnm::meta::structural::for_each_field<pnm::meta::Iteration::Reverse>([&visited_values](int value) {
+    pnm::meta::structural::for_each_field_element<pnm::meta::Iteration::Reverse>([&visited_values](int value) {
         visited_values.push_back(value);
         return value == 2 ? pnm::meta::Loop::Break : pnm::meta::Loop::Continue;
     }, aggregate);
@@ -761,7 +782,7 @@ TEST(StructMetaTests, ForEachFieldCanIterateReverseAndBreak)
     EXPECT_EQ(visited_values[2], 2);
 }
 
-TEST(StructMetaTests, ForEachMethod)
+TEST(StructMetaTests, ForEachMethodElement)
 {
     struct MethodSample
     {
@@ -777,7 +798,24 @@ TEST(StructMetaTests, ForEachMethod)
     MethodSample aggregate{};
     auto visited_methods = std::vector<std::string_view>{};
 
-    pnm::meta::structural::for_each_method([&aggregate, &visited_methods]<std::meta::info Method>() {
+    pnm::meta::structural::for_each_method<MethodSample>([&aggregate](auto index) {
+        constexpr auto name{ pnm::meta::structural::method_name<index, MethodSample>() };
+
+        if constexpr (name == "updateInteger") {
+            EXPECT_EQ(aggregate.integer, 1);
+        }
+        else if constexpr (name == "updateFloating") {
+            EXPECT_EQ(aggregate.floating, 2.0);
+        }
+        else if constexpr (name == "updateText") {
+            EXPECT_EQ(aggregate.text, "3");
+        }
+        else {
+            FAIL() << "Method not expected";
+        }
+    });
+
+    pnm::meta::structural::for_each_method_element([&aggregate, &visited_methods]<std::meta::info Method>() {
         constexpr auto name{ std::meta::identifier_of(Method) };
 
         visited_methods.push_back(name);
@@ -808,7 +846,7 @@ TEST(StructMetaTests, ForEachMethod)
     EXPECT_EQ(aggregate.text, "30");
 }
 
-TEST(StructMetaTests, ForEachMethodCanIterateReverseAndBreak)
+TEST(StructMetaTests, ForEachMethodElementCanIterateReverseAndBreak)
 {
     struct MethodOrderSample
     {
@@ -822,7 +860,7 @@ TEST(StructMetaTests, ForEachMethodCanIterateReverseAndBreak)
 
     MethodOrderSample aggregate{};
 
-    pnm::meta::structural::for_each_method<pnm::meta::Iteration::Reverse>(
+    pnm::meta::structural::for_each_method_element<pnm::meta::Iteration::Reverse>(
       [&aggregate]<std::meta::info Method>() {
         constexpr auto name{ std::meta::identifier_of(Method) };
 
