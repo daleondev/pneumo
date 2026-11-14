@@ -83,8 +83,8 @@ namespace
     static_assert(std::same_as<Unique, std::tuple<int, double, float>>);
 
     static_assert(pnm::meta::tuple::count<TupleA>() == 2UZ);
-    static_assert(std::same_as<pnm::meta::tuple::at_t<0, TupleA>, int>);
-    static_assert(std::same_as<pnm::meta::tuple::at_t<1, TupleA>, double>);
+    static_assert(std::same_as<pnm::meta::tuple::type_t<0, TupleA>, int>);
+    static_assert(std::same_as<pnm::meta::tuple::type_t<1, TupleA>, double>);
 
     using TupleAsVariant = pnm::meta::tuple::to_variant_t<TupleA>;
     static_assert(std::same_as<TupleAsVariant, std::variant<int, double>>);
@@ -234,7 +234,7 @@ auto main() -> int
 
     std::cout << "Variant reverse iteration with break:\n";
     pnm::meta::variant::for_each<MyVariant, pnm::meta::Iteration::Reverse>([](auto index) {
-        using Type = pnm::meta::variant::at_t<index, MyVariant>;
+        using Type = pnm::meta::variant::type_t<index, MyVariant>;
         constexpr auto type_name{ pnm::meta::type::name<Type>() };
         std::cout << "  index " << index << ": " << type_name << '\n';
         if constexpr (index == 2) {

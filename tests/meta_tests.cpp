@@ -208,8 +208,8 @@ TEST(TupleMetaTests, CountHelper)
 
 TEST(TupleMetaTests, AtHelper)
 {
-    static_assert(std::same_as<pnm::meta::tuple::at_t<0, TupleA>, int>);
-    static_assert(std::same_as<pnm::meta::tuple::at_t<1, TupleA>, double>);
+    static_assert(std::same_as<pnm::meta::tuple::type_t<0, TupleA>, int>);
+    static_assert(std::same_as<pnm::meta::tuple::type_t<1, TupleA>, double>);
     SUCCEED();
 }
 
@@ -234,7 +234,7 @@ TEST(TupleMetaTests, ForEach)
     MyTuple tuple_values{ 1, 2.0, "3" };
 
     pnm::meta::tuple::for_each<MyTuple>([&tuple_values](auto index) {
-        using Type = pnm::meta::tuple::at_t<index, MyTuple>;
+        using Type = pnm::meta::tuple::type_t<index, MyTuple>;
         auto val{ std::get<index>(tuple_values) };
 
         if constexpr (index == 0) {
@@ -353,7 +353,7 @@ TEST(VariantMetaTests, ForEach)
 {
     using MyVariant = std::variant<int, double, int, float>;
     pnm::meta::variant::for_each<MyVariant>([](auto index) {
-        using Type = pnm::meta::variant::at_t<index, MyVariant>;
+        using Type = pnm::meta::variant::type_t<index, MyVariant>;
         if constexpr (index == 0) {
             static_assert(std::same_as<Type, int>);
         }

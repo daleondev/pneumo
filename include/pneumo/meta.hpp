@@ -316,7 +316,7 @@ namespace pnm::meta
         }
 
         template<size_t Index, Tuple T>
-        using at_t = std::tuple_element_t<Index, std::remove_cvref_t<T>>;
+        using type_t = std::tuple_element_t<Index, std::remove_cvref_t<T>>;
 
         template<Tuple First, Tuple Second>
         using concat_types_t = typename decltype(detail::concat_types<First, Second>())::type;
@@ -377,7 +377,7 @@ namespace pnm::meta
                 (... && [&callable, &tuple]<size_t I>() -> bool {
                     constexpr auto i{ Dir == Iteration::Reverse ? count<T>() - 1 - I : I };
 
-                    using Ret = std::invoke_result_t<Fn, at_t<i, T>&>;
+                    using Ret = std::invoke_result_t<Fn, type_t<i, T>&>;
                     if constexpr (std::is_void_v<Ret>) {
                         std::invoke(callable, std::get<i>(std::forward<decltype(tuple)>(tuple)));
                         return true;
@@ -491,7 +491,7 @@ namespace pnm::meta
         }
 
         template<size_t Index, Variant T>
-        using at_t = std::variant_alternative_t<Index, std::remove_cvref_t<T>>;
+        using type_t = std::variant_alternative_t<Index, std::remove_cvref_t<T>>;
 
         template<Variant T>
         using to_tuple_t = typename decltype(detail::to_tuple<T>())::type;
@@ -703,6 +703,7 @@ namespace pnm::meta
         }
 
         template<auto Enumerator>
+            requires(ScopedEnum<decltype(Enumerator)>)
         constexpr auto enumerator_name() -> std::string_view
         {
             using Enum = std::remove_cvref_t<decltype(Enumerator)>;

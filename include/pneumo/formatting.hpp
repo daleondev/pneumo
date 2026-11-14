@@ -290,7 +290,7 @@ namespace pnm::fmt
             using Type = std::remove_cvref_t<T>;
             return []<size_t... Is>(std::index_sequence<Is...>) -> auto {
                 return std::array<std::string_view, sizeof...(Is)>{
-                    pnm::meta::tuple::at_t<Is, typename Adapter<Type>::Fields>::NAME...
+                    pnm::meta::tuple::type_t<Is, typename Adapter<Type>::Fields>::NAME...
                 };
             }(std::make_index_sequence<pnm::meta::tuple::count<typename Adapter<Type>::Fields>()>{});
         }
@@ -300,8 +300,8 @@ namespace pnm::fmt
         {
             using Type = std::remove_cvref_t<T>;
             return []<size_t... Is>(std::index_sequence<Is...>) -> auto {
-                return std::type_identity<
-                  std::tuple<typename pnm::meta::tuple::at_t<Is, typename Adapter<Type>::Fields>::Type...>>{};
+                return std::type_identity<std::tuple<
+                  typename pnm::meta::tuple::type_t<Is, typename Adapter<Type>::Fields>::Type...>>{};
             }(std::make_index_sequence<pnm::meta::tuple::count<typename Adapter<Type>::Fields>()>{});
         }
 
@@ -404,7 +404,7 @@ namespace pnm::fmt
 
             [&]<size_t... Is>(std::index_sequence<Is...>) -> void {
                 ([&](auto i) -> void {
-                    using MemberType = pnm::meta::tuple::at_t<i, typename Info::MemberTypes>;
+                    using MemberType = pnm::meta::tuple::type_t<i, typename Info::MemberTypes>;
 
                     size += (Level + 1) * PRETTY_INDENT.size();
                     size += Info::MEMBER_NAMES[i].size();
@@ -453,7 +453,7 @@ namespace pnm::fmt
 
             [&]<size_t... Is>(std::index_sequence<Is...>) -> void {
                 ([&](auto i) -> void {
-                    using MemberType = pnm::meta::tuple::at_t<i, typename Info::MemberTypes>;
+                    using MemberType = pnm::meta::tuple::type_t<i, typename Info::MemberTypes>;
 
                     for (auto j{ 0UZ }; j < (Level + 1); ++j) {
                         append(PRETTY_INDENT);
@@ -515,7 +515,7 @@ namespace pnm::fmt
                 using Fields = typename Adapter<Type>::Fields;
                 return [&]<size_t... Is>(std::index_sequence<Is...>) -> auto {
                     return std::tuple_cat(
-                      make_flat_args_tuple(std::invoke(pnm::meta::tuple::at_t<Is, Fields>::VALUE, val))...);
+                      make_flat_args_tuple(std::invoke(pnm::meta::tuple::type_t<Is, Fields>::VALUE, val))...);
                 }(std::make_index_sequence<pnm::meta::tuple::count<Fields>()>{});
             }
             else if constexpr (detail::Reflectable<Type>) {
@@ -650,8 +650,8 @@ namespace pnm::fmt
         auto serialized_value(Result&& result, std::string_view format) -> std::string
         {
             if (!result) {
-                throw std::format_error(std::string{ format } + " serialization failed: " +
-                                        glz::format_error(result.error()));
+                throw std::format_error(std::string{ format } +
+                                        " serialization failed: " + glz::format_error(result.error()));
             }
             return *std::forward<Result>(result);
         }
