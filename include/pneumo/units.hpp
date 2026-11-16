@@ -870,21 +870,28 @@ namespace pnm::units
             return Quantity{ (*modifier)(value) };
         }
 
-        // Common codes are case-sensitive and resolved within this quantity (e.g. C62 is shared).
         static constexpr auto create(double value, std::string_view common_code) -> std::optional<Quantity>
         {
             if (common_code.empty()) {
                 return std::nullopt;
             }
-            static constexpr auto codes{ []<std::size_t... Is>(std::index_sequence<Is...>) {
-                return std::array{ meta::tuple::type_t<Is, typename UnitsMeta::NestedTypes>::COMMON_CODE... };
-            }(std::make_index_sequence<UnitsMeta::numNestedTypes()>{}) };
-            for (std::size_t index{}; index < codes.size(); ++index) {
-                if (codes[index] == common_code) {
-                    return Quantity{ (value + UNIT_OFFSETS[index]) * UNIT_FACTORS[index] };
-                }
+            static constexpr auto units{ [] consteval {
+                return pnm::meta::container::FixedMap{ []<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return std::array{ std::make_pair(
+                      pnm::meta::tuple::type_t<Is, typename UnitsMeta::NestedTypes>::COMMON_CODE,
+                      +[](double v) {
+                        using CurrentUnit = pnm::meta::tuple::type_t<Is, typename UnitsMeta::NestedTypes>;
+                        return static_cast<double>((v + CurrentUnit::OFFSET) * CurrentUnit::FACTOR);
+                    })... };
+                }(std::make_index_sequence<UnitsMeta::numNestedTypes()>{}) };
+            }() };
+
+            auto modifier{ units.at(common_code) };
+            if (!modifier) {
+                return std::nullopt;
             }
-            return std::nullopt;
+
+            return Quantity{ (*modifier)(value) };
         }
 
         template<IsUnit Unit>
@@ -963,7 +970,6 @@ namespace pnm::units
 
     PNM_QUANTITIES(PNM_DEFINE_QUANTITY)
 
-    // Preserve the unit identifiers, including their conventional capitalization.
     // NOLINTBEGIN(readability-identifier-naming)
     enum class Units : std::uint8_t
     {
@@ -971,15 +977,13 @@ namespace pnm::units
     };
     // NOLINTEND(readability-identifier-naming)
 
-    // Invalid enumerators and units without a verified exact common code return nullopt.
-    // Match the quantity API's camelCase naming.
     // NOLINTNEXTLINE(readability-identifier-naming)
     constexpr auto commonCode(Units unit) -> std::optional<std::string_view>
     {
         // The enum and this table use the same registry order.
         static constexpr std::array codes{ PNM_QUANTITIES(PNM_COMMON_CODE_GROUP)
                                              PNM_TIME_UNITS(PNM_COMMON_CODE, PNM_COMMON_CODE, _) };
-        const auto index{ static_cast<std::size_t>(unit) };
+        auto index{ static_cast<std::size_t>(unit) };
         if (index >= codes.size() || codes[index].empty()) {
             return std::nullopt;
         }
