@@ -177,7 +177,8 @@
 
 #define PNM_ANGULAR_VELOCITY_UNITS(X, XX, ctx)                                                               \
     XX(ctx, rad_s, "2A")                                                                                     \
-    X(ctx, rpm, "M46", detail::factor<2.0 * std::numbers::pi / 60.0>)
+    X(ctx, rpm, "M46", detail::factor<2.0 * std::numbers::pi / 60.0>)                                        \
+    X(ctx, deg_s, "E96", detail::factor<std::numbers::pi / 180.0>)
 
 // ---------- Angular Acceleration ----------
 

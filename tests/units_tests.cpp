@@ -1548,6 +1548,16 @@ TEST(UnitsTests, RpmConversionsUseRadiansPerSecondAsBase)
     EXPECT_DOUBLE_EQ(60_rpm / 30_rpm, 2.0);
 }
 
+TEST(UnitsTests, DegreesPerSecondSupportsLiteralAndEnumCreation)
+{
+    EXPECT_DOUBLE_EQ((180_deg_s).get(), std::numbers::pi);
+    EXPECT_NEAR((6_deg_s).get<AngularVelocityUnits::rpm>(), 1.0, 1e-12);
+    const auto velocity{ AngularVelocity::create(90.0, Units::deg_s) };
+    ASSERT_TRUE(velocity.has_value());
+    EXPECT_NEAR(velocity->get(), std::numbers::pi / 2.0, 1e-12);
+    EXPECT_DOUBLE_EQ((1_deg_s * 2_s).get<AngleUnits::deg>(), 2.0);
+}
+
 TEST(UnitsTests, AngleDividedByTimeProducesAngularVelocity)
 {
     static_assert(std::is_same_v<decltype(1_rev / 2_s), AngularVelocity>);
