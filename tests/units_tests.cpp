@@ -152,7 +152,7 @@ static_assert(pnm::units::BaseUnit<"MTR", "m">::COMMON_CODE == "MTR");
 
 namespace
 {
-    using Quantities = std::tuple<Distance,
+    using Quantities = std::tuple<pnm::units::FrequencyRate, pnm::units::FrequencyAcceleration, pnm::units::TransmissionLead, Distance,
                                   Area,
                                   Time,
                                   ByteSize,
@@ -1620,4 +1620,18 @@ TEST(UnitsTests, MotionDynamics)
     EXPECT_NEAR((180_deg_s3).get<AngularJerkUnits::rad_s3>(), std::numbers::pi, 1e-12);
     EXPECT_NEAR((1000_mm_s3).get<JerkUnits::m_s3>(), 1.0, 1e-12);
     EXPECT_NEAR((90_deg_s2 * 2_s).get<AngularVelocityUnits::rpm>(), 30.0, 1e-12);
+}
+
+TEST(UnitsTests, MotorDerivativesAndTransmissionLead)
+{
+    using namespace pnm::units;
+    EXPECT_DOUBLE_EQ((60_rpm_s).get<AngularAccelerationUnits::rad_s2>(),2*std::numbers::pi);
+    EXPECT_DOUBLE_EQ((60_rpm_s2).get<AngularJerkUnits::rad_s3>(),2*std::numbers::pi);
+    EXPECT_DOUBLE_EQ((1_mm_rev).get<TransmissionLeadUnits::m_rad>(),.001/(2*std::numbers::pi));
+    static_assert(std::is_same_v<decltype(1_Hz/1_s),FrequencyRate>);
+    static_assert(std::is_same_v<decltype(1_Hz_s/1_s),FrequencyAcceleration>);
+    static_assert(std::is_same_v<UnitTraits<Units::rpm_s>::Quantity,AngularAcceleration>);
+    static_assert(std::is_same_v<UnitTraits<Units::mm_rev>::Quantity,TransmissionLead>);
+    EXPECT_EQ(AngularAcceleration::suffix<AngularAccelerationUnits::rpm_s>(),"rpm/s");
+    EXPECT_EQ(AngularJerk::suffix<AngularJerkUnits::rpm_s2>(),"rpm/s²");
 }

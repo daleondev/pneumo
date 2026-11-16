@@ -184,19 +184,29 @@
 
 #define PNM_ANGULAR_ACCELERATION_UNITS(X, XX, ctx)                                                           \
     XX(ctx, rad_s2, "2B")                                                                                    \
-    X(ctx, deg_s2, "M45", detail::factor<std::numbers::pi / 180.0>)
+    X(ctx, deg_s2, "M45", detail::factor<std::numbers::pi / 180.0>)                                          \
+    X(ctx, rpm_s, "", detail::factor<2.0 * std::numbers::pi / 60.0>, 0.0, "rpm/s")
 
 // ---------- Angular Jerk ----------
 
 #define PNM_ANGULAR_JERK_UNITS(X, XX, ctx)                                                                   \
     XX(ctx, rad_s3, "")                                                                                      \
-    X(ctx, deg_s3, "", detail::factor<std::numbers::pi / 180.0>)
+    X(ctx, deg_s3, "", detail::factor<std::numbers::pi / 180.0>)                                             \
+    X(ctx, rpm_s2, "", detail::factor<2.0 * std::numbers::pi / 60.0>, 0.0, "rpm/s²")
 
 // ---------- Ratio ----------
 
 #define PNM_RATIO_UNITS(X, XX, ctx)                                                                          \
     XX(ctx, fraction, "C62", "")                                                                             \
     X(ctx, percent, "P1", std::centi, 0.0, "%")
+
+// ---------- Frequency derivatives and transmission lead ----------
+// Frequency counts events per second; derivatives retain that event meaning.
+#define PNM_FREQUENCY_RATE_UNITS(X, XX, ctx) XX(ctx, Hz_s, "", "Hz/s")
+#define PNM_FREQUENCY_ACCELERATION_UNITS(X, XX, ctx) XX(ctx, Hz_s2, "", "Hz/s²")
+#define PNM_TRANSMISSION_LEAD_UNITS(X, XX, ctx)                                                              \
+    XX(ctx, m_rad, "", "m/rad")                                                                              \
+    X(ctx, mm_rev, "", detail::factor<0.001 / (2.0 * std::numbers::pi)>, 0.0, "mm/rev")
 
 // ---------- Quantity Registry ----------
 
@@ -223,7 +233,10 @@
     X(AngularVelocity, PNM_ANGULAR_VELOCITY_UNITS)                                                           \
     X(AngularAcceleration, PNM_ANGULAR_ACCELERATION_UNITS)                                                   \
     X(AngularJerk, PNM_ANGULAR_JERK_UNITS)                                                                   \
-    X(Ratio, PNM_RATIO_UNITS)
+    X(Ratio, PNM_RATIO_UNITS)                                                                                \
+    X(FrequencyRate, PNM_FREQUENCY_RATE_UNITS)                                                               \
+    X(FrequencyAcceleration, PNM_FREQUENCY_ACCELERATION_UNITS)                                               \
+    X(TransmissionLead, PNM_TRANSMISSION_LEAD_UNITS)
 
 // ---------- Helper Macros ----------
 
@@ -977,6 +990,21 @@ namespace pnm::units
     };
     // NOLINTEND(readability-identifier-naming)
 
+    template<Units U>
+    struct UnitTraits;
+#define PNM_UNIT_TRAIT(quantity, suffix, ...)                                                                \
+    template<>                                                                                               \
+    struct UnitTraits<Units::suffix>                                                                         \
+    {                                                                                                        \
+        using Quantity = quantity;                                                                           \
+        using Type = quantity##Units::suffix;                                                                \
+    };
+#define PNM_QUANTITY_TRAITS(quantity, list) list(PNM_UNIT_TRAIT, PNM_UNIT_TRAIT, quantity)
+    PNM_QUANTITIES(PNM_QUANTITY_TRAITS)
+    PNM_TIME_UNITS(PNM_UNIT_TRAIT, PNM_UNIT_TRAIT, Time)
+#undef PNM_QUANTITY_TRAITS
+#undef PNM_UNIT_TRAIT
+
     // NOLINTNEXTLINE(readability-identifier-naming)
     constexpr auto commonCode(Units unit) -> std::optional<std::string_view>
     {
@@ -1005,6 +1033,9 @@ namespace pnm::units
     PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(Energy, J, Time, s, Power, W)
     PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(Force, N, Area, m2, Pressure, Pa)
     PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(Power, W, Voltage, V, Current, A)
+    PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(Frequency, Hz, Time, s, FrequencyRate, Hz_s)
+    PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(FrequencyRate, Hz_s, Time, s, FrequencyAcceleration, Hz_s2)
+    PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(Distance, m, Angle, rad, TransmissionLead, m_rad)
     PNM_DEFINE_QUANTITY_RECIPROCAL_RELATION(Time, s, Frequency, Hz)
     PNM_DEFINE_QUANTITY_DIVIDE_RESULT_WITH_UNITS(Ratio, fraction, Time, s, Frequency, Hz)
 
@@ -1198,6 +1229,9 @@ namespace pnm::units
 #undef PNM_POWER_UNITS
 #undef PNM_PRESSURE_UNITS
 #undef PNM_FREQUENCY_UNITS
+#undef PNM_FREQUENCY_RATE_UNITS
+#undef PNM_FREQUENCY_ACCELERATION_UNITS
+#undef PNM_TRANSMISSION_LEAD_UNITS
 #undef PNM_DATA_RATE_UNITS
 #undef PNM_VELOCITY_UNITS
 #undef PNM_ACCELERATION_UNITS
