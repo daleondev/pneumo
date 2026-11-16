@@ -831,6 +831,8 @@ namespace pnm::units
         }
 
         template<pnm::meta::enumeration::ScopedEnum Unit>
+            requires(pnm::meta::type::namespace_name<Unit>() == "pnm::units" &&
+                     pnm::meta::type::name<Unit>() == "Units")
         static constexpr auto create(double value, Unit unit) -> Quantity
         {
             constexpr auto units{ [] consteval {
