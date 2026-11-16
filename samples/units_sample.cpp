@@ -7,6 +7,22 @@
 
 namespace
 {
+    auto print_common_code_example() -> void
+    {
+        using namespace pnm::units;
+
+        std::cout << "UNECE common codes\n";
+        std::cout << "  kilometre: " << DistanceUnits::km::COMMON_CODE << '\n';
+        if (const auto code{ commonCode(Units::KB) }) {
+            std::cout << "  binary kilobyte: " << *code << '\n';
+        }
+        if (const auto distance{ Distance::create(2.5, "KMT") }) {
+            std::cout << "  2.5 KMT in metres: " << distance->get() << '\n';
+        }
+        std::cout << "  distance accepts SEC: " << Distance::create(1.0, "SEC").has_value() << '\n';
+        std::cout << "  jerk has a common code: " << commonCode(Units::m_s3).has_value() << "\n\n";
+    }
+
     auto print_storage_example() -> void
     {
         using namespace pnm::units::literals;
@@ -131,6 +147,7 @@ namespace
 
 auto main() -> int
 {
+    print_common_code_example();
     print_storage_example();
     print_trip_example();
     print_acceleration_example();

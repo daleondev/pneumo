@@ -2,193 +2,200 @@
 
 #include "meta.hpp"
 
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <flat_map>
 #include <numbers>
+#include <optional>
 #include <ratio>
+#include <string_view>
 
 // NOLINTBEGIN(bugprone-macro-parentheses,cppcoreguidelines-macro-usage,cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
 
+// UNECE Recommendation 20 common codes, verified against the UN/CEFACT vocabulary on 2026-11-16:
+// https://vocabulary.uncefact.org/UnitMeasureCode
+// The string after each identifier is its common code; an empty string means no verified exact match.
+
 // ---------- Unitless ----------
 
-#define PNM_UNITLESS_UNITS(X, XX, ctx) XX(ctx, unitless, "")
+#define PNM_UNITLESS_UNITS(X, XX, ctx) XX(ctx, unitless, "C62", "")
 
 // ---------- Distance ----------
 
 #define PNM_DISTANCE_UNITS(X, XX, ctx)                                                                       \
-    X(ctx, nm, std::nano)                                                                                    \
-    X(ctx, um, std::micro)                                                                                   \
-    X(ctx, mm, std::milli)                                                                                   \
-    X(ctx, cm, std::centi)                                                                                   \
-    X(ctx, dm, std::deci)                                                                                    \
-    XX(ctx, m)                                                                                               \
-    X(ctx, km, std::kilo)
+    X(ctx, nm, "C45", std::nano)                                                                             \
+    X(ctx, um, "4H", std::micro)                                                                             \
+    X(ctx, mm, "MMT", std::milli)                                                                            \
+    X(ctx, cm, "CMT", std::centi)                                                                            \
+    X(ctx, dm, "DMT", std::deci)                                                                             \
+    XX(ctx, m, "MTR")                                                                                        \
+    X(ctx, km, "KMT", std::kilo)
 
 // ---------- Area ----------
 
 #define PNM_AREA_UNITS(X, XX, ctx)                                                                           \
-    X(ctx, mm2, std::micro)                                                                                  \
-    X(ctx, cm2, std::ratio<1Z, 10'000Z>)                                                                     \
-    X(ctx, dm2, std::centi)                                                                                  \
-    XX(ctx, m2)                                                                                              \
-    X(ctx, km2, std::mega)
+    X(ctx, mm2, "MMK", std::micro)                                                                           \
+    X(ctx, cm2, "CMK", std::ratio<1Z, 10'000Z>)                                                              \
+    X(ctx, dm2, "DMK", std::centi)                                                                           \
+    XX(ctx, m2, "MTK")                                                                                       \
+    X(ctx, km2, "KMK", std::mega)
 
 // ---------- Time ----------
 
 #define PNM_TIME_UNITS(X, XX, ctx)                                                                           \
-    X(ctx, ns, std::nano)                                                                                    \
-    X(ctx, us, std::micro)                                                                                   \
-    X(ctx, ms, std::milli)                                                                                   \
-    XX(ctx, s)                                                                                               \
-    X(ctx, min, std::ratio<60Z>)                                                                             \
-    X(ctx, h, std::ratio<3600Z>)
+    X(ctx, ns, "C47", std::nano)                                                                             \
+    X(ctx, us, "B98", std::micro)                                                                            \
+    X(ctx, ms, "C26", std::milli)                                                                            \
+    XX(ctx, s, "SEC")                                                                                        \
+    X(ctx, min, "MIN", std::ratio<60Z>)                                                                      \
+    X(ctx, h, "HUR", std::ratio<3600Z>)
 
 // ---------- ByteSize ----------
 
 #define PNM_BYTE_SIZE_UNITS(X, XX, ctx)                                                                      \
-    XX(ctx, bytes)                                                                                           \
-    X(ctx, KB, std::ratio<1024Z>)                                                                            \
-    X(ctx, MB, std::ratio<1024Z * 1024Z>)                                                                    \
-    X(ctx, GB, std::ratio<1024Z * 1024Z * 1024Z>)
+    XX(ctx, bytes, "AD")                                                                                     \
+    X(ctx, KB, "E64", std::ratio<1024Z>)                                                                     \
+    X(ctx, MB, "E63", std::ratio<1024Z * 1024Z>)                                                             \
+    X(ctx, GB, "E62", std::ratio<1024Z * 1024Z * 1024Z>)
 
 // ---------- Mass ----------
 
 #define PNM_MASS_UNITS(X, XX, ctx)                                                                           \
-    X(ctx, mg, std::milli)                                                                                   \
-    XX(ctx, g)                                                                                               \
-    X(ctx, kg, std::kilo)                                                                                    \
-    X(ctx, t, std::mega)
+    X(ctx, mg, "MGM", std::milli)                                                                            \
+    XX(ctx, g, "GRM")                                                                                        \
+    X(ctx, kg, "KGM", std::kilo)                                                                             \
+    X(ctx, t, "TNE", std::mega)
 
 // ---------- Temperature ----------
 
 #define PNM_TEMPERATURE_UNITS(X, XX, ctx)                                                                    \
-    XX(ctx, C, "°C")                                                                                         \
-    X(ctx, K, detail::factor<1.0>, -273.15)                                                                  \
-    X(ctx, F, std::ratio<5Z, 9Z>, -32.0, "°F")
+    XX(ctx, C, "CEL", "°C")                                                                                  \
+    X(ctx, K, "KEL", detail::factor<1.0>, -273.15)                                                           \
+    X(ctx, F, "FAH", std::ratio<5Z, 9Z>, -32.0, "°F")
 
 // ---------- Current ----------
 
 #define PNM_CURRENT_UNITS(X, XX, ctx)                                                                        \
-    X(ctx, uA, std::micro)                                                                                   \
-    X(ctx, mA, std::milli)                                                                                   \
-    XX(ctx, A)                                                                                               \
-    X(ctx, kA, std::kilo)
+    X(ctx, uA, "B84", std::micro)                                                                            \
+    X(ctx, mA, "4K", std::milli)                                                                             \
+    XX(ctx, A, "AMP")                                                                                        \
+    X(ctx, kA, "B22", std::kilo)
 
 // ---------- Voltage ----------
 
 #define PNM_VOLTAGE_UNITS(X, XX, ctx)                                                                        \
-    X(ctx, mV, std::milli)                                                                                   \
-    XX(ctx, V)                                                                                               \
-    X(ctx, kV, std::kilo)                                                                                    \
-    X(ctx, MV, std::mega)
+    X(ctx, mV, "2Z", std::milli)                                                                             \
+    XX(ctx, V, "VLT")                                                                                        \
+    X(ctx, kV, "KVT", std::kilo)                                                                             \
+    X(ctx, MV, "B78", std::mega)
 
 // ---------- Force ----------
 
 #define PNM_FORCE_UNITS(X, XX, ctx)                                                                          \
-    X(ctx, mN, std::milli)                                                                                   \
-    XX(ctx, N)                                                                                               \
-    X(ctx, kN, std::kilo)                                                                                    \
-    X(ctx, MN, std::mega)
+    X(ctx, mN, "C20", std::milli)                                                                            \
+    XX(ctx, N, "NEW")                                                                                        \
+    X(ctx, kN, "B47", std::kilo)                                                                             \
+    X(ctx, MN, "B73", std::mega)
 
 // ---------- Energy ----------
 
 #define PNM_ENERGY_UNITS(X, XX, ctx)                                                                         \
-    X(ctx, mJ, std::milli)                                                                                   \
-    XX(ctx, J)                                                                                               \
-    X(ctx, kJ, std::kilo)                                                                                    \
-    X(ctx, MJ, std::mega)                                                                                    \
-    X(ctx, Wh, std::ratio<3600Z>)                                                                            \
-    X(ctx, kWh, std::ratio<3'600'000Z>)
+    X(ctx, mJ, "C15", std::milli)                                                                            \
+    XX(ctx, J, "JOU")                                                                                        \
+    X(ctx, kJ, "KJO", std::kilo)                                                                             \
+    X(ctx, MJ, "3B", std::mega)                                                                              \
+    X(ctx, Wh, "WHR", std::ratio<3600Z>)                                                                     \
+    X(ctx, kWh, "KWH", std::ratio<3'600'000Z>)
 
 // ---------- Power ----------
 
 #define PNM_POWER_UNITS(X, XX, ctx)                                                                          \
-    X(ctx, mW, std::milli)                                                                                   \
-    XX(ctx, W)                                                                                               \
-    X(ctx, kW, std::kilo)                                                                                    \
-    X(ctx, MW, std::mega)
+    X(ctx, mW, "C31", std::milli)                                                                            \
+    XX(ctx, W, "WTT")                                                                                        \
+    X(ctx, kW, "KWT", std::kilo)                                                                             \
+    X(ctx, MW, "MAW", std::mega)
 
 // ---------- Pressure ----------
 
 #define PNM_PRESSURE_UNITS(X, XX, ctx)                                                                       \
-    X(ctx, Pa, std::ratio<1Z, 100'000Z>)                                                                     \
-    X(ctx, hPa, std::ratio<100Z, 100'000Z>)                                                                  \
-    X(ctx, mbar, std::ratio<1Z, 1000Z>)                                                                      \
-    X(ctx, kPa, std::ratio<1000Z, 100'000Z>)                                                                 \
-    XX(ctx, bar)                                                                                             \
-    X(ctx, atm, std::ratio<101'325Z, 100'000Z>)                                                              \
-    X(ctx, MPa, std::ratio<1'000'000Z, 100'000Z>)                                                            \
-    X(ctx, kbar, std::ratio<1000Z>)
+    X(ctx, Pa, "PAL", std::ratio<1Z, 100'000Z>)                                                              \
+    X(ctx, hPa, "A97", std::ratio<100Z, 100'000Z>)                                                           \
+    X(ctx, mbar, "MBR", std::ratio<1Z, 1000Z>)                                                               \
+    X(ctx, kPa, "KPA", std::ratio<1000Z, 100'000Z>)                                                          \
+    XX(ctx, bar, "BAR")                                                                                      \
+    X(ctx, atm, "ATM", std::ratio<101'325Z, 100'000Z>)                                                       \
+    X(ctx, MPa, "MPA", std::ratio<1'000'000Z, 100'000Z>)                                                     \
+    X(ctx, kbar, "KBA", std::ratio<1000Z>)
 
 // ---------- Frequency ----------
 
 #define PNM_FREQUENCY_UNITS(X, XX, ctx)                                                                      \
-    X(ctx, mHz, std::milli)                                                                                  \
-    XX(ctx, Hz)                                                                                              \
-    X(ctx, kHz, std::kilo)                                                                                   \
-    X(ctx, MHz, std::mega)                                                                                   \
-    X(ctx, GHz, std::giga)
+    X(ctx, mHz, "", std::milli)                                                                              \
+    XX(ctx, Hz, "HTZ")                                                                                       \
+    X(ctx, kHz, "KHZ", std::kilo)                                                                            \
+    X(ctx, MHz, "MHZ", std::mega)                                                                            \
+    X(ctx, GHz, "A86", std::giga)
 
 // ---------- Data Rate ----------
 
 #define PNM_DATA_RATE_UNITS(X, XX, ctx)                                                                      \
-    XX(ctx, bytes_s)                                                                                         \
-    X(ctx, KB_s, std::ratio<1024Z>)                                                                          \
-    X(ctx, MB_s, std::ratio<1024Z * 1024Z>)                                                                  \
-    X(ctx, GB_s, std::ratio<1024Z * 1024Z * 1024Z>)
+    XX(ctx, bytes_s, "P93")                                                                                  \
+    X(ctx, KB_s, "", std::ratio<1024Z>)                                                                      \
+    X(ctx, MB_s, "", std::ratio<1024Z * 1024Z>)                                                              \
+    X(ctx, GB_s, "", std::ratio<1024Z * 1024Z * 1024Z>)
 
 // ---------- Velocity ----------
 
 #define PNM_VELOCITY_UNITS(X, XX, ctx)                                                                       \
-    X(ctx, mm_s, std::milli)                                                                                 \
-    XX(ctx, m_s)                                                                                             \
-    X(ctx, km_h, std::ratio<1000Z, 3600Z>)
+    X(ctx, mm_s, "C16", std::milli)                                                                          \
+    XX(ctx, m_s, "MTS")                                                                                      \
+    X(ctx, km_h, "KMH", std::ratio<1000Z, 3600Z>)
 
 // ---------- Acceleration ----------
 
 #define PNM_ACCELERATION_UNITS(X, XX, ctx)                                                                   \
-    X(ctx, mm_s2, std::milli)                                                                                \
-    XX(ctx, m_s2, "m/s²")                                                                                    \
-    X(ctx, km_h2, std::ratio<1000Z, 3600Z * 3600Z>)
+    X(ctx, mm_s2, "M41", std::milli)                                                                         \
+    XX(ctx, m_s2, "MSK", "m/s²")                                                                             \
+    X(ctx, km_h2, "", std::ratio<1000Z, 3600Z * 3600Z>)
 
 // ---------- Jerk ----------
 
 #define PNM_JERK_UNITS(X, XX, ctx)                                                                           \
-    X(ctx, mm_s3, std::milli)                                                                                \
-    XX(ctx, m_s3)
+    X(ctx, mm_s3, "", std::milli)                                                                            \
+    XX(ctx, m_s3, "")
 
 // ---------- Angle ----------
 
 #define PNM_ANGLE_UNITS(X, XX, ctx)                                                                          \
-    XX(ctx, rad)                                                                                             \
-    X(ctx, deg, detail::factor<std::numbers::pi / 180.0>, 0.0, "°")                                          \
-    X(ctx, rev, detail::factor<2.0 * std::numbers::pi>)
+    XX(ctx, rad, "C81")                                                                                      \
+    X(ctx, deg, "DD", detail::factor<std::numbers::pi / 180.0>, 0.0, "°")                                    \
+    X(ctx, rev, "M44", detail::factor<2.0 * std::numbers::pi>)
 
 // ---------- Angular Velocity ----------
 
 #define PNM_ANGULAR_VELOCITY_UNITS(X, XX, ctx)                                                               \
-    XX(ctx, rad_s)                                                                                           \
-    X(ctx, rpm, detail::factor<2.0 * std::numbers::pi / 60.0>)
+    XX(ctx, rad_s, "2A")                                                                                     \
+    X(ctx, rpm, "M46", detail::factor<2.0 * std::numbers::pi / 60.0>)
 
 // ---------- Angular Acceleration ----------
 
 #define PNM_ANGULAR_ACCELERATION_UNITS(X, XX, ctx)                                                           \
-    XX(ctx, rad_s2)                                                                                          \
-    X(ctx, deg_s2, detail::factor<std::numbers::pi / 180.0>)
+    XX(ctx, rad_s2, "2B")                                                                                    \
+    X(ctx, deg_s2, "M45", detail::factor<std::numbers::pi / 180.0>)
 
 // ---------- Angular Jerk ----------
 
 #define PNM_ANGULAR_JERK_UNITS(X, XX, ctx)                                                                   \
-    XX(ctx, rad_s3)                                                                                          \
-    X(ctx, deg_s3, detail::factor<std::numbers::pi / 180.0>)
+    XX(ctx, rad_s3, "")                                                                                      \
+    X(ctx, deg_s3, "", detail::factor<std::numbers::pi / 180.0>)
 
 // ---------- Ratio ----------
 
 #define PNM_RATIO_UNITS(X, XX, ctx)                                                                          \
-    XX(ctx, fraction, "")                                                                                    \
-    X(ctx, percent, std::centi, 0.0, "%")
+    XX(ctx, fraction, "C62", "")                                                                             \
+    X(ctx, percent, "P1", std::centi, 0.0, "%")
 
 // ---------- Quantity Registry ----------
 
@@ -221,6 +228,9 @@
 
 #define PNM_ENUM_UNIT(_, unit_suffix, ...) unit_suffix,
 #define PNM_ENUM_GROUP(_, unit_list) unit_list(PNM_ENUM_UNIT, PNM_ENUM_UNIT, _)
+
+#define PNM_COMMON_CODE(_, unit_suffix, common_code, ...) std::string_view{ common_code },
+#define PNM_COMMON_CODE_GROUP(_, unit_list) unit_list(PNM_COMMON_CODE, PNM_COMMON_CODE, _)
 
 #define PNM_DEFINE_LITERAL(quantity_name, unit_suffix, ...)                                                  \
     namespace literals                                                                                       \
@@ -399,7 +409,8 @@ namespace pnm::units
         // NOLINTEND(readability-identifier-naming)
     }
 
-    template<detail::FactorProvider Factor,
+    template<meta::string::FixedString CommonCode,
+             detail::FactorProvider Factor,
              double Offset = 0.0,
              meta::string::FixedString Suffix = "n/a",
              bool IsBase = false>
@@ -408,12 +419,13 @@ namespace pnm::units
         static constexpr auto FACTOR{ detail::extractFactor<Factor>() };
         static constexpr auto OFFSET{ Offset };
         static constexpr auto SUFFIX{ static_cast<std::string_view>(Suffix) };
+        static constexpr auto COMMON_CODE{ static_cast<std::string_view>(CommonCode) };
         static constexpr auto IS_BASE{ IsBase };
         static_assert(!IsBase || FACTOR == 1.0);
     };
 
-    template<meta::string::FixedString Suffix = "n/a">
-    using BaseUnit = Unit<detail::factor<1.0>, 0.0, Suffix, true>;
+    template<meta::string::FixedString CommonCode = "", meta::string::FixedString Suffix = "n/a">
+    using BaseUnit = Unit<CommonCode, detail::factor<1.0>, 0.0, Suffix, true>;
 
     namespace detail
     {
@@ -423,8 +435,12 @@ namespace pnm::units
         {
         };
 
-        template<typename Ratio, double Offset, meta::string::FixedString Suffix, bool IsBase>
-        struct is_unit<Unit<Ratio, Offset, Suffix, IsBase>> : std::true_type
+        template<meta::string::FixedString CommonCode,
+                 typename Ratio,
+                 double Offset,
+                 meta::string::FixedString Suffix,
+                 bool IsBase>
+        struct is_unit<Unit<CommonCode, Ratio, Offset, Suffix, IsBase>> : std::true_type
         {
         };
 
@@ -836,7 +852,7 @@ namespace pnm::units
             static_assert(pnm::meta::type::namespaces<Unit>() == std::array{ "pnm"sv, "units"sv });
             static_assert(pnm::meta::type::name<Unit>() == "Units");
 
-            constexpr auto units{ [] consteval {
+            static constexpr auto units{ [] consteval {
                 return pnm::meta::container::FixedMap{ []<std::size_t... Is>(std::index_sequence<Is...>) {
                     return std::array{ std::make_pair(UnitsMeta::NESTED_TYPE_NAMES[Is], +[](double v) {
                         using CurrentUnit = pnm::meta::tuple::type_t<Is, typename UnitsMeta::NestedTypes>;
@@ -852,6 +868,23 @@ namespace pnm::units
             }
 
             return Quantity{ (*modifier)(value) };
+        }
+
+        // Common codes are case-sensitive and resolved within this quantity (e.g. C62 is shared).
+        static constexpr auto create(double value, std::string_view common_code) -> std::optional<Quantity>
+        {
+            if (common_code.empty()) {
+                return std::nullopt;
+            }
+            static constexpr auto codes{ []<std::size_t... Is>(std::index_sequence<Is...>) {
+                return std::array{ meta::tuple::type_t<Is, typename UnitsMeta::NestedTypes>::COMMON_CODE... };
+            }(std::make_index_sequence<UnitsMeta::numNestedTypes()>{}) };
+            for (std::size_t index{}; index < codes.size(); ++index) {
+                if (codes[index] == common_code) {
+                    return Quantity{ (value + UNIT_OFFSETS[index]) * UNIT_FACTORS[index] };
+                }
+            }
+            return std::nullopt;
         }
 
         template<IsUnit Unit>
@@ -937,6 +970,21 @@ namespace pnm::units
         PNM_QUANTITIES(PNM_ENUM_GROUP) PNM_TIME_UNITS(PNM_ENUM_UNIT, PNM_ENUM_UNIT, _)
     };
     // NOLINTEND(readability-identifier-naming)
+
+    // Invalid enumerators and units without a verified exact common code return nullopt.
+    // Match the quantity API's camelCase naming.
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    constexpr auto commonCode(Units unit) -> std::optional<std::string_view>
+    {
+        // The enum and this table use the same registry order.
+        static constexpr std::array codes{ PNM_QUANTITIES(PNM_COMMON_CODE_GROUP)
+                                             PNM_TIME_UNITS(PNM_COMMON_CODE, PNM_COMMON_CODE, _) };
+        const auto index{ static_cast<std::size_t>(unit) };
+        if (index >= codes.size() || codes[index].empty()) {
+            return std::nullopt;
+        }
+        return codes[index];
+    }
 
     PNM_DEFINE_QUANTITY_DIVIDE_RESULT_WITH_UNITS(Unitless, unitless, Time, s, Frequency, Hz)
     PNM_DEFINE_QUANTITY_DIVIDE_RESULT_WITH_UNITS(Unitless, unitless, Frequency, Hz, Time, s)
@@ -1158,3 +1206,5 @@ namespace pnm::units
 #undef PNM_QUANTITIES
 #undef PNM_ENUM_UNIT
 #undef PNM_ENUM_GROUP
+#undef PNM_COMMON_CODE
+#undef PNM_COMMON_CODE_GROUP

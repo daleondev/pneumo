@@ -116,6 +116,23 @@ The current built-in quantity types are:
 
 `pnm::units::Units` is a scoped enum of all built-in unit identifiers, such as `Units::nm`, `Units::m2`, `Units::rpm`, and `Units::s`. It is generated from the same unit lists as the quantity types and literals.
 
+UNECE Recommendation 20 common codes are declared alongside each unit and exposed through `Unit::COMMON_CODE` and `commonCode(Units)`. Quantities also accept a code string when constructing a value:
+
+```cpp
+using namespace pnm::units;
+
+static_assert(DistanceUnits::km::COMMON_CODE == "KMT");
+constexpr auto code{ commonCode(Units::km) };        // optional<string_view>{"KMT"}
+constexpr auto distance{ Distance::create(2.5, "KMT") }; // optional<Distance>, 2500 m
+constexpr auto invalid{ Distance::create(2.5, "SEC") };  // nullopt: time is not distance
+```
+
+Codes are case-sensitive and matched exactly. Unknown codes, empty codes, and codes belonging to other quantities return `std::nullopt`. Lookup is quantity-specific: both `Ratio::create(1.0, "C62")` and `Unitless::create(1.0, "C62")` are valid. `commonCode()` returns `std::nullopt` for an invalid enum or an unmapped unit; the corresponding `COMMON_CODE` field is an empty `std::string_view`.
+
+Mappings were checked against the [UN/CEFACT UnitMeasureCode vocabulary](https://vocabulary.uncefact.org/UnitMeasureCode) on 2026-11-16. The 79 mapped units use exact matches; `mHz`, `KB_s`, `MB_s`, `GB_s`, `km_h2`, `mm_s3`, `m_s3`, `rad_s3`, and `deg_s3` remain explicitly unmapped. `KB`, `MB`, and `GB` retain their powers-of-1024 scaling and use the kibibyte, mebibyte, and gibibyte codes (`E64`, `E63`, `E62`). The selected code for `rpm` is `M46`. Only the registered codes are accepted; other UNECE synonyms are not automatically recognized.
+
+Unit types remain aliases. Custom declarations put the code first: `Unit<"MMT", std::milli>` or `BaseUnit<"MTR">`; use `""` when no code is available. Existing custom declarations must be updated to this argument order. The code is part of the type identity: otherwise identical units with different codes, such as metres and seconds, are now distinct types.
+
 The current built-in cross-quantity operations include:
 
 *   `Distance * Distance -> Area`
