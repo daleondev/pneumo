@@ -6,7 +6,6 @@
 #include <cmath>
 #include <cstdint>
 #include <flat_map>
-#include <inplace_vector>
 #include <numbers>
 #include <ratio>
 
@@ -831,10 +830,12 @@ namespace pnm::units
         }
 
         template<pnm::meta::enumeration::ScopedEnum Unit>
-            requires(pnm::meta::type::namespace_name<Unit>() == "pnm::units" &&
-                     pnm::meta::type::name<Unit>() == "Units")
-        static constexpr auto create(double value, Unit unit) -> Quantity
+        static constexpr auto create(double value, Unit unit) -> std::optional<Quantity>
         {
+            using namespace std::string_view_literals;
+            static_assert(pnm::meta::type::namespaces<Unit>() == std::array{ "pnm"sv, "units"sv });
+            static_assert(pnm::meta::type::name<Unit>() == "Units");
+
             constexpr auto units{ [] consteval {
                 return pnm::meta::container::FixedMap{ []<std::size_t... Is>(std::index_sequence<Is...>) {
                     return std::array{ std::make_pair(UnitsMeta::NESTED_TYPE_NAMES[Is], +[](double v) {
@@ -847,7 +848,7 @@ namespace pnm::units
             auto unit_name{ pnm::meta::enumeration::enumerator_name(unit) };
             auto modifier{ units.at(unit_name) };
             if (!modifier) {
-                throw std::out_of_range{ "Unit not found: " + std::string(unit_name) };
+                return std::nullopt;
             }
 
             return Quantity{ (*modifier)(value) };

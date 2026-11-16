@@ -3,7 +3,10 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <limits>
+#include <optional>
 #include <sstream>
 #include <tuple>
 #include <type_traits>
@@ -120,9 +123,38 @@ static_assert(std::is_scoped_enum_v<Units>);
 static_assert(!std::is_convertible_v<Units, int>);
 static_assert(Units::m != Units::s);
 static_assert(Units::fraction != Units::unitless);
+static_assert(std::is_same_v<decltype(Distance::create(1.0, Units::m)), std::optional<Distance>>);
+static_assert(Distance::create(2.0, Units::km)->get() == 2000.0);
+static_assert(Time::create(1.5, Units::min)->get() == 90.0);
+static_assert(!Distance::create(1.0, Units::s));
+static_assert(!Unitless::create(1.0, Units::fraction));
 
 namespace
 {
+    using Quantities = std::tuple<Distance,
+                                  Area,
+                                  Time,
+                                  ByteSize,
+                                  Mass,
+                                  Temperature,
+                                  Current,
+                                  Voltage,
+                                  Force,
+                                  Energy,
+                                  Power,
+                                  Pressure,
+                                  Frequency,
+                                  DataRate,
+                                  Velocity,
+                                  Acceleration,
+                                  pnm::units::Jerk,
+                                  Angle,
+                                  AngularVelocity,
+                                  pnm::units::AngularAcceleration,
+                                  pnm::units::AngularJerk,
+                                  Ratio,
+                                  Unitless>;
+
     struct FixedClock
     {
         using rep = std::chrono::milliseconds::rep;
@@ -161,29 +193,6 @@ namespace
 
 TEST(UnitsTests, CombinedEnumContainsEveryRegisteredUnit)
 {
-    using Quantities = std::tuple<Distance,
-                                  Area,
-                                  Time,
-                                  ByteSize,
-                                  Mass,
-                                  Temperature,
-                                  Current,
-                                  Voltage,
-                                  Force,
-                                  Energy,
-                                  Power,
-                                  Pressure,
-                                  Frequency,
-                                  DataRate,
-                                  Velocity,
-                                  Acceleration,
-                                  pnm::units::Jerk,
-                                  Angle,
-                                  AngularVelocity,
-                                  pnm::units::AngularAcceleration,
-                                  pnm::units::AngularJerk,
-                                  Ratio,
-                                  Unitless>;
     constexpr auto names{ pnm::meta::enumeration::enumerator_names<Units>() };
     std::size_t expected_count{};
     pnm::meta::tuple::for_each<Quantities>([&](auto index) {
@@ -207,6 +216,115 @@ TEST(UnitsTests, CombinedEnumPreservesUnitIdentifiers)
     EXPECT_EQ(pnm::meta::enumeration::enumerator_name(Units::percent), "percent");
     EXPECT_EQ(pnm::meta::enumeration::enumerator_name(Units::unitless), "unitless");
     EXPECT_EQ(pnm::meta::enumeration::enumerator_name(Units::s), "s");
+}
+
+TEST(UnitsTests, RuntimeCreateMatchesTypedCreationForEveryRegisteredUnit)
+{
+    pnm::meta::tuple::for_each<Quantities>([](auto quantity_index) {
+        using Quantity = pnm::meta::tuple::type_t<decltype(quantity_index)::value, Quantities>;
+        SCOPED_TRACE(Quantity::UnitsMeta::NAME);
+        pnm::meta::tuple::for_each<typename Quantity::UnitsMeta::NestedTypes>([](auto unit_index) {
+            using Unit = pnm::meta::tuple::type_t<decltype(unit_index)::value,
+                                                  typename Quantity::UnitsMeta::NestedTypes>;
+            constexpr auto name{ Quantity::UnitsMeta::NESTED_TYPE_NAMES[decltype(unit_index)::value] };
+            constexpr auto unit{ pnm::meta::enumeration::from_string<Units>(name) };
+            static_assert(unit.has_value());
+            SCOPED_TRACE(name);
+            for (const auto value : { -2.5, 0.0, 1.25, 42.0 }) {
+                SCOPED_TRACE(value);
+                const auto result{ Quantity::create(value, *unit) };
+                ASSERT_TRUE(result.has_value());
+                EXPECT_DOUBLE_EQ(result->get(), Quantity::template create<Unit>(value).get());
+            }
+        });
+    });
+}
+
+TEST(UnitsTests, RuntimeCreateRejectsEveryUnitFromOtherQuantities)
+{
+    pnm::meta::tuple::for_each<Quantities>([](auto index) {
+        using Quantity = pnm::meta::tuple::type_t<index, Quantities>;
+        SCOPED_TRACE(Quantity::UnitsMeta::NAME);
+        for (const auto unit : pnm::meta::enumeration::enumerators<Units>()) {
+            const auto name{ pnm::meta::enumeration::enumerator_name(unit) };
+            if (!std::ranges::contains(Quantity::UnitsMeta::NESTED_TYPE_NAMES, name)) {
+                SCOPED_TRACE(name);
+                EXPECT_FALSE(Quantity::create(1.0, unit).has_value());
+            }
+        }
+    });
+}
+
+TEST(UnitsTests, RuntimeCreateRejectsUnnamedEnumValues)
+{
+    constexpr std::array invalid_units{ static_cast<Units>(pnm::meta::enumeration::count<Units>()),
+                                        static_cast<Units>(
+                                          std::numeric_limits<std::underlying_type_t<Units>>::max()) };
+    for (const auto unit : invalid_units) {
+        ASSERT_TRUE(pnm::meta::enumeration::enumerator_name(unit).empty());
+        pnm::meta::tuple::for_each<Quantities>([unit](auto index) {
+            using Quantity = pnm::meta::tuple::type_t<index, Quantities>;
+            SCOPED_TRACE(Quantity::UnitsMeta::NAME);
+            EXPECT_FALSE(Quantity::create(1.0, unit).has_value());
+        });
+    }
+    // Invalid lookups must not affect a subsequent valid construction.
+    const auto valid{ Distance::create(2.0, Units::km) };
+    ASSERT_TRUE(valid.has_value());
+    EXPECT_DOUBLE_EQ(valid->get(), 2000.0);
+}
+
+TEST(UnitsTests, RuntimeCreateAppliesTemperatureOffsetsBeforeScaling)
+{
+    struct Case
+    {
+        double input;
+        Units unit;
+        double celsius;
+    };
+    constexpr std::array cases{ Case{ 30.0, Units::C, 30.0 },   Case{ 273.15, Units::K, 0.0 },
+                                Case{ 0.0, Units::K, -273.15 }, Case{ 32.0, Units::F, 0.0 },
+                                Case{ 212.0, Units::F, 100.0 }, Case{ -40.0, Units::F, -40.0 } };
+    for (const auto& item : cases) {
+        SCOPED_TRACE(item.input);
+        SCOPED_TRACE(pnm::meta::enumeration::enumerator_name(item.unit));
+        const auto result{ Temperature::create(item.input, item.unit) };
+        ASSERT_TRUE(result.has_value());
+        EXPECT_NEAR(result->get(), item.celsius, 1e-12);
+    }
+}
+
+TEST(UnitsTests, RuntimeCreateHandlesPercentRotationAndCustomTime)
+{
+    const auto percent{ Ratio::create(50.0, Units::percent) };
+    ASSERT_TRUE(percent.has_value());
+    EXPECT_DOUBLE_EQ(percent->get(), 0.5);
+
+    const auto rotation{ AngularVelocity::create(60.0, Units::rpm) };
+    ASSERT_TRUE(rotation.has_value());
+    EXPECT_DOUBLE_EQ(rotation->get(), 2.0 * std::numbers::pi);
+
+    const auto time{ Time::create(1.5, Units::min) };
+    ASSERT_TRUE(time.has_value());
+    EXPECT_EQ(time->toChrono<std::chrono::milliseconds>(), std::chrono::milliseconds{ 90000 });
+
+    const auto unitless{ Unitless::create(-2.5, Units::unitless) };
+    ASSERT_TRUE(unitless.has_value());
+    EXPECT_DOUBLE_EQ(unitless->get(), -2.5);
+}
+
+TEST(UnitsTests, RuntimeCreatePreservesNonFiniteValuesForValidUnits)
+{
+    const auto nan{ Distance::create(std::numeric_limits<double>::quiet_NaN(), Units::km) };
+    ASSERT_TRUE(nan.has_value());
+    EXPECT_TRUE(nan->isNaN());
+    for (const auto value :
+         { std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity() }) {
+        const auto result{ Distance::create(value, Units::km) };
+        ASSERT_TRUE(result.has_value());
+        EXPECT_TRUE(result->isInf());
+        EXPECT_EQ(result->get(), value);
+    }
 }
 
 TEST(UnitsTests, ByteSizeConvertsAcrossRegisteredUnits)
