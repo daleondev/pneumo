@@ -755,6 +755,13 @@ TEST(UnitsTests, AccelerationConversionsUseMetersPerSecondSquaredAsBase)
 
 TEST(UnitsTests, SuffixReturnsTheRequestedUnitsName)
 {
+    static_assert(Distance::suffix<DistanceUnits::mm>() == "mm");
+    static_assert(Distance::suffix<DistanceUnits::um>() == "µm");
+    static_assert(Acceleration::suffix<AccelerationUnits::m_s2>() == "m/s²");
+    static_assert(AngularVelocity::suffix<AngularVelocityUnits::deg_s>() == "deg/s");
+    static_assert(Temperature::suffix<TemperatureUnits::C>() == "°C");
+    static_assert(Ratio::suffix<RatioUnits::fraction>().empty());
+    static_assert(Unitless::suffix<UnitlessUnits::unitless>().empty());
     EXPECT_EQ(Distance::suffix<DistanceUnits::m>(), "m");
     EXPECT_EQ(Time::suffix<TimeUnits::s>(), "s");
     EXPECT_EQ(Distance::suffix<const DistanceUnits::mm&>(), "mm");

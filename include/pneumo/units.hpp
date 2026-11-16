@@ -706,28 +706,27 @@ namespace pnm::units
             return BASE_UNIT_INDEX;
         }
 
-        static auto suffix(size_t index) -> std::string
+        static constexpr auto suffix(size_t index) -> std::string
         {
             std::string result{ UNIT_SUFFIXES[index] };
             if (result == "n/a") {
-                std::stringstream ss;
+                result.clear();
                 auto i{ 0UZ };
                 for (const auto c : UnitsMeta::NESTED_TYPE_NAMES[index]) {
                     if (i == 0 && c == 'u') {
-                        ss << "µ";
+                        result += "µ";
                     }
                     else if (c == '_') {
-                        ss << '/';
+                        result += '/';
                     }
                     else if (i == UnitsMeta::NESTED_TYPE_NAMES[index].size() - 1 && c == '2') {
-                        ss << "²";
+                        result += "²";
                     }
                     else {
-                        ss << c;
+                        result += c;
                     }
                     ++i;
                 }
-                result = ss.str();
             }
             return result;
         }
@@ -816,7 +815,7 @@ namespace pnm::units
 
         template<IsUnit U>
             requires meta::tuple::ContainsType<typename UnitsMeta::NestedTypes, U>
-        static auto suffix() -> std::string
+        static constexpr auto suffix() -> std::string
         {
             constexpr auto index{ [] consteval {
                 auto result{ -1Z };
