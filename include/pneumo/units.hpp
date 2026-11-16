@@ -5,6 +5,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <flat_map>
+#include <inplace_vector>
 #include <numbers>
 #include <ratio>
 
@@ -826,6 +828,27 @@ namespace pnm::units
             }
 
             return os;
+        }
+
+        template<pnm::meta::enumeration::ScopedEnum Unit>
+        static constexpr auto create(double value, Unit unit) -> Quantity
+        {
+            constexpr auto units{ [] consteval {
+                return pnm::meta::container::FixedMap{ []<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return std::array{ std::make_pair(UnitsMeta::NESTED_TYPE_NAMES[Is], +[](double v) {
+                        using CurrentUnit = pnm::meta::tuple::type_t<Is, typename UnitsMeta::NestedTypes>;
+                        return static_cast<double>((v + CurrentUnit::OFFSET) * CurrentUnit::FACTOR);
+                    })... };
+                }(std::make_index_sequence<UnitsMeta::numNestedTypes()>{}) };
+            }() };
+
+            auto unit_name{ pnm::meta::enumeration::enumerator_name(unit) };
+            auto modifier{ units.at(unit_name) };
+            if (!modifier) {
+                throw std::out_of_range{ "Unit not found: " + std::string(unit_name) };
+            }
+
+            return Quantity{ (*modifier)(value) };
         }
 
         template<IsUnit Unit>

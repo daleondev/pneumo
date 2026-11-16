@@ -23,7 +23,7 @@ namespace
     {
         using namespace pnm::units::literals;
 
-        const auto trip_distance = 42.0_km;
+        const auto trip_distance = pnm::units::Distance::create(42.0, pnm::units::Units::km);
         const auto trip_time = 35min;
         const auto average_speed = trip_distance / trip_time;
         const auto remaining_distance = 18.0_km;

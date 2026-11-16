@@ -73,6 +73,121 @@ namespace pnm::meta
         // NOLINTEND(readability-identifier-naming)
     }
 
+    namespace container
+    {
+        template<typename T, size_t Capacity>
+        struct FixedVector
+        {
+            std::array<T, Capacity> data{};
+            size_t size{ 0UZ };
+
+            constexpr FixedVector() = default;
+
+            template<size_t Size>
+            // NOLINTNEXTLINE(cppcoreguidelines-rvalue-reference-param-not-moved)
+            constexpr FixedVector(std::array<T, Size>&& arr)
+              : size{ Size }
+            {
+                static_assert(Size <= Capacity, "Input array exceeds Vector capacity!");
+                std::ranges::move(arr | std::views::take(size), data.begin());
+            }
+
+            constexpr auto add(this auto& self, T val) -> void
+            {
+                if (self.size >= Capacity) {
+                    throw std::out_of_range("Vector is full!");
+                }
+                self.data[self.size++] = std::move(val);
+            }
+
+            constexpr auto at(this const auto& self, size_t index) -> const T&
+            {
+                if (index >= self.size) {
+                    throw std::out_of_range("Index out of range!");
+                }
+                return self.data[index];
+            }
+
+            template<typename Self>
+                requires std::is_lvalue_reference_v<Self>
+            constexpr auto begin(this Self&& self)
+            {
+                return std::forward<Self>(self).data.begin();
+            }
+
+            template<typename Self>
+                requires std::is_lvalue_reference_v<Self>
+            constexpr auto end(this Self&& self)
+            {
+                auto offset{ self.size };
+                return std::forward<Self>(self).data.begin() + offset;
+            }
+        };
+
+        template<typename Key, typename Value, size_t Capacity>
+        struct FixedMap
+        {
+            std::array<std::pair<Key, Value>, Capacity> data{};
+            size_t size{ 0UZ };
+
+            constexpr FixedMap() = default;
+
+            // NOLINTNEXTLINE(cppcoreguidelines-rvalue-reference-param-not-moved)
+            constexpr FixedMap(std::array<std::pair<Key, Value>, Capacity>&& arr)
+              : size{ Capacity }
+            {
+                std::ranges::move(arr, data.begin());
+            }
+
+            constexpr void insert(this auto& self, std::pair<Key, Value> new_element)
+            {
+                auto it{ std::ranges::find_if(self, [&new_element](const auto& element) -> bool {
+                    return element.first == new_element.first;
+                }) };
+
+                if (it != self.end()) {
+                    it->second = std::move(new_element.second);
+                    return;
+                }
+
+                if (self.size >= Capacity) {
+                    throw std::out_of_range("Map is full!");
+                }
+
+                self.data[self.size++] = std::move(new_element);
+            }
+
+            constexpr auto at(this const auto& self, const Key& key) -> std::optional<Value>
+            {
+                auto it{ std::ranges::find_if(
+                  self, [&key](const auto& pair) -> bool { return pair.first == key; }) };
+
+                if (it != self.end()) {
+                    return it->second;
+                }
+
+                return std::nullopt;
+            }
+
+            template<typename Self>
+                requires std::is_lvalue_reference_v<Self>
+            constexpr auto begin(this Self&& self)
+            {
+                return std::forward<Self>(self).data.begin();
+            }
+
+            template<typename Self>
+                requires std::is_lvalue_reference_v<Self>
+            constexpr auto end(this Self&& self)
+            {
+                auto offset{ self.size };
+                return std::forward<Self>(self).data.begin() + offset;
+            }
+        };
+        template<typename Key, typename Value, size_t Size>
+        FixedMap(std::array<std::pair<Key, Value>, Size>&& arr) -> FixedMap<Key, Value, Size>;
+    }
+
     namespace string
     {
         template<typename T>
