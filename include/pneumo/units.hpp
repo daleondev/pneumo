@@ -4,10 +4,15 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <numbers>
 #include <ratio>
 
 // NOLINTBEGIN(bugprone-macro-parentheses,cppcoreguidelines-macro-usage,cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
+
+// ---------- Unitless ----------
+
+#define PNM_UNITLESS_UNITS(X, XX, ctx) XX(ctx, unitless, "")
 
 // ---------- Distance ----------
 
@@ -184,11 +189,37 @@
     XX(ctx, fraction, "")                                                                                    \
     X(ctx, percent, std::centi, 0.0, "%")
 
-// ---------- Unitless ----------
+// ---------- Quantity Registry ----------
 
-#define PNM_UNITLESS_UNITS(X, XX, ctx) XX(ctx, unitless, "")
+// Time has a custom implementation and is expanded separately.
+#define PNM_QUANTITIES(X)                                                                                    \
+    X(Unitless, PNM_UNITLESS_UNITS)                                                                          \
+    X(Distance, PNM_DISTANCE_UNITS)                                                                          \
+    X(Area, PNM_AREA_UNITS)                                                                                  \
+    X(ByteSize, PNM_BYTE_SIZE_UNITS)                                                                         \
+    X(Mass, PNM_MASS_UNITS)                                                                                  \
+    X(Temperature, PNM_TEMPERATURE_UNITS)                                                                    \
+    X(Current, PNM_CURRENT_UNITS)                                                                            \
+    X(Voltage, PNM_VOLTAGE_UNITS)                                                                            \
+    X(Force, PNM_FORCE_UNITS)                                                                                \
+    X(Energy, PNM_ENERGY_UNITS)                                                                              \
+    X(Power, PNM_POWER_UNITS)                                                                                \
+    X(Pressure, PNM_PRESSURE_UNITS)                                                                          \
+    X(Frequency, PNM_FREQUENCY_UNITS)                                                                        \
+    X(DataRate, PNM_DATA_RATE_UNITS)                                                                         \
+    X(Velocity, PNM_VELOCITY_UNITS)                                                                          \
+    X(Acceleration, PNM_ACCELERATION_UNITS)                                                                  \
+    X(Jerk, PNM_JERK_UNITS)                                                                                  \
+    X(Angle, PNM_ANGLE_UNITS)                                                                                \
+    X(AngularVelocity, PNM_ANGULAR_VELOCITY_UNITS)                                                           \
+    X(AngularAcceleration, PNM_ANGULAR_ACCELERATION_UNITS)                                                   \
+    X(AngularJerk, PNM_ANGULAR_JERK_UNITS)                                                                   \
+    X(Ratio, PNM_RATIO_UNITS)
 
 // ---------- Helper Macros ----------
+
+#define PNM_ENUM_UNIT(_, unit_suffix, ...) unit_suffix,
+#define PNM_ENUM_GROUP(_, unit_list) unit_list(PNM_ENUM_UNIT, PNM_ENUM_UNIT, _)
 
 #define PNM_DEFINE_LITERAL(quantity_name, unit_suffix, ...)                                                  \
     namespace literals                                                                                       \
@@ -871,29 +902,18 @@ namespace pnm::units
 
     PNM_TIME_UNITS(PNM_DEFINE_LITERAL, PNM_DEFINE_LITERAL, Time)
 
-    PNM_DEFINE_QUANTITY(Distance, PNM_DISTANCE_UNITS)
-    PNM_DEFINE_QUANTITY(Area, PNM_AREA_UNITS)
-    PNM_DEFINE_QUANTITY(ByteSize, PNM_BYTE_SIZE_UNITS)
-    PNM_DEFINE_QUANTITY(Mass, PNM_MASS_UNITS)
-    PNM_DEFINE_QUANTITY(Temperature, PNM_TEMPERATURE_UNITS)
-    PNM_DEFINE_QUANTITY(Current, PNM_CURRENT_UNITS)
-    PNM_DEFINE_QUANTITY(Voltage, PNM_VOLTAGE_UNITS)
-    PNM_DEFINE_QUANTITY(Force, PNM_FORCE_UNITS)
-    PNM_DEFINE_QUANTITY(Energy, PNM_ENERGY_UNITS)
-    PNM_DEFINE_QUANTITY(Power, PNM_POWER_UNITS)
-    PNM_DEFINE_QUANTITY(Pressure, PNM_PRESSURE_UNITS)
-    PNM_DEFINE_QUANTITY(Frequency, PNM_FREQUENCY_UNITS)
-    PNM_DEFINE_QUANTITY(DataRate, PNM_DATA_RATE_UNITS)
-    PNM_DEFINE_QUANTITY(Velocity, PNM_VELOCITY_UNITS)
-    PNM_DEFINE_QUANTITY(Acceleration, PNM_ACCELERATION_UNITS)
-    PNM_DEFINE_QUANTITY(Jerk, PNM_JERK_UNITS)
-    PNM_DEFINE_QUANTITY(Angle, PNM_ANGLE_UNITS)
-    PNM_DEFINE_QUANTITY(AngularVelocity, PNM_ANGULAR_VELOCITY_UNITS)
-    PNM_DEFINE_QUANTITY(AngularAcceleration, PNM_ANGULAR_ACCELERATION_UNITS)
-    PNM_DEFINE_QUANTITY(AngularJerk, PNM_ANGULAR_JERK_UNITS)
-    PNM_DEFINE_QUANTITY(Ratio, PNM_RATIO_UNITS)
-    PNM_DEFINE_QUANTITY(Unitless, PNM_UNITLESS_UNITS)
+    PNM_QUANTITIES(PNM_DEFINE_QUANTITY)
 
+    // Preserve the unit identifiers, including their conventional capitalization.
+    // NOLINTBEGIN(readability-identifier-naming)
+    enum class Units : std::uint8_t
+    {
+        PNM_QUANTITIES(PNM_ENUM_GROUP) PNM_TIME_UNITS(PNM_ENUM_UNIT, PNM_ENUM_UNIT, _)
+    };
+    // NOLINTEND(readability-identifier-naming)
+
+    PNM_DEFINE_QUANTITY_DIVIDE_RESULT_WITH_UNITS(Unitless, unitless, Time, s, Frequency, Hz)
+    PNM_DEFINE_QUANTITY_DIVIDE_RESULT_WITH_UNITS(Unitless, unitless, Frequency, Hz, Time, s)
     PNM_DEFINE_QUANTITY_SQUARE_RELATION(Distance, m, Area, m2)
     PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(ByteSize, bytes, Time, s, DataRate, bytes_s)
     PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(Distance, m, Time, s, Velocity, m_s)
@@ -909,8 +929,6 @@ namespace pnm::units
     PNM_DEFINE_QUANTITY_QUOTIENT_RELATION(Power, W, Voltage, V, Current, A)
     PNM_DEFINE_QUANTITY_RECIPROCAL_RELATION(Time, s, Frequency, Hz)
     PNM_DEFINE_QUANTITY_DIVIDE_RESULT_WITH_UNITS(Ratio, fraction, Time, s, Frequency, Hz)
-    PNM_DEFINE_QUANTITY_DIVIDE_RESULT_WITH_UNITS(Unitless, unitless, Time, s, Frequency, Hz)
-    PNM_DEFINE_QUANTITY_DIVIDE_RESULT_WITH_UNITS(Unitless, unitless, Frequency, Hz, Time, s)
 
     namespace detail
     {
@@ -1088,6 +1106,7 @@ namespace pnm::units
     }
 }
 
+#undef PNM_UNITLESS_UNITS
 #undef PNM_DISTANCE_UNITS
 #undef PNM_AREA_UNITS
 #undef PNM_TIME_UNITS
@@ -1110,4 +1129,6 @@ namespace pnm::units
 #undef PNM_ANGULAR_ACCELERATION_UNITS
 #undef PNM_ANGULAR_JERK_UNITS
 #undef PNM_RATIO_UNITS
-#undef PNM_UNITLESS_UNITS
+#undef PNM_QUANTITIES
+#undef PNM_ENUM_UNIT
+#undef PNM_ENUM_GROUP

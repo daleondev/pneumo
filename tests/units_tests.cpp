@@ -2,8 +2,10 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <sstream>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 
@@ -43,6 +45,7 @@ using pnm::units::Time;
 using pnm::units::TimeUnits;
 using pnm::units::Unitless;
 using pnm::units::UnitlessUnits;
+using pnm::units::Units;
 using pnm::units::Velocity;
 using pnm::units::VelocityUnits;
 using pnm::units::Voltage;
@@ -113,6 +116,10 @@ static_assert(std::is_convertible_v<std::chrono::duration<long double, std::mill
 static_assert(std::is_convertible_v<Time, std::chrono::duration<double>>);
 static_assert(std::is_convertible_v<Time, std::chrono::duration<double, std::milli>>);
 static_assert(!std::is_convertible_v<Time, std::chrono::milliseconds>);
+static_assert(std::is_scoped_enum_v<Units>);
+static_assert(!std::is_convertible_v<Units, int>);
+static_assert(Units::m != Units::s);
+static_assert(Units::fraction != Units::unitless);
 
 namespace
 {
@@ -150,6 +157,56 @@ namespace
         stream << quantity;
         return stream.str();
     }
+}
+
+TEST(UnitsTests, CombinedEnumContainsEveryRegisteredUnit)
+{
+    using Quantities = std::tuple<Distance,
+                                  Area,
+                                  Time,
+                                  ByteSize,
+                                  Mass,
+                                  Temperature,
+                                  Current,
+                                  Voltage,
+                                  Force,
+                                  Energy,
+                                  Power,
+                                  Pressure,
+                                  Frequency,
+                                  DataRate,
+                                  Velocity,
+                                  Acceleration,
+                                  pnm::units::Jerk,
+                                  Angle,
+                                  AngularVelocity,
+                                  pnm::units::AngularAcceleration,
+                                  pnm::units::AngularJerk,
+                                  Ratio,
+                                  Unitless>;
+    constexpr auto names{ pnm::meta::enumeration::enumerator_names<Units>() };
+    std::size_t expected_count{};
+    pnm::meta::tuple::for_each<Quantities>([&](auto index) {
+        using Quantity = pnm::meta::tuple::type_t<index, Quantities>;
+        for (const auto name : Quantity::UnitsMeta::NESTED_TYPE_NAMES) {
+            EXPECT_EQ(std::ranges::count(names, name), 1) << name;
+            ++expected_count;
+        }
+    });
+    EXPECT_EQ(names.size(), expected_count);
+}
+
+TEST(UnitsTests, CombinedEnumPreservesUnitIdentifiers)
+{
+    EXPECT_EQ(pnm::meta::enumeration::enumerator_name(Units::nm), "nm");
+    EXPECT_EQ(pnm::meta::enumeration::enumerator_name(Units::um), "um");
+    EXPECT_EQ(pnm::meta::enumeration::enumerator_name(Units::mm2), "mm2");
+    EXPECT_EQ(pnm::meta::enumeration::enumerator_name(Units::C), "C");
+    EXPECT_EQ(pnm::meta::enumeration::enumerator_name(Units::KB_s), "KB_s");
+    EXPECT_EQ(pnm::meta::enumeration::enumerator_name(Units::rpm), "rpm");
+    EXPECT_EQ(pnm::meta::enumeration::enumerator_name(Units::percent), "percent");
+    EXPECT_EQ(pnm::meta::enumeration::enumerator_name(Units::unitless), "unitless");
+    EXPECT_EQ(pnm::meta::enumeration::enumerator_name(Units::s), "s");
 }
 
 TEST(UnitsTests, ByteSizeConvertsAcrossRegisteredUnits)

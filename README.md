@@ -114,6 +114,8 @@ The current built-in quantity types are:
 *   `Ratio`
 *   `Unitless`
 
+`pnm::units::Units` is a scoped enum of all built-in unit identifiers, such as `Units::nm`, `Units::m2`, `Units::rpm`, and `Units::s`. It is generated from the same unit lists as the quantity types and literals.
+
 The current built-in cross-quantity operations include:
 
 *   `Distance * Distance -> Area`
