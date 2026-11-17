@@ -143,17 +143,39 @@ static_assert(DistanceUnits::m::UCUM_CODE == "m");
 static_assert(TimeUnits::s::UCUM_CODE == "s");
 static_assert(pnm::units::JerkUnits::m_s3::UCUM_CODE == "m/s3");
 static_assert(!std::same_as<DistanceUnits::m, TimeUnits::s>);
-static_assert(pnm::units::Unit<"", std::milli>::UCUM_CODE.empty());
-static_assert(pnm::units::BaseUnit<>::UCUM_CODE.empty());
-static_assert(pnm::units::IsUnit<pnm::units::Unit<"", std::milli>>);
+static_assert(pnm::units::Unit<std::milli>::UCUM_CODE == "n/a");
+static_assert(pnm::units::BaseUnit<>::UCUM_CODE == "n/a");
+static_assert(pnm::units::Unit<std::milli, 0.0, "">::UCUM_CODE.empty());
+static_assert(pnm::units::BaseUnit<"">::UCUM_CODE.empty());
+static_assert(pnm::units::IsUnit<pnm::units::Unit<std::milli>>);
 static_assert(pnm::units::IsUnit<pnm::units::BaseUnit<>>);
 static_assert(pnm::units::BaseUnit<>::IS_BASE);
 static_assert(pnm::units::BaseUnit<>::AUTO_FORMAT);
-static_assert(pnm::units::Unit<"mm", std::milli, 0.0, "mm">::UCUM_CODE == "mm");
+static_assert(pnm::units::Unit<std::milli, 0.0, "mm", "mm">::UCUM_CODE == "mm");
 static_assert(pnm::units::BaseUnit<"m", "m">::UCUM_CODE == "m");
 
 namespace
 {
+    struct OptionalCodeUnits
+    {
+        using s = pnm::units::BaseUnit<>;
+        using ns = pnm::units::Unit<std::nano>;
+        using us = pnm::units::Unit<std::micro>;
+        using milliseconds = pnm::units::Unit<std::milli, 0.0, "ms", "milliseconds">;
+        using internal = pnm::units::Unit<std::kilo, 0.0, "">;
+    };
+
+    class OptionalCodeQuantity : public pnm::units::QuantityBase<OptionalCodeQuantity, OptionalCodeUnits>
+    {
+      public:
+        using QuantityBase::create;
+        using QuantityBase::QuantityBase;
+    };
+
+    static_assert(OptionalCodeQuantity::create(2.0, "s")->get() == 2.0);
+    static_assert(OptionalCodeQuantity::create(2.0, "ms")->get() == 0.002);
+    static_assert(!OptionalCodeQuantity::create(2.0, "n/a"));
+
     using Quantities = std::tuple<pnm::units::FrequencyRate,
                                   pnm::units::FrequencyAcceleration,
                                   pnm::units::TransmissionLead,
@@ -462,6 +484,43 @@ TEST(UnitsTests, UcumCodesMatchRegisteredExpressions)
         SCOPED_TRACE(pnm::meta::enumeration::enumerator_name(unit));
         EXPECT_EQ(pnm::units::ucumCode(unit), expected);
     }
+}
+
+TEST(UnitsTests, OptionalUcumCodesPreserveIdentifiersAndOverrides)
+{
+    EXPECT_EQ(TimeUnits::ns::UCUM_CODE, "ns");
+    EXPECT_EQ(TimeUnits::s::UCUM_CODE, "s");
+    EXPECT_EQ(DistanceUnits::um::UCUM_CODE, "um");
+    EXPECT_EQ(Distance::suffix<DistanceUnits::um>(), "µm");
+    EXPECT_EQ(ByteSizeUnits::GB::UCUM_CODE, "GBy");
+    EXPECT_EQ(ByteSize::suffix<ByteSizeUnits::GB>(), "GB");
+    EXPECT_FALSE(ByteSizeUnits::GB::AUTO_FORMAT);
+    EXPECT_EQ(TemperatureUnits::C::UCUM_CODE, "Cel");
+    EXPECT_EQ(Temperature::suffix<TemperatureUnits::C>(), "°C");
+    EXPECT_FALSE(Time::create(1.0, "n/a"));
+}
+
+TEST(UnitsTests, CustomUnitsInferMissingUcumCodesFromReflectedNames)
+{
+    const auto seconds{ OptionalCodeQuantity::create(2.0, "s") };
+    const auto nanoseconds{ OptionalCodeQuantity::create(2.0, "ns") };
+    const auto microseconds{ OptionalCodeQuantity::create(2.0, "us") };
+    const auto milliseconds{ OptionalCodeQuantity::create(2.0, "ms") };
+    ASSERT_TRUE(seconds);
+    ASSERT_TRUE(nanoseconds);
+    ASSERT_TRUE(microseconds);
+    ASSERT_TRUE(milliseconds);
+    EXPECT_DOUBLE_EQ(seconds->get(), 2.0);
+    EXPECT_DOUBLE_EQ(nanoseconds->get(), 2e-9);
+    EXPECT_DOUBLE_EQ(microseconds->get(), 2e-6);
+    EXPECT_DOUBLE_EQ(milliseconds->get(), 0.002);
+    EXPECT_EQ(OptionalCodeQuantity::suffix<OptionalCodeUnits::us>(), "µs");
+    EXPECT_FALSE(OptionalCodeQuantity::create(1.0, "µs"));
+    EXPECT_FALSE(OptionalCodeQuantity::create(1.0, "milliseconds"));
+    EXPECT_FALSE(OptionalCodeQuantity::create(1.0, "internal"));
+    EXPECT_FALSE(OptionalCodeQuantity::create(1.0, ""));
+    EXPECT_FALSE(OptionalCodeQuantity::create(1.0, "n/a"));
+    EXPECT_DOUBLE_EQ(OptionalCodeQuantity::create<OptionalCodeUnits::internal>(2.0).get(), 2000.0);
 }
 
 TEST(UnitsTests, UcumCodesCoverEveryUnitAndRejectInvalidEnumerators)

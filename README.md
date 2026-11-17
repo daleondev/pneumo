@@ -169,7 +169,17 @@ This follows UCUM's limited-conformance approach: it recognizes a fixed set of e
 
 Automatic byte-size formatting uses IEC prefixes; data-rate formatting uses decimal SI prefixes. Explicit `get<Unit>()`, `create<Unit>()` and `suffix<Unit>()` support both families. For example, `1_KiB_s` formats as `1.024 kB/s` without changing its value. `Unit::AUTO_FORMAT` controls eligibility for automatic selection independently of conversions.
 
-Unit types remain aliases. Custom declarations put the UCUM expression first: `Unit<"mm", std::milli>` or `BaseUnit<"m">`. Custom expressions are the caller's responsibility and are not validated against the full UCUM grammar; an empty code disables string construction for that unit. The code is part of the type identity: otherwise identical units with different codes, such as metres and seconds, are distinct types.
+Unit types remain aliases. The declaration order is `Unit<Factor, Offset, UcumCode, Suffix, AutoFormat>`; everything after `Factor` is optional. Base units use `BaseUnit<UcumCode, Suffix>`, with both arguments optional. The registry defaults the UCUM code to the unit identifier:
+
+```cpp
+X(ctx, ns, std::nano)
+XX(ctx, s)
+X(ctx, GB, std::giga, 0.0, "GBy", "GB", false)
+```
+
+The registry resolves defaults when creating the alias, so `TimeUnits::ns::UCUM_CODE` is `"ns"`. The resolved code remains part of the type identity, keeping units such as metres and seconds distinct. Outside the registry, custom aliases such as `using ns = Unit<std::nano>;` and `using s = BaseUnit<>;` keep `UCUM_CODE` at its `"n/a"` default; their quantity's string constructor uses the reflected alias name. Explicit codes take precedence, and an explicit empty code disables string construction for that unit.
+
+Inferred codes use the identifier verbatim, without the display suffix's typography substitutions. Specify a code whenever the identifier is not the intended UCUM expression, for example `Unit<std::kilo, 0.0, "kBy", "kB">`. Custom expressions are the caller's responsibility and are not validated against the full UCUM grammar.
 
 The current built-in cross-quantity operations include:
 
