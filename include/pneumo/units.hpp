@@ -268,9 +268,9 @@
     }
 
 #define PNM_DEFINE_UNIT(_, unit_suffix, ...)                                                                 \
-    using unit_suffix = ::pnm::units::Unit<__VA_ARGS__>::WithDefaultUcumCode<#unit_suffix>;
+    using unit_suffix = ::pnm::units::Unit<#unit_suffix, __VA_ARGS__>;
 #define PNM_DEFINE_BASE_UNIT(_, unit_suffix, ...)                                                            \
-    using unit_suffix = ::pnm::units::BaseUnit<__VA_ARGS__>::WithDefaultUcumCode<#unit_suffix>;
+    using unit_suffix = ::pnm::units::BaseUnit<#unit_suffix __VA_OPT__(, ) __VA_ARGS__>;
 
 #define PNM_DEFINE_QUANTITY(quantity_name, unit_list)                                                        \
     struct quantity_name##Units                                                                              \
@@ -431,32 +431,62 @@ namespace pnm::units
         // NOLINTEND(readability-identifier-naming)
     }
 
-    template<detail::FactorProvider Factor,
+    template<meta::string::FixedString Name,
+             detail::FactorProvider Factor,
              double Offset = 0.0,
-             meta::string::FixedString UcumCode = "n/a",
+             meta::string::FixedString UcumCode = Name,
              meta::string::FixedString Suffix = "n/a",
              bool AutoFormat = true,
              bool IsBase = false>
     struct Unit
     {
+      private:
+        static consteval auto resolveSuffix()
+        {
+            if constexpr (static_cast<std::string_view>(Suffix) != "n/a") {
+                return Suffix;
+            }
+            else {
+                using namespace std::string_view_literals;
+                constexpr auto name{ static_cast<std::string_view>(Name) };
+                constexpr auto micro{ "µ"sv };
+                constexpr auto squared{ "²"sv };
+                constexpr auto size{ name.size() + (name.starts_with('u') ? micro.size() - 1 : 0) +
+                                     (name.ends_with('2') ? squared.size() - 1 : 0) };
+                std::array<char, size> result{};
+                auto output{ result.begin() };
+                for (auto i{ 0UZ }; i < name.size(); ++i) {
+                    if (i == 0 && name[i] == 'u') {
+                        output = std::ranges::copy(micro, output).out;
+                    }
+                    else if (name[i] == '_') {
+                        *output++ = '/';
+                    }
+                    else if (i == name.size() - 1 && name[i] == '2') {
+                        output = std::ranges::copy(squared, output).out;
+                    }
+                    else {
+                        *output++ = name[i];
+                    }
+                }
+                return meta::string::FixedString{ std::move(result) };
+            }
+        }
+
+      public:
         static constexpr auto UCUM_CODE{ static_cast<std::string_view>(UcumCode) };
         static constexpr auto FACTOR{ detail::extractFactor<Factor>() };
         static constexpr auto OFFSET{ Offset };
-        static constexpr auto SUFFIX{ static_cast<std::string_view>(Suffix) };
+        static constexpr auto SUFFIX{ static_cast<std::string_view>(resolveSuffix()) };
         static constexpr auto AUTO_FORMAT{ AutoFormat };
         static constexpr auto IS_BASE{ IsBase };
         static_assert(!IS_BASE || FACTOR == 1.0);
-
-        // Resolve registry defaults in the alias so the code remains part of its type identity.
-        template<meta::string::FixedString DefaultCode>
-        using WithDefaultUcumCode =
-          std::conditional_t<UCUM_CODE == "n/a",
-                             Unit<Factor, Offset, DefaultCode, Suffix, AutoFormat, IsBase>,
-                             Unit>;
     };
 
-    template<meta::string::FixedString UcumCode = "n/a", meta::string::FixedString Suffix = "n/a">
-    using BaseUnit = Unit<detail::factor<1.0>, 0.0, UcumCode, Suffix, true, true>;
+    template<meta::string::FixedString Name,
+             meta::string::FixedString UcumCode = Name,
+             meta::string::FixedString Suffix = "n/a">
+    using BaseUnit = Unit<Name, detail::factor<1.0>, 0.0, UcumCode, Suffix, true, true>;
 
     namespace detail
     {
@@ -466,13 +496,14 @@ namespace pnm::units
         {
         };
 
-        template<typename Ratio,
+        template<meta::string::FixedString Name,
+                 typename Ratio,
                  double Offset,
                  meta::string::FixedString UcumCode,
                  meta::string::FixedString Suffix,
                  bool AutoFormat,
                  bool IsBase>
-        struct is_unit<Unit<Ratio, Offset, UcumCode, Suffix, AutoFormat, IsBase>> : std::true_type
+        struct is_unit<Unit<Name, Ratio, Offset, UcumCode, Suffix, AutoFormat, IsBase>> : std::true_type
         {
         };
 
@@ -740,31 +771,6 @@ namespace pnm::units
             return BASE_UNIT_INDEX;
         }
 
-        static constexpr auto suffix(size_t index) -> std::string
-        {
-            std::string result{ UNIT_SUFFIXES[index] };
-            if (result == "n/a") {
-                result.clear();
-                auto i{ 0UZ };
-                for (const auto c : UnitsMeta::NESTED_TYPE_NAMES[index]) {
-                    if (i == 0 && c == 'u') {
-                        result += "µ";
-                    }
-                    else if (c == '_') {
-                        result += '/';
-                    }
-                    else if (i == UnitsMeta::NESTED_TYPE_NAMES[index].size() - 1 && c == '2') {
-                        result += "²";
-                    }
-                    else {
-                        result += c;
-                    }
-                    ++i;
-                }
-            }
-            return result;
-        }
-
         static constexpr auto BASE_UNIT_INDEX{ QuantityBase::determineBaseUnitIndex() };
         static constexpr auto SORTED_UNIT_INDICES{ QuantityBase::makeSortedUnitIndices() };
         static constexpr auto UNIT_FACTORS{ QuantityBase::makeUnitFactors() };
@@ -863,7 +869,7 @@ namespace pnm::units
             }() };
             static_assert(index >= 0Z && "Invalid Unit provided");
 
-            return suffix(index);
+            return std::string{ UNIT_SUFFIXES[index] };
         }
 
         friend std::ostream& operator<<(std::ostream& os, const QuantityBase& quantity)
@@ -871,7 +877,7 @@ namespace pnm::units
             auto index{ quantity.determinePrintUnitIndex() };
             os << (quantity.value / UNIT_FACTORS[index]);
 
-            auto suf{ suffix(index) };
+            auto suf{ UNIT_SUFFIXES[index] };
             if (!suf.empty()) {
                 os << ' ' << suf;
             }
@@ -912,9 +918,7 @@ namespace pnm::units
             static constexpr auto units{ [] consteval {
                 return pnm::meta::container::FixedMap{ []<std::size_t... Is>(std::index_sequence<Is...>) {
                     return std::array{ std::make_pair(
-                      pnm::meta::tuple::type_t<Is, typename UnitsMeta::NestedTypes>::UCUM_CODE == "n/a"
-                        ? UnitsMeta::NESTED_TYPE_NAMES[Is]
-                        : pnm::meta::tuple::type_t<Is, typename UnitsMeta::NestedTypes>::UCUM_CODE,
+                      pnm::meta::tuple::type_t<Is, typename UnitsMeta::NestedTypes>::UCUM_CODE,
                       +[](double v) {
                         using CurrentUnit = pnm::meta::tuple::type_t<Is, typename UnitsMeta::NestedTypes>;
                         return static_cast<double>((v + CurrentUnit::OFFSET) * CurrentUnit::FACTOR);

@@ -143,26 +143,32 @@ static_assert(DistanceUnits::m::UCUM_CODE == "m");
 static_assert(TimeUnits::s::UCUM_CODE == "s");
 static_assert(pnm::units::JerkUnits::m_s3::UCUM_CODE == "m/s3");
 static_assert(!std::same_as<DistanceUnits::m, TimeUnits::s>);
-static_assert(pnm::units::Unit<std::milli>::UCUM_CODE == "n/a");
-static_assert(pnm::units::BaseUnit<>::UCUM_CODE == "n/a");
-static_assert(pnm::units::Unit<std::milli, 0.0, "">::UCUM_CODE.empty());
-static_assert(pnm::units::BaseUnit<"">::UCUM_CODE.empty());
-static_assert(pnm::units::IsUnit<pnm::units::Unit<std::milli>>);
-static_assert(pnm::units::IsUnit<pnm::units::BaseUnit<>>);
-static_assert(pnm::units::BaseUnit<>::IS_BASE);
-static_assert(pnm::units::BaseUnit<>::AUTO_FORMAT);
-static_assert(pnm::units::Unit<std::milli, 0.0, "mm", "mm">::UCUM_CODE == "mm");
-static_assert(pnm::units::BaseUnit<"m", "m">::UCUM_CODE == "m");
+static_assert(pnm::units::Unit<"mm", std::milli>::UCUM_CODE == "mm");
+static_assert(pnm::units::Unit<"mm", std::milli>::SUFFIX == "mm");
+static_assert(pnm::units::BaseUnit<"m">::UCUM_CODE == "m");
+static_assert(pnm::units::BaseUnit<"m">::SUFFIX == "m");
+static_assert(pnm::units::Unit<"mm", std::milli, 0.0, "">::UCUM_CODE.empty());
+static_assert(pnm::units::BaseUnit<"m", "">::UCUM_CODE.empty());
+static_assert(pnm::units::IsUnit<pnm::units::Unit<"mm", std::milli>>);
+static_assert(pnm::units::IsUnit<pnm::units::BaseUnit<"m">>);
+static_assert(pnm::units::BaseUnit<"m">::IS_BASE);
+static_assert(pnm::units::BaseUnit<"m">::AUTO_FORMAT);
+static_assert(pnm::units::Unit<"mm", std::milli, 0.0, "mm", "millimetres">::SUFFIX == "millimetres");
+static_assert(pnm::units::BaseUnit<"C", "Cel", "°C">::SUFFIX == "°C");
+static_assert(DistanceUnits::um::SUFFIX == "µm");
+static_assert(AreaUnits::mm2::SUFFIX == "mm²");
+static_assert(AccelerationUnits::mm_s2::SUFFIX == "mm/s²");
+static_assert(std::same_as<DistanceUnits::um, pnm::units::Unit<"um", std::micro>>);
 
 namespace
 {
     struct OptionalCodeUnits
     {
-        using s = pnm::units::BaseUnit<>;
-        using ns = pnm::units::Unit<std::nano>;
-        using us = pnm::units::Unit<std::micro>;
-        using milliseconds = pnm::units::Unit<std::milli, 0.0, "ms", "milliseconds">;
-        using internal = pnm::units::Unit<std::kilo, 0.0, "">;
+        using s = pnm::units::BaseUnit<"s">;
+        using ns = pnm::units::Unit<"ns", std::nano>;
+        using microseconds = pnm::units::Unit<"us", std::micro>;
+        using milliseconds = pnm::units::Unit<"milliseconds", std::milli, 0.0, "ms", "milliseconds">;
+        using internal = pnm::units::Unit<"internal", std::kilo, 0.0, "">;
     };
 
     class OptionalCodeQuantity : public pnm::units::QuantityBase<OptionalCodeQuantity, OptionalCodeUnits>
@@ -175,6 +181,8 @@ namespace
     static_assert(OptionalCodeQuantity::create(2.0, "s")->get() == 2.0);
     static_assert(OptionalCodeQuantity::create(2.0, "ms")->get() == 0.002);
     static_assert(!OptionalCodeQuantity::create(2.0, "n/a"));
+    static_assert(OptionalCodeUnits::microseconds::UCUM_CODE == "us");
+    static_assert(OptionalCodeUnits::microseconds::SUFFIX == "µs");
 
     using Quantities = std::tuple<pnm::units::FrequencyRate,
                                   pnm::units::FrequencyAcceleration,
@@ -500,7 +508,7 @@ TEST(UnitsTests, OptionalUcumCodesPreserveIdentifiersAndOverrides)
     EXPECT_FALSE(Time::create(1.0, "n/a"));
 }
 
-TEST(UnitsTests, CustomUnitsInferMissingUcumCodesFromReflectedNames)
+TEST(UnitsTests, CustomUnitsResolveMetadataWithoutQuantityReflection)
 {
     const auto seconds{ OptionalCodeQuantity::create(2.0, "s") };
     const auto nanoseconds{ OptionalCodeQuantity::create(2.0, "ns") };
@@ -514,13 +522,38 @@ TEST(UnitsTests, CustomUnitsInferMissingUcumCodesFromReflectedNames)
     EXPECT_DOUBLE_EQ(nanoseconds->get(), 2e-9);
     EXPECT_DOUBLE_EQ(microseconds->get(), 2e-6);
     EXPECT_DOUBLE_EQ(milliseconds->get(), 0.002);
-    EXPECT_EQ(OptionalCodeQuantity::suffix<OptionalCodeUnits::us>(), "µs");
+    EXPECT_EQ(OptionalCodeQuantity::suffix<OptionalCodeUnits::microseconds>(), "µs");
+    EXPECT_FALSE(OptionalCodeQuantity::create(1.0, "microseconds"));
     EXPECT_FALSE(OptionalCodeQuantity::create(1.0, "µs"));
     EXPECT_FALSE(OptionalCodeQuantity::create(1.0, "milliseconds"));
     EXPECT_FALSE(OptionalCodeQuantity::create(1.0, "internal"));
     EXPECT_FALSE(OptionalCodeQuantity::create(1.0, ""));
     EXPECT_FALSE(OptionalCodeQuantity::create(1.0, "n/a"));
     EXPECT_DOUBLE_EQ(OptionalCodeQuantity::create<OptionalCodeUnits::internal>(2.0).get(), 2000.0);
+}
+
+TEST(UnitsTests, UnitMetadataKeepsCodeAndDisplaySuffixIndependent)
+{
+    using SquaredMicroUnit = pnm::units::Unit<"um2", std::pico>;
+    using CompoundUnit = pnm::units::BaseUnit<"m_s2", "m/s2">;
+    using ExplicitSuffix = pnm::units::Unit<"um", std::micro, 0.0, "um", "um">;
+    using EmptySuffix = pnm::units::BaseUnit<"fraction", "1", "">;
+    using EmptyCode = pnm::units::BaseUnit<"internal", "">;
+
+    static_assert(SquaredMicroUnit::UCUM_CODE == "um2");
+    static_assert(SquaredMicroUnit::SUFFIX == "µm²");
+    static_assert(CompoundUnit::UCUM_CODE == "m/s2");
+    static_assert(CompoundUnit::SUFFIX == "m/s²");
+    static_assert(ExplicitSuffix::SUFFIX == "um");
+    static_assert(EmptySuffix::SUFFIX.empty());
+    static_assert(EmptyCode::UCUM_CODE.empty());
+    static_assert(EmptyCode::SUFFIX == "internal");
+
+    EXPECT_EQ(std::string{ SquaredMicroUnit::SUFFIX }, "µm²");
+    EXPECT_EQ(std::string{ CompoundUnit::SUFFIX }, "m/s²");
+    EXPECT_EQ(std::string{ ExplicitSuffix::SUFFIX }, "um");
+    EXPECT_TRUE(EmptySuffix::SUFFIX.empty());
+    EXPECT_EQ(std::string{ EmptyCode::SUFFIX }, "internal");
 }
 
 TEST(UnitsTests, UcumCodesCoverEveryUnitAndRejectInvalidEnumerators)
@@ -601,6 +634,8 @@ TEST(UnitsTests, UcumCodeCreateMatchesTypedCreationForEveryRegisteredUnit)
             constexpr auto code{ pnm::units::ucumCode(*unit) };
             static_assert(code.has_value());
             static_assert(Unit::UCUM_CODE == *code);
+            static_assert(Unit::UCUM_CODE != "n/a");
+            static_assert(Unit::SUFFIX != "n/a");
             SCOPED_TRACE(name);
             SCOPED_TRACE(*code);
             for (const auto value : { -2.5, 0.0, 1.25, 42.0 }) {

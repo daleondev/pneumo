@@ -13,6 +13,8 @@ namespace
 
         std::cout << "UCUM expressions\n";
         std::cout << "  kilometre: " << DistanceUnits::km::UCUM_CODE << '\n';
+        std::cout << "  micrometre: " << DistanceUnits::um::UCUM_CODE
+                  << " (display: " << DistanceUnits::um::SUFFIX << ")\n";
         if (const auto code{ ucumCode(Units::KiB) }) {
             std::cout << "  kibibyte: " << *code << '\n';
         }

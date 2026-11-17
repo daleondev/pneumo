@@ -169,7 +169,7 @@ This follows UCUM's limited-conformance approach: it recognizes a fixed set of e
 
 Automatic byte-size formatting uses IEC prefixes; data-rate formatting uses decimal SI prefixes. Explicit `get<Unit>()`, `create<Unit>()` and `suffix<Unit>()` support both families. For example, `1_KiB_s` formats as `1.024 kB/s` without changing its value. `Unit::AUTO_FORMAT` controls eligibility for automatic selection independently of conversions.
 
-Unit types remain aliases. The declaration order is `Unit<Factor, Offset, UcumCode, Suffix, AutoFormat>`; everything after `Factor` is optional. Base units use `BaseUnit<UcumCode, Suffix>`, with both arguments optional. The registry defaults the UCUM code to the unit identifier:
+Unit types remain aliases. The declaration order is `Unit<Name, Factor, Offset, UcumCode, Suffix, AutoFormat>`; everything after `Factor` is optional. Base units use `BaseUnit<Name, UcumCode, Suffix>`, with everything after `Name` optional. The registry supplies `Name` automatically, so its declarations stay concise:
 
 ```cpp
 X(ctx, ns, std::nano)
@@ -177,9 +177,11 @@ XX(ctx, s)
 X(ctx, GB, std::giga, 0.0, "GBy", "GB", false)
 ```
 
-The registry resolves defaults when creating the alias, so `TimeUnits::ns::UCUM_CODE` is `"ns"`. The resolved code remains part of the type identity, keeping units such as metres and seconds distinct. Outside the registry, custom aliases such as `using ns = Unit<std::nano>;` and `using s = BaseUnit<>;` keep `UCUM_CODE` at its `"n/a"` default; their quantity's string constructor uses the reflected alias name. Explicit codes take precedence, and an explicit empty code disables string construction for that unit.
+`Unit` resolves both fields at compile time: `DistanceUnits::um::UCUM_CODE` is `"um"` and `DistanceUnits::um::SUFFIX` is `"µm"`. Both are `std::string_view`s into static storage, ready to use without a quantity. Explicit overrides take precedence, including empty suffixes; an explicit empty code disables string construction for that unit.
 
-Inferred codes use the identifier verbatim, without the display suffix's typography substitutions. Specify a code whenever the identifier is not the intended UCUM expression, for example `Unit<std::kilo, 0.0, "kBy", "kB">`. Custom expressions are the caller's responsibility and are not validated against the full UCUM grammar.
+Custom declarations pass the name explicitly: `using ns = Unit<"ns", std::nano>;` or `using s = BaseUnit<"s">;`. A unit cannot recover the name of an alias referring to it, so the supplied `Name` determines its defaults even if the alias has another name. The name also keeps otherwise identical units such as metres and seconds distinct.
+
+Inferred codes use `Name` verbatim. Inferred suffixes replace an initial `u` with `µ`, underscores with `/`, and a trailing `2` with `²`. Specify a code whenever the name is not the intended UCUM expression, for example `Unit<"KB", std::kilo, 0.0, "kBy", "kB">`. Custom expressions are the caller's responsibility and are not validated against the full UCUM grammar.
 
 The current built-in cross-quantity operations include:
 
