@@ -7,23 +7,23 @@
 
 namespace
 {
-    auto print_common_code_example() -> void
+    auto print_ucum_code_example() -> void
     {
         using namespace pnm::units;
 
-        std::cout << "UNECE common codes\n";
-        std::cout << "  kilometre: " << DistanceUnits::km::COMMON_CODE << '\n';
-        if (const auto code{ commonCode(Units::KiB) }) {
+        std::cout << "UCUM expressions\n";
+        std::cout << "  kilometre: " << DistanceUnits::km::UCUM_CODE << '\n';
+        if (const auto code{ ucumCode(Units::KiB) }) {
             std::cout << "  kibibyte: " << *code << '\n';
         }
-        if (const auto distance{ Distance::create(2.5, "KMT") }) {
-            std::cout << "  2.5 KMT in metres: " << distance->get() << '\n';
+        if (const auto distance{ Distance::create(2.5, "km") }) {
+            std::cout << "  2.5 km in metres: " << distance->get() << '\n';
         }
-        std::cout << "  distance accepts SEC: " << Distance::create(1.0, "SEC").has_value() << '\n';
-        std::cout << "  jerk has a common code: " << commonCode(Units::m_s3).has_value() << '\n';
-        const auto jerk_code{ unitCode(Units::m_s3).value() };
-        std::cout << "  jerk library identity: " << PNEUMO_UNIT_NAMESPACE << " / " << jerk_code.value
-                  << "\n\n";
+        std::cout << "  distance accepts s: " << Distance::create(1.0, "s").has_value() << '\n';
+        std::cout << "  jerk code: " << ucumCode(Units::m_s3).value() << '\n';
+        if (const auto acceleration{ AngularAcceleration::create(60.0, "circ/(min.s)") }) {
+            std::cout << "  60 rpm/s in rad/s2: " << acceleration->get() << "\n\n";
+        }
     }
 
     auto print_storage_example() -> void
@@ -153,7 +153,7 @@ namespace
 
 auto main() -> int
 {
-    print_common_code_example();
+    print_ucum_code_example();
     print_storage_example();
     print_trip_example();
     print_acceleration_example();

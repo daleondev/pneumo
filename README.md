@@ -116,57 +116,60 @@ The current built-in quantity types are:
 
 `pnm::units::Units` is a scoped enum of all built-in unit identifiers, such as `Units::nm`, `Units::m2`, `Units::rpm`, and `Units::s`. It is generated from the same unit lists as the quantity types and literals.
 
-UNECE Recommendation 20 common codes are declared alongside each unit and exposed through `Unit::COMMON_CODE` and `commonCode(Units)`. Quantities also accept a code string when constructing a value:
+Every built-in unit has a case-sensitive [UCUM 2.2](https://ucum.org/ucum) expression, exposed through `Unit::UCUM_CODE` and `ucumCode(Units)`. Quantities accept the same expressions when constructing values:
 
 ```cpp
 using namespace pnm::units;
 
-static_assert(DistanceUnits::km::COMMON_CODE == "KMT");
-constexpr auto code{ commonCode(Units::km) };        // optional<string_view>{"KMT"}
-constexpr auto distance{ Distance::create(2.5, "KMT") }; // optional<Distance>, 2500 m
-constexpr auto invalid{ Distance::create(2.5, "SEC") };  // nullopt: time is not distance
+static_assert(DistanceUnits::km::UCUM_CODE == "km");
+constexpr auto code{ ucumCode(Units::km) };             // optional<string_view>{"km"}
+constexpr auto distance{ Distance::create(2.5, "km") }; // optional<Distance>, 2500 m
+constexpr auto invalid{ Distance::create(2.5, "s") };   // nullopt: wrong quantity
+constexpr auto jerk{ Jerk::create(2.0, "m/s3") };
+constexpr auto speed{ AngularVelocity::create(60.0, "circ/min") }; // 60 rpm
 ```
 
-Codes are case-sensitive and matched exactly. Unknown codes, empty codes, and codes belonging to other quantities return `std::nullopt`. Lookup is quantity-specific: both `Ratio::create(1.0, "C62")` and `Unitless::create(1.0, "C62")` are valid. `commonCode()` returns `std::nullopt` for an invalid enum or an unmapped unit; the corresponding `COMMON_CODE` field is an empty `std::string_view`.
+All 101 registered units have UCUM expressions, including compound units. `ucumCode()` returns `std::nullopt` only for invalid enum values; successful lookups return views into static storage. There are no generated identifiers, hashes, or code-system wrappers. When exchanging these strings, identify the coding system as UCUM in the surrounding schema or protocol; do not use enum ordinals as stable wire identifiers.
 
-Mappings use exact matches from the [UN/CEFACT UnitMeasureCode vocabulary](https://vocabulary.uncefact.org/UnitMeasureCode). The selected code for `rpm` is `M46`. Only registered codes are accepted; other UNECE synonyms are not automatically recognized. Useful units without an exact match remain available; for example, `2J` describes cubic centimetres per second (volume flow), **not** jerk.
+The string constructor performs exact, case-sensitive lookup within the quantity. Empty strings, unregistered expressions, and codes belonging to other quantities return `std::nullopt`. Both `Ratio::create(1.0, "1")` and `Unitless::create(1.0, "1")` are valid. Other registered strings such as `"%"` still respect the quantity boundary.
 
-`unitCode(Units)` returns a protocol-independent identity for **every built-in unit**. It prefers the official common code; otherwise it automatically generates a `P` + eight-hex-digit code at compile time by reflecting over `Units`:
+This follows UCUM's limited-conformance approach: it recognizes a fixed set of expressions and does not parse or normalize arbitrary expressions. For example, `Acceleration::create(1.0, "m/s2")` succeeds, while the equivalent but unregistered `"m.s-2"` returns `nullopt`. The selected expressions were verified against UCUM 2.2 (2024-06-17) on 2026-11-17. Display suffixes retain their existing typography and are independent of the ASCII UCUM strings.
 
-```cpp
-static_assert(unitCode(Units::KB_s) == UnitCode{UnitCodeSystem::Unece, "P94"});
-static_assert(!commonCode(Units::m_s3));
-static_assert(unitCode(Units::m_s3) == UnitCode{UnitCodeSystem::Pneumo, "P03D03443"});
-static_assert(libraryCode(Units::m_s3) == "P03D03443");
-// PNEUMO_UNIT_NAMESPACE == "urn:pneumo:units"
-```
+| Unit | UCUM expression | Display suffix |
+|---|---|---|
+| `C` | `Cel` | °C |
+| `F` | `[degF]` | °F |
+| `um` | `um` | µm |
+| `m_s2` | `m/s2` | m/s² |
+| `rev` | `circ` | rev |
+| `rpm` | `circ/min` | rpm |
+| `rpm_s` | `circ/(min.s)` | rpm/s |
+| `rpm_s2` | `circ/(min.s2)` | rpm/s² |
+| `mm_rev` | `mm/circ` | mm/rev |
+| `Hz_s2` | `Hz/s2` | Hz/s² |
 
-Carry the authority together with the code. Generated identifiers are **not UNECE codes**; publish them under `PNEUMO_UNIT_NAMESPACE`. `commonCode()` and the string-based `Quantity::create()` remain official-code-only. Invalid enums return `nullopt`. Codes own no memory: returned views refer to static storage.
-
-No per-unit private definitions or numbers are maintained. A `consteval` generator loops over the reflected enum, selects units without a UNECE code, and hashes each exact, case-sensitive enumerator name with 32-bit FNV-1a (offset 2166136261, prime 16777619), keeping the low 31 bits. The code is `P` followed by that value as eight uppercase hexadecimal digits. For example, `m_s3` becomes `P03D03443`. All names and hashes are resolved during compilation; lookup uses static storage without runtime hashing or allocation.
-
-Adding/reordering units does not renumber existing codes. A duplicate generated code fails compilation rather than silently assigning order-dependent alternatives. Renaming an enumerator, changing its meaning, changing the hashing algorithm, or adding a previously missing UNECE mapping is a published identity change that applications must version. `libraryCode()` returns a value only for built-in units currently lacking an official code. Do not serialize enum ordinals as stable identities. Custom, user-defined units remain outside this built-in catalog.
+**Code migration:** `COMMON_CODE` and `commonCode()` are replaced by `UCUM_CODE` and `ucumCode()`. `UnitCode`, `UnitCodeSystem`, `unitCode()`, and `internalCode()` are removed. Previously stored UNECE or generated internal strings must be migrated to UCUM; they are no longer accepted by `create(value, code)`. Typed construction, enum construction, factors, offsets, and formatting keep their existing behavior.
 
 **Byte-size migration:** former `KB`, `MB`, `GB` and their `_s` variants used powers of 1024. Replace existing binary usages and literals with `KiB`, `MiB`, `GiB`, `KiB_s`, `MiB_s`, `GiB_s` to preserve values. The reused `KB`, `MB`, `GB` names now mean powers of 1000. This is a source-level semantic change; there are no misleading compatibility aliases.
 
-| C++ identifier / literal | Scale in bytes (or bytes/s) | Symbol | UNECE code |
+| C++ identifier / literal | Scale in bytes (or bytes/s) | Symbol | UCUM expression |
 |---|---:|---|---|
-| `KB`, `_KB` | 1,000 | kB | 2P |
-| `MB`, `_MB` | 1,000,000 | MB | 4L |
-| `GB`, `_GB` | 1,000,000,000 | GB | E34 |
-| `KiB`, `_KiB` | 1,024 | KiB | E64 |
-| `MiB`, `_MiB` | 1,048,576 | MiB | E63 |
-| `GiB`, `_GiB` | 1,073,741,824 | GiB | E62 |
-| `KB_s`, `_KB_s` | 1,000 | kB/s | P94 |
-| `MB_s`, `_MB_s` | 1,000,000 | MB/s | P95 |
-| `GB_s`, `_GB_s` | 1,000,000,000 | GB/s | E68 |
-| `KiB_s`, `_KiB_s` | 1,024 | KiB/s | none (pneumo P6588AC2B) |
-| `MiB_s`, `_MiB_s` | 1,048,576 | MiB/s | none (pneumo P4C6C6295) |
-| `GiB_s`, `_GiB_s` | 1,073,741,824 | GiB/s | none (pneumo P3BED323F) |
+| `KB`, `_KB` | 1,000 | kB | `kBy` |
+| `MB`, `_MB` | 1,000,000 | MB | `MBy` |
+| `GB`, `_GB` | 1,000,000,000 | GB | `GBy` |
+| `KiB`, `_KiB` | 1,024 | KiB | `KiBy` |
+| `MiB`, `_MiB` | 1,048,576 | MiB | `MiBy` |
+| `GiB`, `_GiB` | 1,073,741,824 | GiB | `GiBy` |
+| `KB_s`, `_KB_s` | 1,000 | kB/s | `kBy/s` |
+| `MB_s`, `_MB_s` | 1,000,000 | MB/s | `MBy/s` |
+| `GB_s`, `_GB_s` | 1,000,000,000 | GB/s | `GBy/s` |
+| `KiB_s`, `_KiB_s` | 1,024 | KiB/s | `KiBy/s` |
+| `MiB_s`, `_MiB_s` | 1,048,576 | MiB/s | `MiBy/s` |
+| `GiB_s`, `_GiB_s` | 1,073,741,824 | GiB/s | `GiBy/s` |
 
 Automatic byte-size formatting uses IEC prefixes; data-rate formatting uses decimal SI prefixes. Explicit `get<Unit>()`, `create<Unit>()` and `suffix<Unit>()` support both families. For example, `1_KiB_s` formats as `1.024 kB/s` without changing its value. `Unit::AUTO_FORMAT` controls eligibility for automatic selection independently of conversions.
 
-Unit types remain aliases. Custom declarations put the code first: `Unit<"MMT", std::milli>` or `BaseUnit<"MTR">`; use `""` when no code is available. Existing custom declarations must be updated to this argument order. The code is part of the type identity: otherwise identical units with different codes, such as metres and seconds, are now distinct types.
+Unit types remain aliases. Custom declarations put the UCUM expression first: `Unit<"mm", std::milli>` or `BaseUnit<"m">`. Custom expressions are the caller's responsibility and are not validated against the full UCUM grammar; an empty code disables string construction for that unit. The code is part of the type identity: otherwise identical units with different codes, such as metres and seconds, are distinct types.
 
 The current built-in cross-quantity operations include:
 

@@ -291,3 +291,16 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+
+UCUM 2.2 (unit expressions)
+----------------------------------------
+
+The Unified Code for Units of Measure (UCUM) is copyright ©1999-2024,
+Regenstrief Institute, Inc. All rights reserved.
+
+Specification: https://ucum.org/ucum
+License: https://ucum.org/license (Version 1.1, June 2024)
+
+Pneumo uses a fixed set of case-sensitive UCUM expressions for its built-in
+units. The UCUM specification and source XML are not bundled with Pneumo.

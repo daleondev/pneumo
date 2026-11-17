@@ -129,26 +129,28 @@ static_assert(Distance::create(2.0, Units::km)->get() == 2000.0);
 static_assert(Time::create(1.5, Units::min)->get() == 90.0);
 static_assert(!Distance::create(1.0, Units::s));
 static_assert(!Unitless::create(1.0, Units::fraction));
-static_assert(pnm::units::commonCode(Units::m) == "MTR");
-static_assert(!pnm::units::commonCode(Units::m_s3));
-static_assert(std::is_same_v<decltype(Distance::create(1.0, "MTR")), std::optional<Distance>>);
-static_assert(Distance::create(2.5, "KMT")->get() == 2500.0);
-static_assert(Time::create(1.5, "MIN")->get() == 90.0);
-static_assert(Unitless::create(2.0, "C62")->get() == 2.0);
-static_assert(Ratio::create(2.0, "C62")->get() == 2.0);
-static_assert(!Distance::create(1.0, "SEC"));
+static_assert(pnm::units::ucumCode(Units::m) == "m");
+static_assert(pnm::units::ucumCode(Units::m_s3) == "m/s3");
+static_assert(std::is_same_v<decltype(Distance::create(1.0, "m")), std::optional<Distance>>);
+static_assert(Distance::create(2.5, "km")->get() == 2500.0);
+static_assert(Time::create(1.5, "min")->get() == 90.0);
+static_assert(Unitless::create(2.0, "1")->get() == 2.0);
+static_assert(Ratio::create(2.0, "1")->get() == 2.0);
+static_assert(!Distance::create(1.0, "s"));
 static_assert(!Distance::create(1.0, ""));
-static_assert(DistanceUnits::km::COMMON_CODE == "KMT");
-static_assert(DistanceUnits::m::COMMON_CODE == "MTR");
-static_assert(TimeUnits::s::COMMON_CODE == "SEC");
-static_assert(pnm::units::JerkUnits::m_s3::COMMON_CODE.empty());
+static_assert(DistanceUnits::km::UCUM_CODE == "km");
+static_assert(DistanceUnits::m::UCUM_CODE == "m");
+static_assert(TimeUnits::s::UCUM_CODE == "s");
+static_assert(pnm::units::JerkUnits::m_s3::UCUM_CODE == "m/s3");
 static_assert(!std::same_as<DistanceUnits::m, TimeUnits::s>);
-static_assert(pnm::units::Unit<"", std::milli>::COMMON_CODE.empty());
-static_assert(pnm::units::BaseUnit<>::COMMON_CODE.empty());
+static_assert(pnm::units::Unit<"", std::milli>::UCUM_CODE.empty());
+static_assert(pnm::units::BaseUnit<>::UCUM_CODE.empty());
 static_assert(pnm::units::IsUnit<pnm::units::Unit<"", std::milli>>);
 static_assert(pnm::units::IsUnit<pnm::units::BaseUnit<>>);
-static_assert(pnm::units::Unit<"MMT", std::milli, 0.0, "mm">::COMMON_CODE == "MMT");
-static_assert(pnm::units::BaseUnit<"MTR", "m">::COMMON_CODE == "MTR");
+static_assert(pnm::units::BaseUnit<>::IS_BASE);
+static_assert(pnm::units::BaseUnit<>::AUTO_FORMAT);
+static_assert(pnm::units::Unit<"mm", std::milli, 0.0, "mm">::UCUM_CODE == "mm");
+static_assert(pnm::units::BaseUnit<"m", "m">::UCUM_CODE == "m");
 
 namespace
 {
@@ -351,106 +353,129 @@ TEST(UnitsTests, RuntimeCreatePreservesNonFiniteValuesForValidUnits)
     }
 }
 
-TEST(UnitsTests, CommonCodesMatchUneceIdentifiers)
+TEST(UnitsTests, UcumCodesMatchRegisteredExpressions)
 {
     using namespace std::string_view_literals;
-    constexpr std::array cases{
-        std::pair{ Units::nm, "C45"sv },       std::pair{ Units::um, "4H"sv },
-        std::pair{ Units::mm, "MMT"sv },       std::pair{ Units::m, "MTR"sv },
-        std::pair{ Units::km, "KMT"sv },       std::pair{ Units::m2, "MTK"sv },
-        std::pair{ Units::ns, "C47"sv },       std::pair{ Units::s, "SEC"sv },
-        std::pair{ Units::min, "MIN"sv },      std::pair{ Units::bytes, "AD"sv },
-        std::pair{ Units::KiB, "E64"sv },      std::pair{ Units::MiB, "E63"sv },
-        std::pair{ Units::GiB, "E62"sv },      std::pair{ Units::g, "GRM"sv },
-        std::pair{ Units::kg, "KGM"sv },       std::pair{ Units::C, "CEL"sv },
-        std::pair{ Units::K, "KEL"sv },        std::pair{ Units::F, "FAH"sv },
-        std::pair{ Units::A, "AMP"sv },        std::pair{ Units::V, "VLT"sv },
-        std::pair{ Units::N, "NEW"sv },        std::pair{ Units::J, "JOU"sv },
-        std::pair{ Units::W, "WTT"sv },        std::pair{ Units::bar, "BAR"sv },
-        std::pair{ Units::Hz, "HTZ"sv },       std::pair{ Units::bytes_s, "P93"sv },
-        std::pair{ Units::m_s, "MTS"sv },      std::pair{ Units::m_s2, "MSK"sv },
-        std::pair{ Units::rad, "C81"sv },      std::pair{ Units::deg, "DD"sv },
-        std::pair{ Units::rev, "M44"sv },      std::pair{ Units::rad_s, "2A"sv },
-        std::pair{ Units::rpm, "M46"sv },      std::pair{ Units::rad_s2, "2B"sv },
-        std::pair{ Units::deg_s2, "M45"sv },   std::pair{ Units::percent, "P1"sv },
-        std::pair{ Units::fraction, "C62"sv }, std::pair{ Units::unitless, "C62"sv }
-    };
+    constexpr std::array cases{ std::pair{ Units::unitless, "1"sv },
+                                std::pair{ Units::nm, "nm"sv },
+                                std::pair{ Units::um, "um"sv },
+                                std::pair{ Units::mm, "mm"sv },
+                                std::pair{ Units::cm, "cm"sv },
+                                std::pair{ Units::dm, "dm"sv },
+                                std::pair{ Units::m, "m"sv },
+                                std::pair{ Units::km, "km"sv },
+                                std::pair{ Units::mm2, "mm2"sv },
+                                std::pair{ Units::cm2, "cm2"sv },
+                                std::pair{ Units::dm2, "dm2"sv },
+                                std::pair{ Units::m2, "m2"sv },
+                                std::pair{ Units::km2, "km2"sv },
+                                std::pair{ Units::ns, "ns"sv },
+                                std::pair{ Units::us, "us"sv },
+                                std::pair{ Units::ms, "ms"sv },
+                                std::pair{ Units::s, "s"sv },
+                                std::pair{ Units::min, "min"sv },
+                                std::pair{ Units::h, "h"sv },
+                                std::pair{ Units::bytes, "By"sv },
+                                std::pair{ Units::KiB, "KiBy"sv },
+                                std::pair{ Units::MiB, "MiBy"sv },
+                                std::pair{ Units::GiB, "GiBy"sv },
+                                std::pair{ Units::KB, "kBy"sv },
+                                std::pair{ Units::MB, "MBy"sv },
+                                std::pair{ Units::GB, "GBy"sv },
+                                std::pair{ Units::mg, "mg"sv },
+                                std::pair{ Units::g, "g"sv },
+                                std::pair{ Units::kg, "kg"sv },
+                                std::pair{ Units::t, "t"sv },
+                                std::pair{ Units::C, "Cel"sv },
+                                std::pair{ Units::K, "K"sv },
+                                std::pair{ Units::F, "[degF]"sv },
+                                std::pair{ Units::uA, "uA"sv },
+                                std::pair{ Units::mA, "mA"sv },
+                                std::pair{ Units::A, "A"sv },
+                                std::pair{ Units::kA, "kA"sv },
+                                std::pair{ Units::mV, "mV"sv },
+                                std::pair{ Units::V, "V"sv },
+                                std::pair{ Units::kV, "kV"sv },
+                                std::pair{ Units::MV, "MV"sv },
+                                std::pair{ Units::mN, "mN"sv },
+                                std::pair{ Units::N, "N"sv },
+                                std::pair{ Units::kN, "kN"sv },
+                                std::pair{ Units::MN, "MN"sv },
+                                std::pair{ Units::mJ, "mJ"sv },
+                                std::pair{ Units::J, "J"sv },
+                                std::pair{ Units::kJ, "kJ"sv },
+                                std::pair{ Units::MJ, "MJ"sv },
+                                std::pair{ Units::Wh, "W.h"sv },
+                                std::pair{ Units::kWh, "kW.h"sv },
+                                std::pair{ Units::mW, "mW"sv },
+                                std::pair{ Units::W, "W"sv },
+                                std::pair{ Units::kW, "kW"sv },
+                                std::pair{ Units::MW, "MW"sv },
+                                std::pair{ Units::Pa, "Pa"sv },
+                                std::pair{ Units::hPa, "hPa"sv },
+                                std::pair{ Units::mbar, "mbar"sv },
+                                std::pair{ Units::kPa, "kPa"sv },
+                                std::pair{ Units::bar, "bar"sv },
+                                std::pair{ Units::atm, "atm"sv },
+                                std::pair{ Units::MPa, "MPa"sv },
+                                std::pair{ Units::kbar, "kbar"sv },
+                                std::pair{ Units::mHz, "mHz"sv },
+                                std::pair{ Units::Hz, "Hz"sv },
+                                std::pair{ Units::kHz, "kHz"sv },
+                                std::pair{ Units::MHz, "MHz"sv },
+                                std::pair{ Units::GHz, "GHz"sv },
+                                std::pair{ Units::bytes_s, "By/s"sv },
+                                std::pair{ Units::KB_s, "kBy/s"sv },
+                                std::pair{ Units::MB_s, "MBy/s"sv },
+                                std::pair{ Units::GB_s, "GBy/s"sv },
+                                std::pair{ Units::KiB_s, "KiBy/s"sv },
+                                std::pair{ Units::MiB_s, "MiBy/s"sv },
+                                std::pair{ Units::GiB_s, "GiBy/s"sv },
+                                std::pair{ Units::mm_s, "mm/s"sv },
+                                std::pair{ Units::m_s, "m/s"sv },
+                                std::pair{ Units::km_h, "km/h"sv },
+                                std::pair{ Units::mm_s2, "mm/s2"sv },
+                                std::pair{ Units::m_s2, "m/s2"sv },
+                                std::pair{ Units::km_h2, "km/h2"sv },
+                                std::pair{ Units::mm_s3, "mm/s3"sv },
+                                std::pair{ Units::m_s3, "m/s3"sv },
+                                std::pair{ Units::rad, "rad"sv },
+                                std::pair{ Units::deg, "deg"sv },
+                                std::pair{ Units::rev, "circ"sv },
+                                std::pair{ Units::rad_s, "rad/s"sv },
+                                std::pair{ Units::rpm, "circ/min"sv },
+                                std::pair{ Units::deg_s, "deg/s"sv },
+                                std::pair{ Units::rad_s2, "rad/s2"sv },
+                                std::pair{ Units::deg_s2, "deg/s2"sv },
+                                std::pair{ Units::rpm_s, "circ/(min.s)"sv },
+                                std::pair{ Units::rad_s3, "rad/s3"sv },
+                                std::pair{ Units::deg_s3, "deg/s3"sv },
+                                std::pair{ Units::rpm_s2, "circ/(min.s2)"sv },
+                                std::pair{ Units::fraction, "1"sv },
+                                std::pair{ Units::percent, "%"sv },
+                                std::pair{ Units::Hz_s, "Hz/s"sv },
+                                std::pair{ Units::Hz_s2, "Hz/s2"sv },
+                                std::pair{ Units::m_rad, "m/rad"sv },
+                                std::pair{ Units::mm_rev, "mm/circ"sv } };
+    static_assert(cases.size() == pnm::meta::enumeration::count<Units>());
     for (const auto& [unit, expected] : cases) {
         SCOPED_TRACE(pnm::meta::enumeration::enumerator_name(unit));
-        EXPECT_EQ(pnm::units::commonCode(unit), expected);
+        EXPECT_EQ(pnm::units::ucumCode(unit), expected);
     }
 }
 
-TEST(UnitsTests, CommonCodesRejectUnmappedUnitsAndInvalidEnumerators)
+TEST(UnitsTests, UcumCodesCoverEveryUnitAndRejectInvalidEnumerators)
 {
-    constexpr std::array unmapped{ Units::mHz,   Units::KiB_s, Units::MiB_s,  Units::GiB_s, Units::km_h2,
-                                   Units::mm_s3, Units::m_s3,  Units::rad_s3, Units::deg_s3 };
-    for (const auto unit : unmapped) {
-        SCOPED_TRACE(pnm::meta::enumeration::enumerator_name(unit));
-        EXPECT_FALSE(pnm::units::commonCode(unit));
-    }
-    EXPECT_FALSE(pnm::units::commonCode(static_cast<Units>(pnm::meta::enumeration::count<Units>())));
-    EXPECT_FALSE(
-      pnm::units::commonCode(static_cast<Units>(std::numeric_limits<std::underlying_type_t<Units>>::max())));
-}
-
-TEST(UnitsTests, LibraryCodesAreGeneratedForEveryUnmappedUnit)
-{
-    using namespace pnm::units;
-    EXPECT_EQ(PNEUMO_UNIT_NAMESPACE, "urn:pneumo:units");
     for (const auto unit : pnm::meta::enumeration::enumerators<Units>()) {
         SCOPED_TRACE(pnm::meta::enumeration::enumerator_name(unit));
-        const auto private_code{ libraryCode(unit) };
-        if (commonCode(unit)) {
-            EXPECT_FALSE(private_code);
-            continue;
-        }
-        ASSERT_TRUE(private_code);
-        ASSERT_EQ(private_code->size(), 9);
-        EXPECT_EQ(private_code->front(), 'P');
-        EXPECT_LE((*private_code)[1], '7');
-        EXPECT_TRUE(std::ranges::all_of(
-          private_code->substr(1), [](char c) { return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F'); }));
-        EXPECT_EQ(unitCode(unit), (UnitCode{ UnitCodeSystem::Pneumo, *private_code }));
-        for (const auto other : pnm::meta::enumeration::enumerators<Units>())
-            if (unit != other) {
-                EXPECT_NE(private_code, libraryCode(other));
-            }
-    }
-}
-
-TEST(UnitsTests, GeneratedIdentitiesHaveFixedNameBasedSemantics)
-{
-    using namespace pnm::units;
-    // Compatibility anchors only, not a code registry. Reordering or extending
-    // the enum must leave these values unchanged on host and embedded compilers.
-    static_assert(unitCode(Units::m_s3) == UnitCode{ UnitCodeSystem::Pneumo, "P03D03443" });
-    static_assert(libraryCode(Units::KiB_s) == "P6588AC2B");
-    static_assert(libraryCode(Units::mHz) == "P53DCC85E");
-    // The string constructor accepts official common codes only.
-    EXPECT_FALSE(Jerk::create(1, "P03D03443"));
-    EXPECT_FALSE(Jerk::create(1, "2J")); // cubic centimetres/second is volume flow, not jerk.
-}
-
-TEST(UnitsTests, PreferredCodeCoversEveryUnitAndRejectsInvalidValues)
-{
-    for (const auto unit : pnm::meta::enumeration::enumerators<Units>()) {
-        const auto code{ pnm::units::unitCode(unit) };
+        const auto code{ pnm::units::ucumCode(unit) };
         ASSERT_TRUE(code);
-        if (const auto standard{ pnm::units::commonCode(unit) }) {
-            EXPECT_EQ(code->system, pnm::units::UnitCodeSystem::Unece);
-            EXPECT_EQ(code->value, *standard);
-        }
-        else {
-            EXPECT_EQ(code->system, pnm::units::UnitCodeSystem::Pneumo);
-            EXPECT_EQ(code->value, pnm::units::libraryCode(unit));
-        }
+        EXPECT_FALSE(code->empty());
+        EXPECT_TRUE(std::ranges::all_of(*code, [](unsigned char c) { return c > ' ' && c < 127; }));
     }
-    for (auto unit :
-         { static_cast<Units>(255), static_cast<Units>(pnm::meta::enumeration::count<Units>()) }) {
-        EXPECT_FALSE(pnm::units::unitCode(unit));
-        EXPECT_FALSE(pnm::units::libraryCode(unit));
-    }
+    EXPECT_FALSE(pnm::units::ucumCode(static_cast<Units>(pnm::meta::enumeration::count<Units>())));
+    EXPECT_FALSE(
+      pnm::units::ucumCode(static_cast<Units>(std::numeric_limits<std::underlying_type_t<Units>>::max())));
 }
 
 TEST(UnitsTests, DecimalAndBinaryByteUnitsRemainDistinct)
@@ -464,10 +489,10 @@ TEST(UnitsTests, DecimalAndBinaryByteUnitsRemainDistinct)
     EXPECT_DOUBLE_EQ((1_KiB).get<ByteSizeUnits::KB>(), 1.024);
     EXPECT_DOUBLE_EQ((1_MB).get<ByteSizeUnits::MiB>(), 0.95367431640625);
     EXPECT_DOUBLE_EQ((1_GB).get<ByteSizeUnits::GiB>(), 0.9313225746154785);
-    EXPECT_DOUBLE_EQ(ByteSize::create(1, "2P")->get(), 1000);
-    EXPECT_DOUBLE_EQ(ByteSize::create(1, "4L")->get(), 1000000);
-    EXPECT_DOUBLE_EQ(ByteSize::create(1, "E34")->get(), 1000000000);
-    EXPECT_DOUBLE_EQ(ByteSize::create(1, "E64")->get(), 1024);
+    EXPECT_DOUBLE_EQ(ByteSize::create(1, "kBy")->get(), 1000);
+    EXPECT_DOUBLE_EQ(ByteSize::create(1, "MBy")->get(), 1000000);
+    EXPECT_DOUBLE_EQ(ByteSize::create(1, "GBy")->get(), 1000000000);
+    EXPECT_DOUBLE_EQ(ByteSize::create(1, "KiBy")->get(), 1024);
     EXPECT_EQ(ByteSize::suffix<ByteSizeUnits::KB>(), "kB");
     EXPECT_EQ(ByteSize::suffix<ByteSizeUnits::KiB>(), "KiB");
 }
@@ -481,9 +506,9 @@ TEST(UnitsTests, DecimalAndBinaryRatesPreserveDimensionalConversions)
     EXPECT_DOUBLE_EQ((1_MiB_s).get(), 1048576);
     EXPECT_DOUBLE_EQ((1_GiB_s).get(), 1073741824);
     EXPECT_DOUBLE_EQ((1_MiB_s).get<DataRateUnits::MB_s>(), 1.048576);
-    EXPECT_DOUBLE_EQ(DataRate::create(1, "P94")->get(), 1000);
-    EXPECT_DOUBLE_EQ(DataRate::create(1, "P95")->get(), 1000000);
-    EXPECT_DOUBLE_EQ(DataRate::create(1, "E68")->get(), 1000000000);
+    EXPECT_DOUBLE_EQ(DataRate::create(1, "kBy/s")->get(), 1000);
+    EXPECT_DOUBLE_EQ(DataRate::create(1, "MBy/s")->get(), 1000000);
+    EXPECT_DOUBLE_EQ(DataRate::create(1, "GBy/s")->get(), 1000000000);
     EXPECT_DOUBLE_EQ((10_MB / 2_s).get<DataRateUnits::MB_s>(), 5);
     EXPECT_DOUBLE_EQ((10_MiB / 2_s).get<DataRateUnits::MiB_s>(), 5);
     EXPECT_DOUBLE_EQ((2_KB_s * 2_s).get<ByteSizeUnits::bytes>(), 4000);
@@ -504,7 +529,7 @@ TEST(UnitsTests, AutomaticByteFormattingKeepsOnePrefixFamily)
     EXPECT_EQ(stream_to_string(0_bytes_s), "0 bytes/s");
 }
 
-TEST(UnitsTests, CommonCodeCreateMatchesTypedCreationForEveryMappedUnit)
+TEST(UnitsTests, UcumCodeCreateMatchesTypedCreationForEveryRegisteredUnit)
 {
     pnm::meta::tuple::for_each<Quantities>([](auto quantity_index) {
         using Quantity = pnm::meta::tuple::type_t<decltype(quantity_index)::value, Quantities>;
@@ -514,34 +539,31 @@ TEST(UnitsTests, CommonCodeCreateMatchesTypedCreationForEveryMappedUnit)
                                                   typename Quantity::UnitsMeta::NestedTypes>;
             constexpr auto name{ Quantity::UnitsMeta::NESTED_TYPE_NAMES[decltype(unit_index)::value] };
             constexpr auto unit{ pnm::meta::enumeration::from_string<Units>(name) };
-            constexpr auto code{ pnm::units::commonCode(*unit) };
-            static_assert(Unit::COMMON_CODE == code.value_or(""));
-            if constexpr (code.has_value()) {
-                SCOPED_TRACE(name);
-                SCOPED_TRACE(*code);
-                for (const auto value : { -2.5, 0.0, 1.25, 42.0 }) {
-                    const auto result{ Quantity::create(value, *code) };
-                    ASSERT_TRUE(result.has_value());
-                    EXPECT_DOUBLE_EQ(result->get(), Quantity::template create<Unit>(value).get());
-                }
+            constexpr auto code{ pnm::units::ucumCode(*unit) };
+            static_assert(code.has_value());
+            static_assert(Unit::UCUM_CODE == *code);
+            SCOPED_TRACE(name);
+            SCOPED_TRACE(*code);
+            for (const auto value : { -2.5, 0.0, 1.25, 42.0 }) {
+                const auto result{ Quantity::create(value, *code) };
+                ASSERT_TRUE(result.has_value());
+                EXPECT_DOUBLE_EQ(result->get(), Quantity::template create<Unit>(value).get());
             }
         });
     });
 }
 
-TEST(UnitsTests, CommonCodeCreateRejectsEveryCodeFromOtherQuantities)
+TEST(UnitsTests, UcumCodeCreateRejectsEveryCodeFromOtherQuantities)
 {
     pnm::meta::tuple::for_each<Quantities>([](auto quantity_index) {
         using Quantity = pnm::meta::tuple::type_t<decltype(quantity_index)::value, Quantities>;
         SCOPED_TRACE(Quantity::UnitsMeta::NAME);
         for (const auto unit : pnm::meta::enumeration::enumerators<Units>()) {
-            const auto code{ pnm::units::commonCode(unit) };
-            if (!code) {
-                continue;
-            }
+            const auto code{ pnm::units::ucumCode(unit) };
+            ASSERT_TRUE(code);
             const auto belongs{ std::ranges::any_of(Quantity::UnitsMeta::NESTED_TYPE_NAMES,
                                                     [&code](std::string_view name) {
-                return pnm::units::commonCode(*pnm::meta::enumeration::from_string<Units>(name)) == code;
+                return pnm::units::ucumCode(*pnm::meta::enumeration::from_string<Units>(name)) == code;
             }) };
             SCOPED_TRACE(*code);
             EXPECT_EQ(Quantity::create(1.0, *code).has_value(), belongs);
@@ -549,69 +571,119 @@ TEST(UnitsTests, CommonCodeCreateRejectsEveryCodeFromOtherQuantities)
     });
 }
 
-TEST(UnitsTests, CommonCodeCreateResolvesSharedCodesWithinQuantity)
+TEST(UnitsTests, UcumCodeCreateResolvesSharedCodesWithinQuantity)
 {
-    const auto unitless{ Unitless::create(2.5, "C62") };
-    const auto ratio{ Ratio::create(2.5, "C62") };
+    const auto unitless{ Unitless::create(2.5, "1") };
+    const auto ratio{ Ratio::create(2.5, "1") };
     ASSERT_TRUE(unitless);
     ASSERT_TRUE(ratio);
     EXPECT_DOUBLE_EQ(unitless->get(), 2.5);
     EXPECT_DOUBLE_EQ(ratio->get(), 2.5);
-    EXPECT_FALSE(Distance::create(2.5, "C62"));
-    EXPECT_FALSE(Unitless::create(50.0, "P1"));
+    EXPECT_FALSE(Distance::create(2.5, "1"));
+    EXPECT_FALSE(Unitless::create(50.0, "%"));
 }
 
-TEST(UnitsTests, CommonCodeCreateRequiresAnExactRegisteredCode)
+TEST(UnitsTests, UcumCodeCreateRequiresAnExactRegisteredCode)
 {
     using namespace std::string_view_literals;
-    for (const auto code : { ""sv, "???"sv, "km"sv, "kmt"sv, " KMT"sv, "KMT "sv, "KMTx"sv, "KMT\0"sv }) {
+    for (const auto code : { ""sv, "???"sv, "KM"sv, "Km"sv, " km"sv, "km "sv, "kmx"sv, "km\0"sv, "µm"sv }) {
         SCOPED_TRACE(code);
         EXPECT_FALSE(Distance::create(1.0, code));
     }
-    // Empty codes must not select an unmapped unit in any quantity.
     pnm::meta::tuple::for_each<Quantities>([](auto index) {
         using Quantity = pnm::meta::tuple::type_t<index, Quantities>;
         SCOPED_TRACE(Quantity::UnitsMeta::NAME);
         EXPECT_FALSE(Quantity::create(1.0, ""));
     });
-    // Private codes must not be mistaken for official common codes.
-    for (const auto code : { "P6588AC2B", "P4C6C6295", "P3BED323F" }) {
-        EXPECT_FALSE(DataRate::create(1.0, code));
-    }
+    // Readable symbols are distinct from the registered UCUM expressions.
+    EXPECT_FALSE(ByteSize::create(1.0, "B"));
+    EXPECT_FALSE(ByteSize::create(1.0, "KiB"));
+    EXPECT_FALSE(Temperature::create(1.0, "C"));
+    EXPECT_FALSE(Temperature::create(1.0, "°C"));
+    // This lookup does not normalize equivalent expressions or parse annotations.
+    EXPECT_FALSE(Acceleration::create(1.0, "m.s-2"));
+    EXPECT_FALSE(AngularVelocity::create(1.0, "circ.min-1"));
+    EXPECT_FALSE(Unitless::create(1.0, "{count}"));
 
-    const std::array input{ 'K', 'M', 'T', 'x' };
-    const auto distance{ Distance::create(2.5, std::string_view{ input.data(), 3 }) };
+    const std::array input{ 'k', 'm', 'x' };
+    const auto distance{ Distance::create(2.5, std::string_view{ input.data(), 2 }) };
     ASSERT_TRUE(distance);
     EXPECT_DOUBLE_EQ(distance->get(), 2500.0);
 }
 
-TEST(UnitsTests, CommonCodeCreateAppliesOffsetsAndBinaryAndAngularScales)
+TEST(UnitsTests, UcumCodeCreateRejectsLegacyCodes)
 {
-    const auto temperature{ Temperature::create(212.0, "FAH") };
+    EXPECT_FALSE(Distance::create(1.0, "KMT"));
+    EXPECT_FALSE(Temperature::create(1.0, "FAH"));
+    EXPECT_FALSE(ByteSize::create(1.0, "E64"));
+    EXPECT_FALSE(Ratio::create(1.0, "C62"));
+    EXPECT_FALSE(pnm::units::Jerk::create(1.0, "P03D03443"));
+    EXPECT_FALSE(DataRate::create(1.0, "P6588AC2B"));
+}
+
+TEST(UnitsTests, UcumCodeCreateSupportsCompoundUnits)
+{
+    using namespace pnm::units;
+    const auto jerk{ Jerk::create(2.5, "mm/s3") };
+    ASSERT_TRUE(jerk);
+    EXPECT_DOUBLE_EQ(jerk->get(), 0.0025);
+
+    const auto acceleration{ AngularAcceleration::create(60.0, "circ/(min.s)") };
+    ASSERT_TRUE(acceleration);
+    EXPECT_DOUBLE_EQ(acceleration->get(), 2.0 * std::numbers::pi);
+
+    const auto angular_jerk{ AngularJerk::create(60.0, "circ/(min.s2)") };
+    ASSERT_TRUE(angular_jerk);
+    EXPECT_DOUBLE_EQ(angular_jerk->get(), 2.0 * std::numbers::pi);
+
+    const auto lead{ TransmissionLead::create(1.0, "mm/circ") };
+    ASSERT_TRUE(lead);
+    EXPECT_DOUBLE_EQ(lead->get(), 0.001 / (2.0 * std::numbers::pi));
+
+    const auto rate{ DataRate::create(1.0, "KiBy/s") };
+    ASSERT_TRUE(rate);
+    EXPECT_DOUBLE_EQ(rate->get(), 1024.0);
+
+    const auto frequency{ Frequency::create(2.0, "mHz") };
+    ASSERT_TRUE(frequency);
+    EXPECT_DOUBLE_EQ(frequency->get(), 0.002);
+
+    const auto frequency_rate{ FrequencyRate::create(2.0, "Hz/s") };
+    ASSERT_TRUE(frequency_rate);
+    EXPECT_DOUBLE_EQ(frequency_rate->get(), 2.0);
+
+    const auto frequency_acceleration{ FrequencyAcceleration::create(3.0, "Hz/s2") };
+    ASSERT_TRUE(frequency_acceleration);
+    EXPECT_DOUBLE_EQ(frequency_acceleration->get(), 3.0);
+}
+
+TEST(UnitsTests, UcumCodeCreateAppliesOffsetsAndBinaryAndAngularScales)
+{
+    const auto temperature{ Temperature::create(212.0, "[degF]") };
     ASSERT_TRUE(temperature);
     EXPECT_NEAR(temperature->get(), 100.0, 1e-12);
 
-    const auto storage{ ByteSize::create(1.0, "E62") };
+    const auto storage{ ByteSize::create(1.0, "GiBy") };
     ASSERT_TRUE(storage);
     EXPECT_DOUBLE_EQ(storage->get(), 1073741824.0);
 
-    const auto rotation{ AngularVelocity::create(60.0, "M46") };
+    const auto rotation{ AngularVelocity::create(60.0, "circ/min") };
     ASSERT_TRUE(rotation);
     EXPECT_DOUBLE_EQ(rotation->get(), 2.0 * std::numbers::pi);
 
-    const auto percent{ Ratio::create(50.0, "P1") };
+    const auto percent{ Ratio::create(50.0, "%") };
     ASSERT_TRUE(percent);
     EXPECT_DOUBLE_EQ(percent->get(), 0.5);
 }
 
-TEST(UnitsTests, CommonCodeCreatePreservesNonFiniteValuesForValidCodes)
+TEST(UnitsTests, UcumCodeCreatePreservesNonFiniteValuesForValidCodes)
 {
-    const auto nan{ Distance::create(std::numeric_limits<double>::quiet_NaN(), "KMT") };
+    const auto nan{ Distance::create(std::numeric_limits<double>::quiet_NaN(), "km") };
     ASSERT_TRUE(nan);
     EXPECT_TRUE(nan->isNaN());
     for (const auto value :
          { std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity() }) {
-        const auto result{ Distance::create(value, "KMT") };
+        const auto result{ Distance::create(value, "km") };
         ASSERT_TRUE(result);
         EXPECT_EQ(result->get(), value);
     }
