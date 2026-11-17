@@ -124,6 +124,8 @@ using namespace pnm::units;
 static_assert(DistanceUnits::km::UCUM_CODE == "km");
 constexpr auto code{ ucumCode(Units::km) };             // optional<string_view>{"km"}
 constexpr auto distance{ Distance::create(2.5, "km") }; // optional<Distance>, 2500 m
+constexpr auto kilometres{ distance->get(Units::km) }; // optional<double>{2.5}
+constexpr auto centimetres{ distance->get("cm") };    // optional<double>{250000.0}
 constexpr auto invalid{ Distance::create(2.5, "s") };   // nullopt: wrong quantity
 constexpr auto jerk{ Jerk::create(2.0, "m/s3") };
 constexpr auto speed{ AngularVelocity::create(60.0, "circ/min") }; // 60 rpm
@@ -132,6 +134,8 @@ constexpr auto speed{ AngularVelocity::create(60.0, "circ/min") }; // 60 rpm
 All 101 registered units have UCUM expressions, including compound units. `ucumCode()` returns `std::nullopt` only for invalid enum values; successful lookups return views into static storage. There are no generated identifiers, hashes, or code-system wrappers. When exchanging these strings, identify the coding system as UCUM in the surrounding schema or protocol; do not use enum ordinals as stable wire identifiers.
 
 The string constructor performs exact, case-sensitive lookup within the quantity. Empty strings, unregistered expressions, and codes belonging to other quantities return `std::nullopt`. Both `Ratio::create(1.0, "1")` and `Unitless::create(1.0, "1")` are valid. Other registered strings such as `"%"` still respect the quantity boundary.
+
+`quantity.get(Units::km)` and `quantity.get("km")` return `std::optional<double>` containing the value converted to the selected unit. They use the same quantity checks and exact UCUM lookup as runtime `create()`, returning `std::nullopt` for invalid or foreign units. Both work on const quantities and in constant expressions, support units with `AUTO_FORMAT=false`, and leave the quantity unchanged. Temperature conversions divide by the factor before subtracting the offset, matching `get<Unit>()`.
 
 This follows UCUM's limited-conformance approach: it recognizes a fixed set of expressions and does not parse or normalize arbitrary expressions. For example, `Acceleration::create(1.0, "m/s2")` succeeds, while the equivalent but unregistered `"m.s-2"` returns `nullopt`. The selected expressions were verified against UCUM 2.2 (2024-06-17) on 2026-11-17. Display suffixes retain their existing typography and are independent of the ASCII UCUM strings.
 

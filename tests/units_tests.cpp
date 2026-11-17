@@ -138,6 +138,15 @@ static_assert(Unitless::create(2.0, "1")->get() == 2.0);
 static_assert(Ratio::create(2.0, "1")->get() == 2.0);
 static_assert(!Distance::create(1.0, "s"));
 static_assert(!Distance::create(1.0, ""));
+static_assert(std::same_as<decltype((2500_m).get(Units::km)), std::optional<double>>);
+static_assert(std::same_as<decltype((2500_m).get("km")), std::optional<double>>);
+static_assert((2500_m).get(Units::km) == 2.5);
+static_assert((2500_m).get("km") == 2.5);
+static_assert((120_s).get(Units::min) == 2.0);
+static_assert((120_s).get("min") == 2.0);
+static_assert(!(2500_m).get(Units::s));
+static_assert(!(2500_m).get("s"));
+static_assert(!(2500_m).get(""));
 static_assert(DistanceUnits::km::UCUM_CODE == "km");
 static_assert(DistanceUnits::m::UCUM_CODE == "m");
 static_assert(TimeUnits::s::UCUM_CODE == "s");
@@ -399,6 +408,143 @@ TEST(UnitsTests, RuntimeCreatePreservesNonFiniteValuesForValidUnits)
         EXPECT_TRUE(result->isInf());
         EXPECT_EQ(result->get(), value);
     }
+}
+
+TEST(UnitsTests, RuntimeGetMatchesTypedAccessForEveryRegisteredUnit)
+{
+    pnm::meta::tuple::for_each<Quantities>([](auto quantity_index) {
+        using Quantity = pnm::meta::tuple::type_t<decltype(quantity_index)::value, Quantities>;
+        SCOPED_TRACE(Quantity::UnitsMeta::NAME);
+        pnm::meta::tuple::for_each<typename Quantity::UnitsMeta::NestedTypes>([](auto unit_index) {
+            using Unit = pnm::meta::tuple::type_t<decltype(unit_index)::value,
+                                                  typename Quantity::UnitsMeta::NestedTypes>;
+            constexpr auto unit{ pnm::meta::enumeration::from_string<Units>(
+              Quantity::UnitsMeta::NESTED_TYPE_NAMES[decltype(unit_index)::value]) };
+            static_assert(unit.has_value());
+            SCOPED_TRACE(Unit::UCUM_CODE);
+            for (const auto value : { -273.15, -2.5, 0.0, 1.25, 42.0, 1e6 }) {
+                const auto quantity{ Quantity::create(value) };
+                const auto by_enum{ quantity.get(*unit) };
+                const auto by_code{ quantity.get(Unit::UCUM_CODE) };
+                ASSERT_TRUE(by_enum);
+                ASSERT_TRUE(by_code);
+                EXPECT_DOUBLE_EQ(*by_enum, quantity.template get<Unit>());
+                EXPECT_DOUBLE_EQ(*by_code, quantity.template get<Unit>());
+                EXPECT_DOUBLE_EQ(quantity.get(), value);
+            }
+        });
+    });
+}
+
+TEST(UnitsTests, RuntimeGetRejectsUnitsAndCodesFromOtherQuantities)
+{
+    pnm::meta::tuple::for_each<Quantities>([](auto quantity_index) {
+        using Quantity = pnm::meta::tuple::type_t<quantity_index, Quantities>;
+        const auto quantity{ Quantity::create(1.0) };
+        SCOPED_TRACE(Quantity::UnitsMeta::NAME);
+        for (const auto unit : pnm::meta::enumeration::enumerators<Units>()) {
+            const auto name{ pnm::meta::enumeration::enumerator_name(unit) };
+            const auto code{ pnm::units::ucumCode(unit) };
+            ASSERT_TRUE(code);
+            SCOPED_TRACE(name);
+            const auto owns_enum{ std::ranges::contains(Quantity::UnitsMeta::NESTED_TYPE_NAMES, name) };
+            const auto owns_code{ std::ranges::any_of(Quantity::UnitsMeta::NESTED_TYPE_NAMES,
+                                                      [&code](std::string_view unit_name) {
+                return pnm::units::ucumCode(*pnm::meta::enumeration::from_string<Units>(unit_name)) == code;
+            }) };
+            EXPECT_EQ(quantity.get(unit).has_value(), owns_enum);
+            EXPECT_EQ(quantity.get(*code).has_value(), owns_code);
+        }
+    });
+}
+
+TEST(UnitsTests, RuntimeGetRejectsInvalidEnumValues)
+{
+    constexpr std::array invalid_units{ static_cast<Units>(pnm::meta::enumeration::count<Units>()),
+                                        static_cast<Units>(
+                                          std::numeric_limits<std::underlying_type_t<Units>>::max()) };
+    pnm::meta::tuple::for_each<Quantities>([&](auto quantity_index) {
+        using Quantity = pnm::meta::tuple::type_t<quantity_index, Quantities>;
+        const auto quantity{ Quantity::create(1.0) };
+        SCOPED_TRACE(Quantity::UnitsMeta::NAME);
+        for (const auto unit : invalid_units) {
+            EXPECT_FALSE(quantity.get(unit));
+        }
+    });
+    EXPECT_EQ((2500_m).get(Units::km), 2.5);
+}
+
+TEST(UnitsTests, RuntimeGetAppliesInverseOffsetsAndSupportsDisabledFormattingUnits)
+{
+    EXPECT_EQ((30_C).get(Units::F), 86.0);
+    EXPECT_EQ((30_C).get("[degF]"), 86.0);
+    EXPECT_EQ((0_C).get(Units::K), 273.15);
+    EXPECT_EQ((0_C).get("K"), 273.15);
+    EXPECT_EQ((-40_C).get(Units::F), -40.0);
+    EXPECT_EQ((-40_C).get("[degF]"), -40.0);
+    EXPECT_EQ((0.5_fraction).get(Units::percent), 50.0);
+    EXPECT_EQ((0.5_fraction).get("%"), 50.0);
+    EXPECT_EQ((1_GiB).get(Units::MiB), 1024.0);
+    EXPECT_EQ((1_GiB).get("MiBy"), 1024.0);
+    EXPECT_EQ((3600_J).get(Units::Wh), 1.0);
+    EXPECT_EQ((3600_J).get("W.h"), 1.0);
+    EXPECT_EQ((2_rev / 1_s).get(Units::rpm), 120.0);
+    EXPECT_EQ((2_rev / 1_s).get("circ/min"), 120.0);
+}
+
+TEST(UnitsTests, RuntimeGetRequiresExactUcumCodes)
+{
+    using namespace std::string_view_literals;
+    constexpr auto distance{ 2500_m };
+    for (const auto code : { ""sv, "???"sv, "KM"sv, "Km"sv, " km"sv, "km "sv, "kmx"sv, "km\0"sv, "µm"sv }) {
+        SCOPED_TRACE(code);
+        EXPECT_FALSE(distance.get(code));
+    }
+    EXPECT_FALSE((1_KiB).get("KiB"));
+    EXPECT_FALSE((1_C).get("°C"));
+    EXPECT_FALSE((1_m_s2).get("m.s-2"));
+    EXPECT_FALSE(distance.get("KMT"));
+    const std::array input{ 'k', 'm', 'x' };
+    EXPECT_EQ(distance.get(std::string_view{ input.data(), 2 }), 2.5);
+}
+
+TEST(UnitsTests, RuntimeGetResolvesSharedAndCustomUcumCodes)
+{
+    EXPECT_EQ((0.5_fraction).get("1"), 0.5);
+    EXPECT_EQ((2_unitless).get("1"), 2.0);
+    EXPECT_FALSE((2_unitless).get(Units::fraction));
+    EXPECT_FALSE((2_unitless).get("%"));
+    const auto quantity{ OptionalCodeQuantity::create(1.0) };
+    EXPECT_EQ(quantity.get("s"), 1.0);
+    EXPECT_EQ(quantity.get("ms"), 1000.0);
+    EXPECT_EQ(quantity.get("us"), 1000000.0);
+    EXPECT_FALSE(quantity.get("microseconds"));
+    EXPECT_FALSE(quantity.get("internal"));
+    EXPECT_FALSE(quantity.get(""));
+}
+
+TEST(UnitsTests, RuntimeGetPreservesNonFiniteValuesForValidUnits)
+{
+    const auto nan{ Distance::create(std::numeric_limits<double>::quiet_NaN()) };
+    const auto nan_enum{ nan.get(Units::km) };
+    const auto nan_code{ nan.get("km") };
+    ASSERT_TRUE(nan_enum);
+    ASSERT_TRUE(nan_code);
+    EXPECT_TRUE(std::isnan(*nan_enum));
+    EXPECT_TRUE(std::isnan(*nan_code));
+    EXPECT_FALSE(nan.get(Units::s));
+    EXPECT_FALSE(nan.get("s"));
+    for (const auto value :
+         { std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity() }) {
+        const auto temperature{ Temperature::create(value) };
+        EXPECT_EQ(temperature.get(Units::F), value);
+        EXPECT_EQ(temperature.get("[degF]"), value);
+    }
+    const auto negative_zero{ Distance::create(-0.0) };
+    ASSERT_TRUE(negative_zero.get(Units::km));
+    ASSERT_TRUE(negative_zero.get("km"));
+    EXPECT_TRUE(std::signbit(*negative_zero.get(Units::km)));
+    EXPECT_TRUE(std::signbit(*negative_zero.get("km")));
 }
 
 TEST(UnitsTests, UcumCodesMatchRegisteredExpressions)

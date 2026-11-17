@@ -20,6 +20,8 @@ namespace
         }
         if (const auto distance{ Distance::create(2.5, "km") }) {
             std::cout << "  2.5 km in metres: " << distance->get() << '\n';
+            std::cout << "  in kilometres (enum): " << distance->get(Units::km).value() << '\n';
+            std::cout << "  in centimetres (UCUM): " << distance->get("cm").value() << '\n';
         }
         std::cout << "  distance accepts s: " << Distance::create(1.0, "s").has_value() << '\n';
         std::cout << "  jerk code: " << ucumCode(Units::m_s3).value() << '\n';

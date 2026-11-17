@@ -941,6 +941,55 @@ namespace pnm::units
 
         static constexpr auto create(double value) -> Quantity { return Quantity{ value }; }
 
+        template<pnm::meta::enumeration::ScopedEnum Unit>
+        constexpr auto get(Unit unit) const -> std::optional<double>
+        {
+            using namespace std::string_view_literals;
+            static_assert(pnm::meta::type::namespaces<Unit>() == std::array{ "pnm"sv, "units"sv });
+            static_assert(pnm::meta::type::name<Unit>() == "Units");
+
+            static constexpr auto units{ [] consteval {
+                return pnm::meta::container::FixedMap{ []<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return std::array{ std::make_pair(UnitsMeta::NESTED_TYPE_NAMES[Is], +[](double v) {
+                        using CurrentUnit = pnm::meta::tuple::type_t<Is, typename UnitsMeta::NestedTypes>;
+                        return static_cast<double>((v / CurrentUnit::FACTOR) - CurrentUnit::OFFSET);
+                    })... };
+                }(std::make_index_sequence<UnitsMeta::numNestedTypes()>{}) };
+            }() };
+
+            auto unit_name{ pnm::meta::enumeration::enumerator_name(unit) };
+            auto modifier{ units.at(unit_name) };
+            if (!modifier) {
+                return std::nullopt;
+            }
+
+            return (*modifier)(value);
+        }
+
+        constexpr auto get(std::string_view ucum_code) const -> std::optional<double>
+        {
+            if (ucum_code.empty()) {
+                return std::nullopt;
+            }
+            static constexpr auto units{ [] consteval {
+                return pnm::meta::container::FixedMap{ []<std::size_t... Is>(std::index_sequence<Is...>) {
+                    return std::array{ std::make_pair(
+                      pnm::meta::tuple::type_t<Is, typename UnitsMeta::NestedTypes>::UCUM_CODE,
+                      +[](double v) {
+                        using CurrentUnit = pnm::meta::tuple::type_t<Is, typename UnitsMeta::NestedTypes>;
+                        return static_cast<double>((v / CurrentUnit::FACTOR) - CurrentUnit::OFFSET);
+                    })... };
+                }(std::make_index_sequence<UnitsMeta::numNestedTypes()>{}) };
+            }() };
+
+            auto modifier{ units.at(ucum_code) };
+            if (!modifier) {
+                return std::nullopt;
+            }
+
+            return (*modifier)(value);
+        }
+
         template<IsUnit Unit>
             requires meta::tuple::ContainsType<typename UnitsMeta::NestedTypes, Unit>
         constexpr auto get() const -> double
