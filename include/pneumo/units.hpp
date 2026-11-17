@@ -56,9 +56,12 @@
 
 #define PNM_BYTE_SIZE_UNITS(X, XX, ctx)                                                                      \
     XX(ctx, bytes, "AD")                                                                                     \
-    X(ctx, KB, "E64", std::ratio<1024Z>)                                                                     \
-    X(ctx, MB, "E63", std::ratio<1024Z * 1024Z>)                                                             \
-    X(ctx, GB, "E62", std::ratio<1024Z * 1024Z * 1024Z>)
+    X(ctx, KiB, "E64", std::ratio<1024Z>)                                                                    \
+    X(ctx, MiB, "E63", std::ratio<1024Z * 1024Z>)                                                            \
+    X(ctx, GiB, "E62", std::ratio<1024Z * 1024Z * 1024Z>)                                                    \
+    X(ctx, KB, "2P", std::kilo, 0.0, "kB", false)                                                     \
+    X(ctx, MB, "4L", std::mega, 0.0, "MB", false)                                                     \
+    X(ctx, GB, "E34", std::giga, 0.0, "GB", false)
 
 // ---------- Mass ----------
 
@@ -142,9 +145,9 @@
 
 #define PNM_DATA_RATE_UNITS(X, XX, ctx)                                                                      \
     XX(ctx, bytes_s, "P93")                                                                                  \
-    X(ctx, KB_s, "", std::ratio<1024Z>)                                                                      \
-    X(ctx, MB_s, "", std::ratio<1024Z * 1024Z>)                                                              \
-    X(ctx, GB_s, "", std::ratio<1024Z * 1024Z * 1024Z>)
+    X(ctx, KB_s, "P94", std::kilo, 0.0, "kB/s")                                                              \
+    X(ctx, MB_s, "P95", std::mega)                                                                           \
+    X(ctx, GB_s, "E68", std::giga)
 
 // ---------- Velocity ----------
 
@@ -427,15 +430,17 @@ namespace pnm::units
              detail::FactorProvider Factor,
              double Offset = 0.0,
              meta::string::FixedString Suffix = "n/a",
+             bool AutoFormat = true,
              bool IsBase = false>
     struct Unit
     {
+        static constexpr auto COMMON_CODE{ static_cast<std::string_view>(CommonCode) };
         static constexpr auto FACTOR{ detail::extractFactor<Factor>() };
         static constexpr auto OFFSET{ Offset };
         static constexpr auto SUFFIX{ static_cast<std::string_view>(Suffix) };
-        static constexpr auto COMMON_CODE{ static_cast<std::string_view>(CommonCode) };
+        static constexpr auto AUTO_FORMAT{ AutoFormat };
         static constexpr auto IS_BASE{ IsBase };
-        static_assert(!IsBase || FACTOR == 1.0);
+        static_assert(!IS_BASE || FACTOR == 1.0);
     };
 
     template<meta::string::FixedString CommonCode = "", meta::string::FixedString Suffix = "n/a">
@@ -453,8 +458,9 @@ namespace pnm::units
                  typename Ratio,
                  double Offset,
                  meta::string::FixedString Suffix,
+                 bool AutoFormat,
                  bool IsBase>
-        struct is_unit<Unit<CommonCode, Ratio, Offset, Suffix, IsBase>> : std::true_type
+        struct is_unit<Unit<CommonCode, Ratio, Offset, Suffix, AutoFormat, IsBase>> : std::true_type
         {
         };
 
@@ -694,7 +700,10 @@ namespace pnm::units
 
         static constexpr auto isPrintableUnitIndex(size_t index) -> bool
         {
-            return UNIT_OFFSETS[index] == 0.0;
+            static constexpr auto enabled{ []<size_t... Is>(std::index_sequence<Is...>) {
+                return std::array{ meta::tuple::type_t<Is, typename UnitsMeta::NestedTypes>::AUTO_FORMAT... };
+            }(std::make_index_sequence<UnitsMeta::numNestedTypes()>{}) };
+            return enabled[index] && UNIT_OFFSETS[index] == 0.0;
         }
 
         constexpr auto determinePrintUnitIndex() const -> size_t
@@ -1017,6 +1026,99 @@ namespace pnm::units
         }
         return codes[index];
     }
+
+    enum class UnitCodeSystem : std::uint8_t
+    {
+        Unece,
+        Internal
+    };
+
+    struct UnitCode
+    {
+        UnitCodeSystem system;
+        std::string_view value;
+        constexpr bool operator==(const UnitCode&) const = default;
+    };
+
+    namespace detail
+    {
+        struct InternalUnitCode
+        {
+            Units unit;
+            std::array<char, 9> text;
+        };
+
+        // Fixed FNV-1a, unlike implementation-defined std::hash. The positive
+        // 31-bit payload can also be used by protocols with signed integer IDs.
+        consteval auto internalUnitCode(std::string_view name) -> std::array<char, 9>
+        {
+            std::uint32_t hash{ 2166136261U };
+            for (const unsigned char character : name) {
+                hash ^= character;
+                hash *= 16777619U;
+            }
+            hash &= 0x7fffffffU;
+            std::array<char, 9> text{};
+            text[0] = 'P';
+            constexpr std::string_view hex{ "0123456789ABCDEF" };
+            for (std::size_t i{}; i < 8; ++i)
+                text[i + 1] = hex[(hash >> ((7 - i) * 4)) & 0xfU];
+            return text;
+        }
+
+        consteval auto makeInternalUnitCodes()
+        {
+            static constexpr auto units{ meta::enumeration::enumerators<Units>() };
+            constexpr auto count{ std::ranges::count_if(units, [](auto unit) { return !commonCode(unit); }) };
+            std::array<InternalUnitCode, static_cast<std::size_t>(count)> codes{};
+            std::size_t index{};
+            for (const auto unit : units) {
+                if (!commonCode(unit)) {
+                    codes[index++] = { unit, internalUnitCode(meta::enumeration::enumerator_name(unit)) };
+                }
+            }
+            // Never silently resolve collisions by order-dependent probing: doing
+            // so would change existing identities when another unit is introduced.
+            for (std::size_t i{}; i < codes.size(); ++i)
+                for (std::size_t j{}; j < i; ++j)
+                    if (codes[i].text == codes[j].text)
+                        throw "Generated pneumo unit code collision";
+            return codes;
+        }
+
+        inline constexpr auto INTERNAL_UNIT_CODES{ makeInternalUnitCodes() };
+    }
+
+    // Only uncoded built-in units receive a library code. Names are the stable
+    // input: additions/reordering do not change IDs; renaming is a schema change.
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    constexpr auto internalCode(Units unit) -> std::optional<std::string_view>
+    {
+        for (const auto& entry : detail::INTERNAL_UNIT_CODES)
+            if (entry.unit == unit)
+                return std::string_view{ entry.text.data(), entry.text.size() };
+        return std::nullopt;
+    }
+
+    // Protocol-independent preferred identity. Never interpret a Pneumo code as UNECE.
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    constexpr auto unitCode(Units unit) -> std::optional<UnitCode>
+    {
+        if (const auto code{ commonCode(unit) }) {
+            return UnitCode{ UnitCodeSystem::Unece, *code };
+        }
+        if (const auto code{ internalCode(unit) }) {
+            return UnitCode{ UnitCodeSystem::Pneumo, *code };
+        }
+        return std::nullopt;
+    }
+
+    static_assert([] consteval {
+        for (const auto unit : meta::enumeration::enumerators<Units>())
+            if (!unitCode(unit))
+                return false;
+        return true;
+    }(), "Every built-in unit needs a UNECE code or a generated library code");
 
     PNM_DEFINE_QUANTITY_DIVIDE_RESULT_WITH_UNITS(Unitless, unitless, Time, s, Frequency, Hz)
     PNM_DEFINE_QUANTITY_DIVIDE_RESULT_WITH_UNITS(Unitless, unitless, Frequency, Hz, Time, s)

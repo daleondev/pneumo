@@ -129,7 +129,42 @@ constexpr auto invalid{ Distance::create(2.5, "SEC") };  // nullopt: time is not
 
 Codes are case-sensitive and matched exactly. Unknown codes, empty codes, and codes belonging to other quantities return `std::nullopt`. Lookup is quantity-specific: both `Ratio::create(1.0, "C62")` and `Unitless::create(1.0, "C62")` are valid. `commonCode()` returns `std::nullopt` for an invalid enum or an unmapped unit; the corresponding `COMMON_CODE` field is an empty `std::string_view`.
 
-Mappings were checked against the [UN/CEFACT UnitMeasureCode vocabulary](https://vocabulary.uncefact.org/UnitMeasureCode) on 2026-11-16. The 79 mapped units use exact matches; `mHz`, `KB_s`, `MB_s`, `GB_s`, `km_h2`, `mm_s3`, `m_s3`, `rad_s3`, and `deg_s3` remain explicitly unmapped. `KB`, `MB`, and `GB` retain their powers-of-1024 scaling and use the kibibyte, mebibyte, and gibibyte codes (`E64`, `E63`, `E62`). The selected code for `rpm` is `M46`. Only the registered codes are accepted; other UNECE synonyms are not automatically recognized.
+Mappings use exact matches from the [UN/CEFACT UnitMeasureCode vocabulary](https://vocabulary.uncefact.org/UnitMeasureCode). The selected code for `rpm` is `M46`. Only registered codes are accepted; other UNECE synonyms are not automatically recognized. Useful units without an exact match remain available; for example, `2J` describes cubic centimetres per second (volume flow), **not** jerk.
+
+`unitCode(Units)` returns a protocol-independent identity for **every built-in unit**. It prefers the official common code; otherwise it automatically generates a `P` + eight-hex-digit code at compile time by reflecting over `Units`:
+
+```cpp
+static_assert(unitCode(Units::KB_s) == UnitCode{UnitCodeSystem::Unece, "P94"});
+static_assert(!commonCode(Units::m_s3));
+static_assert(unitCode(Units::m_s3) == UnitCode{UnitCodeSystem::Pneumo, "P03D03443"});
+static_assert(libraryCode(Units::m_s3) == "P03D03443");
+// PNEUMO_UNIT_NAMESPACE == "urn:pneumo:units"
+```
+
+Carry the authority together with the code. Generated identifiers are **not UNECE codes**; publish them under `PNEUMO_UNIT_NAMESPACE`. `commonCode()` and the string-based `Quantity::create()` remain official-code-only. Invalid enums return `nullopt`. Codes own no memory: returned views refer to static storage.
+
+No per-unit private definitions or numbers are maintained. A `consteval` generator loops over the reflected enum, selects units without a UNECE code, and hashes each exact, case-sensitive enumerator name with 32-bit FNV-1a (offset 2166136261, prime 16777619), keeping the low 31 bits. The code is `P` followed by that value as eight uppercase hexadecimal digits. For example, `m_s3` becomes `P03D03443`. All names and hashes are resolved during compilation; lookup uses static storage without runtime hashing or allocation.
+
+Adding/reordering units does not renumber existing codes. A duplicate generated code fails compilation rather than silently assigning order-dependent alternatives. Renaming an enumerator, changing its meaning, changing the hashing algorithm, or adding a previously missing UNECE mapping is a published identity change that applications must version. `libraryCode()` returns a value only for built-in units currently lacking an official code. Do not serialize enum ordinals as stable identities. Custom, user-defined units remain outside this built-in catalog.
+
+**Byte-size migration:** former `KB`, `MB`, `GB` and their `_s` variants used powers of 1024. Replace existing binary usages and literals with `KiB`, `MiB`, `GiB`, `KiB_s`, `MiB_s`, `GiB_s` to preserve values. The reused `KB`, `MB`, `GB` names now mean powers of 1000. This is a source-level semantic change; there are no misleading compatibility aliases.
+
+| C++ identifier / literal | Scale in bytes (or bytes/s) | Symbol | UNECE code |
+|---|---:|---|---|
+| `KB`, `_KB` | 1,000 | kB | 2P |
+| `MB`, `_MB` | 1,000,000 | MB | 4L |
+| `GB`, `_GB` | 1,000,000,000 | GB | E34 |
+| `KiB`, `_KiB` | 1,024 | KiB | E64 |
+| `MiB`, `_MiB` | 1,048,576 | MiB | E63 |
+| `GiB`, `_GiB` | 1,073,741,824 | GiB | E62 |
+| `KB_s`, `_KB_s` | 1,000 | kB/s | P94 |
+| `MB_s`, `_MB_s` | 1,000,000 | MB/s | P95 |
+| `GB_s`, `_GB_s` | 1,000,000,000 | GB/s | E68 |
+| `KiB_s`, `_KiB_s` | 1,024 | KiB/s | none (pneumo P6588AC2B) |
+| `MiB_s`, `_MiB_s` | 1,048,576 | MiB/s | none (pneumo P4C6C6295) |
+| `GiB_s`, `_GiB_s` | 1,073,741,824 | GiB/s | none (pneumo P3BED323F) |
+
+Automatic byte-size formatting uses IEC prefixes; data-rate formatting uses decimal SI prefixes. Explicit `get<Unit>()`, `create<Unit>()` and `suffix<Unit>()` support both families. For example, `1_KiB_s` formats as `1.024 kB/s` without changing its value. `Unit::AUTO_FORMAT` controls eligibility for automatic selection independently of conversions.
 
 Unit types remain aliases. Custom declarations put the code first: `Unit<"MMT", std::milli>` or `BaseUnit<"MTR">`; use `""` when no code is available. Existing custom declarations must be updated to this argument order. The code is part of the type identity: otherwise identical units with different codes, such as metres and seconds, are now distinct types.
 
@@ -1525,13 +1560,13 @@ int main()
 ```cpp
 int main()
 {
-    const auto size = 90.0_MB;
+    const auto size = 90.0_MiB;
     const auto duration = 30.0_s;
     const auto rate = size / duration;
 
     static_assert(std::same_as<std::remove_cvref_t<decltype(rate)>, pnm::units::DataRate>);
 
-    std::cout << rate.get<pnm::units::DataRateUnits::MB_s>() << " MB/s\n";
+    std::cout << rate.get<pnm::units::DataRateUnits::MiB_s>() << " MiB/s\n";
 }
 ```
 

@@ -13,26 +13,32 @@ namespace
 
         std::cout << "UNECE common codes\n";
         std::cout << "  kilometre: " << DistanceUnits::km::COMMON_CODE << '\n';
-        if (const auto code{ commonCode(Units::KB) }) {
-            std::cout << "  binary kilobyte: " << *code << '\n';
+        if (const auto code{ commonCode(Units::KiB) }) {
+            std::cout << "  kibibyte: " << *code << '\n';
         }
         if (const auto distance{ Distance::create(2.5, "KMT") }) {
             std::cout << "  2.5 KMT in metres: " << distance->get() << '\n';
         }
         std::cout << "  distance accepts SEC: " << Distance::create(1.0, "SEC").has_value() << '\n';
-        std::cout << "  jerk has a common code: " << commonCode(Units::m_s3).has_value() << "\n\n";
+        std::cout << "  jerk has a common code: " << commonCode(Units::m_s3).has_value() << '\n';
+        const auto jerk_code{ unitCode(Units::m_s3).value() };
+        std::cout << "  jerk library identity: " << PNEUMO_UNIT_NAMESPACE << " / " << jerk_code.value
+                  << "\n\n";
     }
 
     auto print_storage_example() -> void
     {
         using namespace pnm::units::literals;
 
-        const auto footage_size = 3.5_GB;
+        const auto footage_size = 3.5_GiB;
 
         std::cout << "4K drone footage\n";
-        std::cout << "  size: " << footage_size.get<pnm::units::ByteSizeUnits::GB>() << " GB\n";
-        std::cout << "  size: " << footage_size.get<pnm::units::ByteSizeUnits::MB>() << " MB\n";
-        std::cout << "  size: " << footage_size.get<pnm::units::ByteSizeUnits::bytes>() << " bytes\n\n";
+        std::cout << "  size: " << footage_size.get<pnm::units::ByteSizeUnits::GiB>() << " GiB\n";
+        std::cout << "  size: " << footage_size.get<pnm::units::ByteSizeUnits::MiB>() << " MiB\n";
+        std::cout << "  size: " << footage_size.get<pnm::units::ByteSizeUnits::bytes>() << " bytes\n";
+        std::cout << "  size (decimal): " << footage_size.get<pnm::units::ByteSizeUnits::GB>() << " GB\n";
+        const auto transfer_rate = 100_MB_s;
+        std::cout << "  transfer: " << transfer_rate << "; time: " << footage_size / transfer_rate << "\n\n";
     }
 
     auto print_trip_example() -> void

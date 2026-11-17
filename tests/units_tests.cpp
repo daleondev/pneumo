@@ -62,7 +62,7 @@ static_assert(std::is_same_v<decltype(9.81_m_s2), Acceleration>);
 static_assert(std::is_same_v<decltype(25.0_m2), Area>);
 static_assert(std::is_same_v<decltype(2.0_A), Current>);
 static_assert(std::is_same_v<decltype(3.5_km), Distance>);
-static_assert(std::is_same_v<decltype(12.5_MB_s), DataRate>);
+static_assert(std::is_same_v<decltype(12.5_MiB_s), DataRate>);
 static_assert(std::is_same_v<decltype(42.0_J), Energy>);
 static_assert(std::is_same_v<decltype(50.0_N), Force>);
 static_assert(std::is_same_v<decltype(60.0_Hz), Frequency>);
@@ -152,7 +152,10 @@ static_assert(pnm::units::BaseUnit<"MTR", "m">::COMMON_CODE == "MTR");
 
 namespace
 {
-    using Quantities = std::tuple<pnm::units::FrequencyRate, pnm::units::FrequencyAcceleration, pnm::units::TransmissionLead, Distance,
+    using Quantities = std::tuple<pnm::units::FrequencyRate,
+                                  pnm::units::FrequencyAcceleration,
+                                  pnm::units::TransmissionLead,
+                                  Distance,
                                   Area,
                                   Time,
                                   ByteSize,
@@ -232,7 +235,7 @@ TEST(UnitsTests, CombinedEnumPreservesUnitIdentifiers)
     EXPECT_EQ(pnm::meta::enumeration::enumerator_name(Units::um), "um");
     EXPECT_EQ(pnm::meta::enumeration::enumerator_name(Units::mm2), "mm2");
     EXPECT_EQ(pnm::meta::enumeration::enumerator_name(Units::C), "C");
-    EXPECT_EQ(pnm::meta::enumeration::enumerator_name(Units::KB_s), "KB_s");
+    EXPECT_EQ(pnm::meta::enumeration::enumerator_name(Units::KiB_s), "KiB_s");
     EXPECT_EQ(pnm::meta::enumeration::enumerator_name(Units::rpm), "rpm");
     EXPECT_EQ(pnm::meta::enumeration::enumerator_name(Units::percent), "percent");
     EXPECT_EQ(pnm::meta::enumeration::enumerator_name(Units::unitless), "unitless");
@@ -357,8 +360,8 @@ TEST(UnitsTests, CommonCodesMatchUneceIdentifiers)
         std::pair{ Units::km, "KMT"sv },       std::pair{ Units::m2, "MTK"sv },
         std::pair{ Units::ns, "C47"sv },       std::pair{ Units::s, "SEC"sv },
         std::pair{ Units::min, "MIN"sv },      std::pair{ Units::bytes, "AD"sv },
-        std::pair{ Units::KB, "E64"sv },       std::pair{ Units::MB, "E63"sv },
-        std::pair{ Units::GB, "E62"sv },       std::pair{ Units::g, "GRM"sv },
+        std::pair{ Units::KiB, "E64"sv },      std::pair{ Units::MiB, "E63"sv },
+        std::pair{ Units::GiB, "E62"sv },      std::pair{ Units::g, "GRM"sv },
         std::pair{ Units::kg, "KGM"sv },       std::pair{ Units::C, "CEL"sv },
         std::pair{ Units::K, "KEL"sv },        std::pair{ Units::F, "FAH"sv },
         std::pair{ Units::A, "AMP"sv },        std::pair{ Units::V, "VLT"sv },
@@ -380,8 +383,8 @@ TEST(UnitsTests, CommonCodesMatchUneceIdentifiers)
 
 TEST(UnitsTests, CommonCodesRejectUnmappedUnitsAndInvalidEnumerators)
 {
-    constexpr std::array unmapped{ Units::mHz,   Units::KB_s, Units::MB_s,   Units::GB_s,  Units::km_h2,
-                                   Units::mm_s3, Units::m_s3, Units::rad_s3, Units::deg_s3 };
+    constexpr std::array unmapped{ Units::mHz,   Units::KiB_s, Units::MiB_s,  Units::GiB_s, Units::km_h2,
+                                   Units::mm_s3, Units::m_s3,  Units::rad_s3, Units::deg_s3 };
     for (const auto unit : unmapped) {
         SCOPED_TRACE(pnm::meta::enumeration::enumerator_name(unit));
         EXPECT_FALSE(pnm::units::commonCode(unit));
@@ -389,6 +392,116 @@ TEST(UnitsTests, CommonCodesRejectUnmappedUnitsAndInvalidEnumerators)
     EXPECT_FALSE(pnm::units::commonCode(static_cast<Units>(pnm::meta::enumeration::count<Units>())));
     EXPECT_FALSE(
       pnm::units::commonCode(static_cast<Units>(std::numeric_limits<std::underlying_type_t<Units>>::max())));
+}
+
+TEST(UnitsTests, LibraryCodesAreGeneratedForEveryUnmappedUnit)
+{
+    using namespace pnm::units;
+    EXPECT_EQ(PNEUMO_UNIT_NAMESPACE, "urn:pneumo:units");
+    for (const auto unit : pnm::meta::enumeration::enumerators<Units>()) {
+        SCOPED_TRACE(pnm::meta::enumeration::enumerator_name(unit));
+        const auto private_code{ libraryCode(unit) };
+        if (commonCode(unit)) {
+            EXPECT_FALSE(private_code);
+            continue;
+        }
+        ASSERT_TRUE(private_code);
+        ASSERT_EQ(private_code->size(), 9);
+        EXPECT_EQ(private_code->front(), 'P');
+        EXPECT_LE((*private_code)[1], '7');
+        EXPECT_TRUE(std::ranges::all_of(
+          private_code->substr(1), [](char c) { return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F'); }));
+        EXPECT_EQ(unitCode(unit), (UnitCode{ UnitCodeSystem::Pneumo, *private_code }));
+        for (const auto other : pnm::meta::enumeration::enumerators<Units>())
+            if (unit != other) {
+                EXPECT_NE(private_code, libraryCode(other));
+            }
+    }
+}
+
+TEST(UnitsTests, GeneratedIdentitiesHaveFixedNameBasedSemantics)
+{
+    using namespace pnm::units;
+    // Compatibility anchors only, not a code registry. Reordering or extending
+    // the enum must leave these values unchanged on host and embedded compilers.
+    static_assert(unitCode(Units::m_s3) == UnitCode{ UnitCodeSystem::Pneumo, "P03D03443" });
+    static_assert(libraryCode(Units::KiB_s) == "P6588AC2B");
+    static_assert(libraryCode(Units::mHz) == "P53DCC85E");
+    // The string constructor accepts official common codes only.
+    EXPECT_FALSE(Jerk::create(1, "P03D03443"));
+    EXPECT_FALSE(Jerk::create(1, "2J")); // cubic centimetres/second is volume flow, not jerk.
+}
+
+TEST(UnitsTests, PreferredCodeCoversEveryUnitAndRejectsInvalidValues)
+{
+    for (const auto unit : pnm::meta::enumeration::enumerators<Units>()) {
+        const auto code{ pnm::units::unitCode(unit) };
+        ASSERT_TRUE(code);
+        if (const auto standard{ pnm::units::commonCode(unit) }) {
+            EXPECT_EQ(code->system, pnm::units::UnitCodeSystem::Unece);
+            EXPECT_EQ(code->value, *standard);
+        }
+        else {
+            EXPECT_EQ(code->system, pnm::units::UnitCodeSystem::Pneumo);
+            EXPECT_EQ(code->value, pnm::units::libraryCode(unit));
+        }
+    }
+    for (auto unit :
+         { static_cast<Units>(255), static_cast<Units>(pnm::meta::enumeration::count<Units>()) }) {
+        EXPECT_FALSE(pnm::units::unitCode(unit));
+        EXPECT_FALSE(pnm::units::libraryCode(unit));
+    }
+}
+
+TEST(UnitsTests, DecimalAndBinaryByteUnitsRemainDistinct)
+{
+    EXPECT_DOUBLE_EQ((1_KB).get(), 1000);
+    EXPECT_DOUBLE_EQ((1_MB).get(), 1000000);
+    EXPECT_DOUBLE_EQ((1_GB).get(), 1000000000);
+    EXPECT_DOUBLE_EQ((1_KiB).get(), 1024);
+    EXPECT_DOUBLE_EQ((1_MiB).get(), 1048576);
+    EXPECT_DOUBLE_EQ((1_GiB).get(), 1073741824);
+    EXPECT_DOUBLE_EQ((1_KiB).get<ByteSizeUnits::KB>(), 1.024);
+    EXPECT_DOUBLE_EQ((1_MB).get<ByteSizeUnits::MiB>(), 0.95367431640625);
+    EXPECT_DOUBLE_EQ((1_GB).get<ByteSizeUnits::GiB>(), 0.9313225746154785);
+    EXPECT_DOUBLE_EQ(ByteSize::create(1, "2P")->get(), 1000);
+    EXPECT_DOUBLE_EQ(ByteSize::create(1, "4L")->get(), 1000000);
+    EXPECT_DOUBLE_EQ(ByteSize::create(1, "E34")->get(), 1000000000);
+    EXPECT_DOUBLE_EQ(ByteSize::create(1, "E64")->get(), 1024);
+    EXPECT_EQ(ByteSize::suffix<ByteSizeUnits::KB>(), "kB");
+    EXPECT_EQ(ByteSize::suffix<ByteSizeUnits::KiB>(), "KiB");
+}
+
+TEST(UnitsTests, DecimalAndBinaryRatesPreserveDimensionalConversions)
+{
+    EXPECT_DOUBLE_EQ((1_KB_s).get(), 1000);
+    EXPECT_DOUBLE_EQ((1_MB_s).get(), 1000000);
+    EXPECT_DOUBLE_EQ((1_GB_s).get(), 1000000000);
+    EXPECT_DOUBLE_EQ((1_KiB_s).get(), 1024);
+    EXPECT_DOUBLE_EQ((1_MiB_s).get(), 1048576);
+    EXPECT_DOUBLE_EQ((1_GiB_s).get(), 1073741824);
+    EXPECT_DOUBLE_EQ((1_MiB_s).get<DataRateUnits::MB_s>(), 1.048576);
+    EXPECT_DOUBLE_EQ(DataRate::create(1, "P94")->get(), 1000);
+    EXPECT_DOUBLE_EQ(DataRate::create(1, "P95")->get(), 1000000);
+    EXPECT_DOUBLE_EQ(DataRate::create(1, "E68")->get(), 1000000000);
+    EXPECT_DOUBLE_EQ((10_MB / 2_s).get<DataRateUnits::MB_s>(), 5);
+    EXPECT_DOUBLE_EQ((10_MiB / 2_s).get<DataRateUnits::MiB_s>(), 5);
+    EXPECT_DOUBLE_EQ((2_KB_s * 2_s).get<ByteSizeUnits::bytes>(), 4000);
+    EXPECT_DOUBLE_EQ((2_KiB_s * 2_s).get<ByteSizeUnits::bytes>(), 4096);
+}
+
+TEST(UnitsTests, AutomaticByteFormattingKeepsOnePrefixFamily)
+{
+    EXPECT_EQ(stream_to_string(1000_bytes), "1000 bytes");
+    EXPECT_EQ(stream_to_string(1024_bytes), "1 KiB");
+    EXPECT_EQ(stream_to_string(1_MiB), "1 MiB");
+    EXPECT_EQ(stream_to_string(1_GiB), "1 GiB");
+    EXPECT_EQ(stream_to_string(1000_bytes_s), "1 kB/s");
+    EXPECT_EQ(stream_to_string(1_KiB_s), "1.024 kB/s");
+    EXPECT_EQ(stream_to_string(1_MB_s), "1 MB/s");
+    EXPECT_EQ(stream_to_string(1_GB_s), "1 GB/s");
+    EXPECT_EQ(stream_to_string(-1000_bytes_s), "-1 kB/s");
+    EXPECT_EQ(stream_to_string(0_bytes_s), "0 bytes/s");
 }
 
 TEST(UnitsTests, CommonCodeCreateMatchesTypedCreationForEveryMappedUnit)
@@ -461,8 +574,8 @@ TEST(UnitsTests, CommonCodeCreateRequiresAnExactRegisteredCode)
         SCOPED_TRACE(Quantity::UnitsMeta::NAME);
         EXPECT_FALSE(Quantity::create(1.0, ""));
     });
-    // Decimal byte-rate codes must not silently select the library's binary byte rates.
-    for (const auto code : { "P94", "P95", "E68" }) {
+    // Private codes must not be mistaken for official common codes.
+    for (const auto code : { "P6588AC2B", "P4C6C6295", "P3BED323F" }) {
         EXPECT_FALSE(DataRate::create(1.0, code));
     }
 
@@ -506,12 +619,12 @@ TEST(UnitsTests, CommonCodeCreatePreservesNonFiniteValuesForValidCodes)
 
 TEST(UnitsTests, ByteSizeConvertsAcrossRegisteredUnits)
 {
-    const auto size = 2.0_KB;
+    const auto size = 2.0_KiB;
 
     EXPECT_EQ(size.get(), static_cast<size_t>(2048));
     EXPECT_EQ(size.get<ByteSizeUnits::bytes>(), static_cast<size_t>(2048));
-    EXPECT_DOUBLE_EQ(size.get<ByteSizeUnits::KB>(), 2.0);
-    EXPECT_DOUBLE_EQ(size.get<ByteSizeUnits::MB>(), 2.0 / 1024.0);
+    EXPECT_DOUBLE_EQ(size.get<ByteSizeUnits::KiB>(), 2.0);
+    EXPECT_DOUBLE_EQ(size.get<ByteSizeUnits::MiB>(), 2.0 / 1024.0);
 }
 
 TEST(UnitsTests, DistanceCreateAndGetUseBaseMeters)
@@ -615,12 +728,12 @@ TEST(UnitsTests, TimeAndChronoDurationsSupportMixedArithmeticAndComparison)
 
 TEST(UnitsTests, DataRateConversionsUseBytesPerSecondAsBase)
 {
-    const auto rate = 12.5_MB_s;
+    const auto rate = 12.5_MiB_s;
 
     EXPECT_DOUBLE_EQ(rate.get(), 13107200.0);
     EXPECT_DOUBLE_EQ(rate.get<DataRateUnits::bytes_s>(), 13107200.0);
-    EXPECT_DOUBLE_EQ(rate.get<DataRateUnits::KB_s>(), 12800.0);
-    EXPECT_DOUBLE_EQ(rate.get<DataRateUnits::GB_s>(), 12.5 / 1024.0);
+    EXPECT_DOUBLE_EQ(rate.get<DataRateUnits::KiB_s>(), 12800.0);
+    EXPECT_DOUBLE_EQ(rate.get<DataRateUnits::GiB_s>(), 12.5 / 1024.0);
 }
 
 TEST(UnitsTests, MassConversionsUseGramsAsBase)
@@ -771,7 +884,7 @@ TEST(UnitsTests, SuffixReturnsTheRequestedUnitsName)
     EXPECT_EQ((1500_m).suffix<DistanceUnits::km>(), "km");
     EXPECT_EQ(Velocity::suffix<VelocityUnits::m_s>(), "m/s");
     EXPECT_EQ(Velocity::suffix<VelocityUnits::km_h>(), "km/h");
-    EXPECT_EQ(DataRate::suffix<DataRateUnits::MB_s>(), "MB/s");
+    EXPECT_EQ(DataRate::suffix<DataRateUnits::MiB_s>(), "MiB/s");
 }
 
 TEST(UnitsTests, SuffixPreservesCustomSymbolsAndEmptySuffixes)
@@ -791,7 +904,7 @@ TEST(UnitsTests, SuffixPreservesCustomSymbolsAndEmptySuffixes)
 TEST(UnitsTests, StreamInsertionPrintsSelectedUnits)
 {
     EXPECT_EQ(stream_to_string(2.0_h), "2 h");
-    EXPECT_EQ(stream_to_string(1536.0_bytes), "1.5 KB");
+    EXPECT_EQ(stream_to_string(1536.0_bytes), "1.5 KiB");
     EXPECT_EQ(stream_to_string(1500.0_m), "1.5 km");
     EXPECT_EQ(stream_to_string(-1500.0_m), "-1.5 km");
     EXPECT_EQ(stream_to_string(0.0_m), "0 m");
@@ -857,8 +970,8 @@ TEST(UnitsTests, DistanceLiteralsSubtraction)
 
 TEST(UnitsTests, ByteSizeLiteralsAdditionAssignment)
 {
-    auto size = 50.0_KB;
-    size += 10.0_KB;
+    auto size = 50.0_KiB;
+    size += 10.0_KiB;
 
     EXPECT_DOUBLE_EQ(size.get(), 61440.0);
 }
@@ -1289,41 +1402,41 @@ TEST(UnitsTests, FrequencyTimesTimeProducesScalar)
 
 TEST(UnitsTests, ByteSizeDividedByTimeProducesDataRate)
 {
-    const auto size = 90.0_MB;
+    const auto size = 90.0_MiB;
     const auto duration = 30.0_s;
     const auto rate = size / duration;
 
     static_assert(std::is_same_v<std::remove_cvref_t<decltype(rate)>, DataRate>);
-    EXPECT_DOUBLE_EQ(rate.get<DataRateUnits::MB_s>(), 3.0);
+    EXPECT_DOUBLE_EQ(rate.get<DataRateUnits::MiB_s>(), 3.0);
     EXPECT_DOUBLE_EQ(rate.get<DataRateUnits::bytes_s>(), 3145728.0);
 }
 
 TEST(UnitsTests, DataRateTimesTimeProducesByteSize)
 {
-    const auto rate = 25.0_MB_s;
+    const auto rate = 25.0_MiB_s;
     const auto duration = 4.0_s;
     const auto size = rate * duration;
 
     static_assert(std::is_same_v<std::remove_cvref_t<decltype(size)>, ByteSize>);
     EXPECT_EQ(size.get<ByteSizeUnits::bytes>(), static_cast<size_t>(104857600));
-    EXPECT_DOUBLE_EQ(size.get<ByteSizeUnits::MB>(), 100.0);
+    EXPECT_DOUBLE_EQ(size.get<ByteSizeUnits::MiB>(), 100.0);
 }
 
 TEST(UnitsTests, TimeTimesDataRateProducesByteSize)
 {
     const auto duration = 2.0_s;
-    const auto rate = 8.0_MB_s;
+    const auto rate = 8.0_MiB_s;
     const auto size = duration * rate;
 
     static_assert(std::is_same_v<std::remove_cvref_t<decltype(size)>, ByteSize>);
     EXPECT_EQ(size.get<ByteSizeUnits::bytes>(), static_cast<size_t>(16777216));
-    EXPECT_DOUBLE_EQ(size.get<ByteSizeUnits::MB>(), 16.0);
+    EXPECT_DOUBLE_EQ(size.get<ByteSizeUnits::MiB>(), 16.0);
 }
 
 TEST(UnitsTests, ByteSizeDividedByDataRateProducesTime)
 {
-    const auto size = 300.0_MB;
-    const auto rate = 50.0_MB_s;
+    const auto size = 300.0_MiB;
+    const auto rate = 50.0_MiB_s;
     const auto duration = size / rate;
 
     static_assert(std::is_same_v<std::remove_cvref_t<decltype(duration)>, Time>);
@@ -1335,24 +1448,24 @@ TEST(UnitsTests, ChronoDurationsParticipateInTimeBasedQuantityRelations)
     const auto speed = 100.0_m / 4s;
     const auto acceleration = 20.0_m_s / 4s;
     const auto power = 100.0_J / 2s;
-    const auto rate = 8.0_MB / 2s;
+    const auto rate = 8.0_MiB / 2s;
     const auto distance_from_right = 10.0_m_s * 2500ms;
     const auto distance_from_left = 2500ms * 10.0_m_s;
     const auto velocity = 2.0_m_s2 * 1500ms;
     const auto energy = 250ms * 100.0_W;
-    const auto size = 1.5s * 2.0_MB_s;
+    const auto size = 1.5s * 2.0_MiB_s;
     const auto cycles_from_right = 2s * 0.5_Hz;
     const auto cycles_from_left = 0.5_Hz * 2s;
 
     EXPECT_DOUBLE_EQ(speed.get<VelocityUnits::m_s>(), 25.0);
     EXPECT_DOUBLE_EQ(acceleration.get<AccelerationUnits::m_s2>(), 5.0);
     EXPECT_DOUBLE_EQ(power.get<PowerUnits::W>(), 50.0);
-    EXPECT_DOUBLE_EQ(rate.get<DataRateUnits::MB_s>(), 4.0);
+    EXPECT_DOUBLE_EQ(rate.get<DataRateUnits::MiB_s>(), 4.0);
     EXPECT_DOUBLE_EQ(distance_from_right.get<DistanceUnits::m>(), 25.0);
     EXPECT_DOUBLE_EQ(distance_from_left.get<DistanceUnits::m>(), 25.0);
     EXPECT_DOUBLE_EQ(velocity.get<VelocityUnits::m_s>(), 3.0);
     EXPECT_DOUBLE_EQ(energy.get<EnergyUnits::J>(), 25.0);
-    EXPECT_DOUBLE_EQ(size.get<ByteSizeUnits::MB>(), 3.0);
+    EXPECT_DOUBLE_EQ(size.get<ByteSizeUnits::MiB>(), 3.0);
     EXPECT_DOUBLE_EQ(cycles_from_right, 1.0);
     EXPECT_DOUBLE_EQ(cycles_from_left, 1.0);
 }
@@ -1625,13 +1738,13 @@ TEST(UnitsTests, MotionDynamics)
 TEST(UnitsTests, MotorDerivativesAndTransmissionLead)
 {
     using namespace pnm::units;
-    EXPECT_DOUBLE_EQ((60_rpm_s).get<AngularAccelerationUnits::rad_s2>(),2*std::numbers::pi);
-    EXPECT_DOUBLE_EQ((60_rpm_s2).get<AngularJerkUnits::rad_s3>(),2*std::numbers::pi);
-    EXPECT_DOUBLE_EQ((1_mm_rev).get<TransmissionLeadUnits::m_rad>(),.001/(2*std::numbers::pi));
-    static_assert(std::is_same_v<decltype(1_Hz/1_s),FrequencyRate>);
-    static_assert(std::is_same_v<decltype(1_Hz_s/1_s),FrequencyAcceleration>);
-    static_assert(std::is_same_v<UnitTraits<Units::rpm_s>::Quantity,AngularAcceleration>);
-    static_assert(std::is_same_v<UnitTraits<Units::mm_rev>::Quantity,TransmissionLead>);
-    EXPECT_EQ(AngularAcceleration::suffix<AngularAccelerationUnits::rpm_s>(),"rpm/s");
-    EXPECT_EQ(AngularJerk::suffix<AngularJerkUnits::rpm_s2>(),"rpm/s²");
+    EXPECT_DOUBLE_EQ((60_rpm_s).get<AngularAccelerationUnits::rad_s2>(), 2 * std::numbers::pi);
+    EXPECT_DOUBLE_EQ((60_rpm_s2).get<AngularJerkUnits::rad_s3>(), 2 * std::numbers::pi);
+    EXPECT_DOUBLE_EQ((1_mm_rev).get<TransmissionLeadUnits::m_rad>(), .001 / (2 * std::numbers::pi));
+    static_assert(std::is_same_v<decltype(1_Hz / 1_s), FrequencyRate>);
+    static_assert(std::is_same_v<decltype(1_Hz_s / 1_s), FrequencyAcceleration>);
+    static_assert(std::is_same_v<UnitTraits<Units::rpm_s>::Quantity, AngularAcceleration>);
+    static_assert(std::is_same_v<UnitTraits<Units::mm_rev>::Quantity, TransmissionLead>);
+    EXPECT_EQ(AngularAcceleration::suffix<AngularAccelerationUnits::rpm_s>(), "rpm/s");
+    EXPECT_EQ(AngularJerk::suffix<AngularJerkUnits::rpm_s2>(), "rpm/s²");
 }
