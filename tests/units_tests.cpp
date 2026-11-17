@@ -162,6 +162,24 @@ static_assert(std::same_as<DistanceUnits::um, pnm::units::Unit<"um", std::micro>
 
 namespace
 {
+    template<typename Quantity, typename Unit>
+    concept CanCreateWithUnit = requires { Quantity::template create<Unit>(1.0); };
+
+    template<typename Quantity, typename Unit>
+    concept CanGetWithUnit = requires(Quantity value) { value.template get<Unit>(); };
+
+    static_assert(!CanCreateWithUnit<Distance, TimeUnits::s>);
+    static_assert(!CanGetWithUnit<Distance, TimeUnits::h>);
+    static_assert(!CanCreateWithUnit<Time, DistanceUnits::m>);
+    static_assert(!CanGetWithUnit<Temperature, DistanceUnits::m>);
+    static_assert(!CanCreateWithUnit<Ratio, UnitlessUnits::unitless>);
+    static_assert(!CanGetWithUnit<Unitless, RatioUnits::fraction>);
+    static_assert(CanCreateWithUnit<Distance, const DistanceUnits::km&>);
+    static_assert(CanGetWithUnit<Distance, const DistanceUnits::km&>);
+    static_assert(Distance::create<const DistanceUnits::km&>(2.0).get() == 2000.0);
+    static_assert((2000_m).get<const DistanceUnits::km&>() == 2.0);
+    static_assert((-1.5_s).toChrono<std::chrono::seconds>().count() == -1);
+
     struct OptionalCodeUnits
     {
         using s = pnm::units::BaseUnit<"s">;
@@ -867,6 +885,68 @@ TEST(UnitsTests, TimeConvertsToChronoDurations)
     EXPECT_DOUBLE_EQ(default_duration.count(), 1.5);
 }
 
+TEST(UnitsTests, IntegerChronoConversionsRejectNonFiniteAndOverflowingValues)
+{
+    for (const auto value : { std::numeric_limits<double>::quiet_NaN(),
+                              std::numeric_limits<double>::infinity(),
+                              -std::numeric_limits<double>::infinity(),
+                              std::numeric_limits<double>::max(),
+                              -std::numeric_limits<double>::max() }) {
+        const auto time{ Time::create(value) };
+        EXPECT_THROW(time.toChrono<std::chrono::seconds>(), std::out_of_range);
+        EXPECT_THROW(static_cast<void>(static_cast<std::chrono::seconds>(time)), std::out_of_range);
+    }
+    EXPECT_THROW((1e10_s).toChrono<std::chrono::nanoseconds>(), std::out_of_range);
+}
+
+TEST(UnitsTests, IntegerChronoConversionsPreserveTruncationAtSmallTypeBounds)
+{
+    using SignedSeconds = std::chrono::duration<std::int8_t>;
+    using UnsignedSeconds = std::chrono::duration<std::uint8_t>;
+    EXPECT_EQ((127.9_s).toChrono<SignedSeconds>().count(), 127);
+    EXPECT_EQ((-128.9_s).toChrono<SignedSeconds>().count(), -128);
+    EXPECT_THROW((128_s).toChrono<SignedSeconds>(), std::out_of_range);
+    EXPECT_THROW((-129_s).toChrono<SignedSeconds>(), std::out_of_range);
+    EXPECT_EQ((-0.9_s).toChrono<UnsignedSeconds>().count(), 0);
+    EXPECT_EQ((255.9_s).toChrono<UnsignedSeconds>().count(), 255);
+    EXPECT_THROW((-1_s).toChrono<UnsignedSeconds>(), std::out_of_range);
+    EXPECT_THROW((256_s).toChrono<UnsignedSeconds>(), std::out_of_range);
+}
+
+TEST(UnitsTests, IntegerChronoConversionsHandleRounded64BitBounds)
+{
+    using SignedSeconds = std::chrono::duration<std::int64_t>;
+    using UnsignedSeconds = std::chrono::duration<std::uint64_t>;
+    const auto signed_limit{ std::ldexp(1.0, 63) };
+    const auto unsigned_limit{ std::ldexp(1.0, 64) };
+    const auto signed_below{ std::nextafter(signed_limit, 0.0) };
+    const auto unsigned_below{ std::nextafter(unsigned_limit, 0.0) };
+    EXPECT_EQ(Time::create(signed_below).toChrono<SignedSeconds>().count(),
+              static_cast<std::int64_t>(signed_below));
+    EXPECT_EQ(Time::create(unsigned_below).toChrono<UnsignedSeconds>().count(),
+              static_cast<std::uint64_t>(unsigned_below));
+    EXPECT_EQ(Time::create(-signed_limit).toChrono<SignedSeconds>().count(),
+              std::numeric_limits<std::int64_t>::lowest());
+    EXPECT_THROW(Time::create(signed_limit).toChrono<SignedSeconds>(), std::out_of_range);
+    EXPECT_THROW(Time::create(unsigned_limit).toChrono<UnsignedSeconds>(), std::out_of_range);
+    EXPECT_THROW(Time::create(std::nextafter(-signed_limit, -unsigned_limit)).toChrono<SignedSeconds>(),
+                 std::out_of_range);
+}
+
+TEST(UnitsTests, FloatingChronoConversionsPreserveNonFiniteValues)
+{
+    using FloatingNanoseconds = std::chrono::duration<double, std::nano>;
+    const auto nan{ Time::create(std::numeric_limits<double>::quiet_NaN()) };
+    EXPECT_TRUE(std::isnan(nan.toChrono<FloatingNanoseconds>().count()));
+    for (const auto sign : { -1.0, 1.0 }) {
+        const auto time{ Time::create(sign * std::numeric_limits<double>::infinity()) };
+        const auto result{ time.toChrono<FloatingNanoseconds>().count() };
+        EXPECT_TRUE(std::isinf(result));
+        EXPECT_EQ(std::signbit(result), std::signbit(sign));
+    }
+    EXPECT_DOUBLE_EQ((1e10_s).toChrono<FloatingNanoseconds>().count(), 1e19);
+}
+
 TEST(UnitsTests, TimeAndChronoDurationsSupportMixedArithmeticAndComparison)
 {
     auto duration = 1.25_s;
@@ -1075,18 +1155,51 @@ TEST(UnitsTests, StreamInsertionPrintsSelectedUnits)
     EXPECT_EQ(stream_to_string(-1500.0_m), "-1.5 km");
     EXPECT_EQ(stream_to_string(0.0_m), "0 m");
     EXPECT_EQ(stream_to_string(1500.0_kg), "1.5 t");
-    EXPECT_EQ(stream_to_string(2.0_kWh), "2 kWh");
-    EXPECT_EQ(stream_to_string(101325.0_Pa), "1 atm");
-    EXPECT_EQ(stream_to_string(1.0_mbar), "1 mbar");
+    EXPECT_EQ(stream_to_string(2.0_kWh), "7.2 MJ");
+    EXPECT_EQ(stream_to_string(101325.0_Pa), "101.325 kPa");
+    EXPECT_EQ(stream_to_string(1.0_mbar), "1 hPa");
     EXPECT_EQ(stream_to_string(30.0_C), "30 °C");
     EXPECT_EQ(stream_to_string(295.5_K), "22.35 °C");
     EXPECT_EQ(stream_to_string(86.0_F), "30 °C");
     EXPECT_EQ(stream_to_string(2000.0_Hz), "2 kHz");
 }
 
+TEST(UnitsTests, AutomaticFormattingUsesConsistentUnitFamilies)
+{
+    EXPECT_EQ(stream_to_string(3600_J), "3.6 kJ");
+    EXPECT_EQ(stream_to_string(-2_kWh), "-7.2 MJ");
+    EXPECT_EQ(stream_to_string(1_bar), "100 kPa");
+    EXPECT_EQ(stream_to_string(1_kbar), "100 MPa");
+    EXPECT_EQ(stream_to_string(36_km_h), "10 m/s");
+    EXPECT_EQ(stream_to_string(1_km_h2), "0.0771605 mm/s²");
+    EXPECT_EQ(stream_to_string(1_rev), "360 °");
+    EXPECT_EQ(stream_to_string(0.5_deg), "0.5 °");
+    EXPECT_EQ(stream_to_string(-60_rpm), "-360 deg/s");
+    EXPECT_EQ(stream_to_string(60_rpm_s), "360 deg/s²");
+    EXPECT_EQ(stream_to_string(60_rpm_s2), "360 deg/s3");
+    EXPECT_DOUBLE_EQ((1_bar).get<PressureUnits::bar>(), 1.0);
+    EXPECT_DOUBLE_EQ((2_kWh).get<EnergyUnits::kWh>(), 2.0);
+    EXPECT_DOUBLE_EQ((60_rpm).get<AngularVelocityUnits::rpm>(), 60.0);
+}
+
+TEST(UnitsTests, AutomaticFormattingHonorsDisabledBaseUnitsForZeroAndNonFiniteValues)
+{
+    EXPECT_EQ(stream_to_string(0_bar), "0 Pa");
+    EXPECT_EQ(stream_to_string(0_rad), "0 °");
+    EXPECT_EQ(stream_to_string(0_rad_s), "0 deg/s");
+    EXPECT_EQ(stream_to_string(0_rad_s2), "0 deg/s²");
+    EXPECT_EQ(stream_to_string(0_rad_s3), "0 deg/s3");
+    const auto infinity{ std::numeric_limits<double>::infinity() };
+    const auto nan{ std::numeric_limits<double>::quiet_NaN() };
+    EXPECT_EQ(stream_to_string(Angle::create(infinity)), "inf °");
+    EXPECT_EQ(stream_to_string(AngularVelocity::create(-infinity)), "-inf deg/s");
+    EXPECT_TRUE(stream_to_string(Pressure::create(nan)).ends_with(" Pa"));
+    EXPECT_TRUE(stream_to_string(Angle::create(nan)).ends_with(" °"));
+}
+
 TEST(UnitsTests, StreamInsertionUsesCorrectSuffixWhenUnitOrderDiffersFromScaleOrder)
 {
-    EXPECT_EQ(stream_to_string(0.5_m_s), "1.8 km/h");
+    EXPECT_EQ(stream_to_string(0.5_m_s), "500 mm/s");
     EXPECT_EQ(stream_to_string(0.5_m_s2), "500 mm/s²");
 }
 
@@ -1881,10 +1994,10 @@ TEST(UnitsTests, RatioAndRotationalUnitsUseAutomaticStreamUnitSelection)
     EXPECT_EQ(stream_to_string(50_percent), "50 %");
     EXPECT_EQ(stream_to_string(100_percent), "1");
     EXPECT_EQ(stream_to_string(0_percent), "0");
-    EXPECT_EQ(stream_to_string(360_deg), "1 rev");
-    EXPECT_EQ(stream_to_string(1_rpm), "1 rpm");
-    EXPECT_EQ(stream_to_string(1_rad_s), "1 rad/s");
-    EXPECT_EQ(stream_to_string(0_rpm), "0 rad/s");
+    EXPECT_EQ(stream_to_string(360_deg), "360 °");
+    EXPECT_EQ(stream_to_string(1_rpm), "6 deg/s");
+    EXPECT_EQ(stream_to_string(1_rad_s), "57.2958 deg/s");
+    EXPECT_EQ(stream_to_string(0_rpm), "0 deg/s");
 }
 
 TEST(UnitsTests, MotionDynamics)

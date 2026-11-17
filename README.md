@@ -167,9 +167,11 @@ This follows UCUM's limited-conformance approach: it recognizes a fixed set of e
 | `MiB_s`, `_MiB_s` | 1,048,576 | MiB/s | `MiBy/s` |
 | `GiB_s`, `_GiB_s` | 1,073,741,824 | GiB/s | `GiBy/s` |
 
-Automatic byte-size formatting uses IEC prefixes; data-rate formatting uses decimal SI prefixes. Explicit `get<Unit>()`, `create<Unit>()` and `suffix<Unit>()` support both families. For example, `1_KiB_s` formats as `1.024 kB/s` without changing its value. `Unit::AUTO_FORMAT` controls eligibility for automatic selection independently of conversions.
+Automatic byte-size formatting uses IEC prefixes; data-rate formatting uses decimal SI prefixes. Energy uses joules and their prefixes, pressure uses pascals and their prefixes, and linear motion uses metres/second and millimetres/second (including derivatives). Angles use degrees, and angular velocity, acceleration, and jerk use degrees per second, second squared, and second cubed. For example, `2_kWh` prints `7.2 MJ`, `1_bar` prints `100 kPa`, and `60_rpm` prints `360 deg/s`. Transmission lead retains its existing `m/rad` and `mm/rev` units.
 
-Unit types remain aliases. The declaration order is `Unit<Name, Factor, Offset, UcumCode, Suffix, AutoFormat>`; everything after `Factor` is optional. Base units use `BaseUnit<Name, UcumCode, Suffix>`, with everything after `Name` optional. The registry supplies `Name` automatically, so its declarations stay concise:
+Explicit `get<Unit>()`, `create<Unit>()` and `suffix<Unit>()` support every registered unit regardless of its formatting flag and reject units belonging to other quantities at compile time. For example, `1_KiB_s` formats as `1.024 kB/s` without changing its value. `Unit::AUTO_FORMAT` controls eligibility for automatic selection independently of conversions. Zero and non-finite values use the base unit when enabled, otherwise the smallest enabled zero-offset unit.
+
+Unit types remain aliases. The declaration order is `Unit<Name, Factor, Offset, UcumCode, Suffix, AutoFormat>`; everything after `Factor` is optional. Base units use `BaseUnit<Name, UcumCode, Suffix, AutoFormat>`, with everything after `Name` optional. The registry supplies `Name` automatically, so its declarations stay concise:
 
 ```cpp
 X(ctx, ns, std::nano)
@@ -182,6 +184,8 @@ X(ctx, GB, std::giga, 0.0, "GBy", "GB", false)
 Custom declarations pass the name explicitly: `using ns = Unit<"ns", std::nano>;` or `using s = BaseUnit<"s">;`. A unit cannot recover the name of an alias referring to it, so the supplied `Name` determines its defaults even if the alias has another name. The name also keeps otherwise identical units such as metres and seconds distinct.
 
 Inferred codes use `Name` verbatim. Inferred suffixes replace an initial `u` with `µ`, underscores with `/`, and a trailing `2` with `²`. Specify a code whenever the name is not the intended UCUM expression, for example `Unit<"KB", std::kilo, 0.0, "kBy", "kB">`. Custom expressions are the caller's responsibility and are not validated against the full UCUM grammar.
+
+Converting `Time` to an integer `std::chrono::duration` truncates fractional ticks toward zero and throws `std::out_of_range` if the result is not representable, including NaN and infinity. Floating-point chrono durations retain non-finite values. Quantities store `double`, so exact integer byte counts beyond its precision are not guaranteed. `Temperature` stores Celsius values and uses the same scalar arithmetic as other quantities; it does not distinguish absolute temperatures from temperature differences.
 
 The current built-in cross-quantity operations include:
 

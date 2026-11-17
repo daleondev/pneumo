@@ -143,7 +143,7 @@ namespace
         using namespace pnm::units::literals;
 
         const auto temperature = 50.2_C;
-        const auto distance = 24.43_us;
+        const auto distance{ 24.43_um };
         const auto acceleration = 5_mm_s2;
 
         std::cout << "Variety\n";

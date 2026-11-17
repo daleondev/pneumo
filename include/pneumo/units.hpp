@@ -6,10 +6,11 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
-#include <flat_map>
+#include <limits>
 #include <numbers>
 #include <optional>
 #include <ratio>
+#include <stdexcept>
 #include <string_view>
 
 // NOLINTBEGIN(bugprone-macro-parentheses,cppcoreguidelines-macro-usage,cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
@@ -75,8 +76,8 @@
 
 #define PNM_TEMPERATURE_UNITS(X, XX, ctx)                                                                    \
     XX(ctx, C, "Cel", "°C")                                                                                  \
-    X(ctx, K, detail::factor<1.0>, -273.15)                                                                  \
-    X(ctx, F, std::ratio<5Z, 9Z>, -32.0, "[degF]", "°F")
+    X(ctx, K, detail::factor<1.0>, -273.15, "K", "K", false)                                                 \
+    X(ctx, F, std::ratio<5Z, 9Z>, -32.0, "[degF]", "°F", false)
 
 // ---------- Current ----------
 
@@ -109,8 +110,8 @@
     XX(ctx, J)                                                                                               \
     X(ctx, kJ, std::kilo)                                                                                    \
     X(ctx, MJ, std::mega)                                                                                    \
-    X(ctx, Wh, std::ratio<3600Z>, 0.0, "W.h")                                                                \
-    X(ctx, kWh, std::ratio<3'600'000Z>, 0.0, "kW.h")
+    X(ctx, Wh, std::ratio<3600Z>, 0.0, "W.h", "Wh", false)                                                   \
+    X(ctx, kWh, std::ratio<3'600'000Z>, 0.0, "kW.h", "kWh", false)
 
 // ---------- Power ----------
 
@@ -125,12 +126,12 @@
 #define PNM_PRESSURE_UNITS(X, XX, ctx)                                                                       \
     X(ctx, Pa, std::ratio<1Z, 100'000Z>)                                                                     \
     X(ctx, hPa, std::ratio<100Z, 100'000Z>)                                                                  \
-    X(ctx, mbar, std::ratio<1Z, 1000Z>)                                                                      \
+    X(ctx, mbar, std::ratio<1Z, 1000Z>, 0.0, "mbar", "mbar", false)                                          \
     X(ctx, kPa, std::ratio<1000Z, 100'000Z>)                                                                 \
-    XX(ctx, bar)                                                                                             \
-    X(ctx, atm, std::ratio<101'325Z, 100'000Z>)                                                              \
+    XX(ctx, bar, "bar", "bar", false)                                                                        \
+    X(ctx, atm, std::ratio<101'325Z, 100'000Z>, 0.0, "atm", "atm", false)                                    \
     X(ctx, MPa, std::ratio<1'000'000Z, 100'000Z>)                                                            \
-    X(ctx, kbar, std::ratio<1000Z>)
+    X(ctx, kbar, std::ratio<1000Z>, 0.0, "kbar", "kbar", false)
 
 // ---------- Frequency ----------
 
@@ -157,14 +158,14 @@
 #define PNM_VELOCITY_UNITS(X, XX, ctx)                                                                       \
     X(ctx, mm_s, std::milli, 0.0, "mm/s")                                                                    \
     XX(ctx, m_s, "m/s")                                                                                      \
-    X(ctx, km_h, std::ratio<1000Z, 3600Z>, 0.0, "km/h")
+    X(ctx, km_h, std::ratio<1000Z, 3600Z>, 0.0, "km/h", "km/h", false)
 
 // ---------- Acceleration ----------
 
 #define PNM_ACCELERATION_UNITS(X, XX, ctx)                                                                   \
     X(ctx, mm_s2, std::milli, 0.0, "mm/s2")                                                                  \
     XX(ctx, m_s2, "m/s2", "m/s²")                                                                            \
-    X(ctx, km_h2, std::ratio<1000Z, 3600Z * 3600Z>, 0.0, "km/h2")
+    X(ctx, km_h2, std::ratio<1000Z, 3600Z * 3600Z>, 0.0, "km/h2", "km/h²", false)
 
 // ---------- Jerk ----------
 
@@ -175,30 +176,30 @@
 // ---------- Angle ----------
 
 #define PNM_ANGLE_UNITS(X, XX, ctx)                                                                          \
-    XX(ctx, rad)                                                                                             \
+    XX(ctx, rad, "rad", "rad", false)                                                                        \
     X(ctx, deg, detail::factor<std::numbers::pi / 180.0>, 0.0, "deg", "°")                                   \
-    X(ctx, rev, detail::factor<2.0 * std::numbers::pi>, 0.0, "circ")
+    X(ctx, rev, detail::factor<2.0 * std::numbers::pi>, 0.0, "circ", "rev", false)
 
 // ---------- Angular Velocity ----------
 
 #define PNM_ANGULAR_VELOCITY_UNITS(X, XX, ctx)                                                               \
-    XX(ctx, rad_s, "rad/s")                                                                                  \
-    X(ctx, rpm, detail::factor<2.0 * std::numbers::pi / 60.0>, 0.0, "circ/min")                              \
+    XX(ctx, rad_s, "rad/s", "rad/s", false)                                                                  \
+    X(ctx, rpm, detail::factor<2.0 * std::numbers::pi / 60.0>, 0.0, "circ/min", "rpm", false)                \
     X(ctx, deg_s, detail::factor<std::numbers::pi / 180.0>, 0.0, "deg/s")
 
 // ---------- Angular Acceleration ----------
 
 #define PNM_ANGULAR_ACCELERATION_UNITS(X, XX, ctx)                                                           \
-    XX(ctx, rad_s2, "rad/s2")                                                                                \
+    XX(ctx, rad_s2, "rad/s2", "rad/s²", false)                                                               \
     X(ctx, deg_s2, detail::factor<std::numbers::pi / 180.0>, 0.0, "deg/s2")                                  \
-    X(ctx, rpm_s, detail::factor<2.0 * std::numbers::pi / 60.0>, 0.0, "circ/(min.s)", "rpm/s")
+    X(ctx, rpm_s, detail::factor<2.0 * std::numbers::pi / 60.0>, 0.0, "circ/(min.s)", "rpm/s", false)
 
 // ---------- Angular Jerk ----------
 
 #define PNM_ANGULAR_JERK_UNITS(X, XX, ctx)                                                                   \
-    XX(ctx, rad_s3, "rad/s3")                                                                                \
+    XX(ctx, rad_s3, "rad/s3", "rad/s3", false)                                                               \
     X(ctx, deg_s3, detail::factor<std::numbers::pi / 180.0>, 0.0, "deg/s3")                                  \
-    X(ctx, rpm_s2, detail::factor<2.0 * std::numbers::pi / 60.0>, 0.0, "circ/(min.s2)", "rpm/s²")
+    X(ctx, rpm_s2, detail::factor<2.0 * std::numbers::pi / 60.0>, 0.0, "circ/(min.s2)", "rpm/s²", false)
 
 // ---------- Ratio ----------
 
@@ -473,11 +474,14 @@ namespace pnm::units
             }
         }
 
+        // The string_view must refer to persistent storage, not the resolver's temporary.
+        static constexpr auto RESOLVED_SUFFIX{ resolveSuffix() };
+
       public:
         static constexpr auto UCUM_CODE{ static_cast<std::string_view>(UcumCode) };
         static constexpr auto FACTOR{ detail::extractFactor<Factor>() };
         static constexpr auto OFFSET{ Offset };
-        static constexpr auto SUFFIX{ static_cast<std::string_view>(resolveSuffix()) };
+        static constexpr auto SUFFIX{ static_cast<std::string_view>(RESOLVED_SUFFIX) };
         static constexpr auto AUTO_FORMAT{ AutoFormat };
         static constexpr auto IS_BASE{ IsBase };
         static_assert(!IS_BASE || FACTOR == 1.0);
@@ -485,8 +489,9 @@ namespace pnm::units
 
     template<meta::string::FixedString Name,
              meta::string::FixedString UcumCode = Name,
-             meta::string::FixedString Suffix = "n/a">
-    using BaseUnit = Unit<Name, detail::factor<1.0>, 0.0, UcumCode, Suffix, true, true>;
+             meta::string::FixedString Suffix = "n/a",
+             bool AutoFormat = true>
+    using BaseUnit = Unit<Name, detail::factor<1.0>, 0.0, UcumCode, Suffix, AutoFormat, true>;
 
     namespace detail
     {
@@ -753,13 +758,16 @@ namespace pnm::units
         {
             auto abs_value{ std::abs(value) };
             if (abs_value == 0.0 || !std::isfinite(abs_value)) {
-                return BASE_UNIT_INDEX;
+                if (isPrintableUnitIndex(BASE_UNIT_INDEX)) {
+                    return BASE_UNIT_INDEX;
+                }
             }
-
-            for (auto i{ SORTED_UNIT_INDICES.size() }; i > 0; --i) {
-                auto unit_index{ SORTED_UNIT_INDICES[i - 1] };
-                if (isPrintableUnitIndex(unit_index) && (abs_value / UNIT_FACTORS[unit_index]) >= 1.0) {
-                    return unit_index;
+            else {
+                for (auto i{ SORTED_UNIT_INDICES.size() }; i > 0; --i) {
+                    auto unit_index{ SORTED_UNIT_INDICES[i - 1] };
+                    if (isPrintableUnitIndex(unit_index) && abs_value >= UNIT_FACTORS[unit_index]) {
+                        return unit_index;
+                    }
                 }
             }
 
@@ -857,19 +865,8 @@ namespace pnm::units
             requires meta::tuple::ContainsType<typename UnitsMeta::NestedTypes, U>
         static constexpr auto suffix() -> std::string
         {
-            constexpr auto index{ [] consteval {
-                auto result{ -1Z };
-                meta::tuple::for_each<typename UnitsMeta::NestedTypes>([&result](auto i) {
-                    if constexpr (std::same_as<std::remove_cvref_t<U>,
-                                               meta::tuple::type_t<i, typename UnitsMeta::NestedTypes>>) {
-                        result = i;
-                    }
-                });
-                return result;
-            }() };
-            static_assert(index >= 0Z && "Invalid Unit provided");
-
-            return std::string{ UNIT_SUFFIXES[index] };
+            constexpr auto text{ std::remove_cvref_t<U>::SUFFIX };
+            return std::string{ text };
         }
 
         friend std::ostream& operator<<(std::ostream& os, const QuantityBase& quantity)
@@ -935,17 +932,21 @@ namespace pnm::units
         }
 
         template<IsUnit Unit>
+            requires meta::tuple::ContainsType<typename UnitsMeta::NestedTypes, Unit>
         static constexpr auto create(double value) -> Quantity
         {
-            return Quantity{ static_cast<double>((value + Unit::OFFSET) * Unit::FACTOR) };
+            using U = std::remove_cvref_t<Unit>;
+            return Quantity{ static_cast<double>((value + U::OFFSET) * U::FACTOR) };
         }
 
         static constexpr auto create(double value) -> Quantity { return Quantity{ value }; }
 
         template<IsUnit Unit>
+            requires meta::tuple::ContainsType<typename UnitsMeta::NestedTypes, Unit>
         constexpr auto get() const -> double
         {
-            return static_cast<double>((value / Unit::FACTOR) - Unit::OFFSET);
+            using U = std::remove_cvref_t<Unit>;
+            return static_cast<double>((value / U::FACTOR) - U::OFFSET);
         }
 
         constexpr auto get() const -> double { return value; }
@@ -986,7 +987,23 @@ namespace pnm::units
         constexpr auto toChrono() const -> std::remove_cvref_t<Duration>
         {
             using Target = std::remove_cvref_t<Duration>;
-            return std::chrono::duration_cast<Target>(std::chrono::duration<double>{ get() });
+            using Rep = typename Target::rep;
+            if constexpr (std::integral<Rep> && !std::same_as<Rep, bool>) {
+                using FloatingTarget = std::chrono::duration<double, typename Target::period>;
+                const auto ticks{
+                    std::chrono::duration_cast<FloatingTarget>(std::chrono::duration<double>{ get() }).count()
+                };
+                constexpr auto minimum{ static_cast<double>(std::numeric_limits<Rep>::lowest()) };
+                // An exclusive upper bound stays exact even when max() rounds up in double.
+                constexpr auto upper{ static_cast<double>(std::numeric_limits<Rep>::max() / 2 + 1) * 2.0 };
+                if (!std::isfinite(ticks) || ticks >= upper || (ticks < minimum && minimum - ticks >= 1.0)) {
+                    throw std::out_of_range("Time is outside the target chrono duration's range");
+                }
+                return Target{ static_cast<Rep>(ticks) };
+            }
+            else {
+                return std::chrono::duration_cast<Target>(std::chrono::duration<double>{ get() });
+            }
         }
 
         template<typename Rep, typename Period>
