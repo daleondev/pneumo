@@ -70,6 +70,58 @@ namespace pnm::meta
             static_cast<void>(indices);
             return (std::invocable<Fn&, std::integral_constant<size_t, Is>> && ...);
         }
+
+        template<std::meta::info Entity>
+        consteval auto annotation_reflections()
+        {
+            return std::define_static_array(std::meta::annotations_of(Entity));
+        }
+
+        template<typename Fn, std::meta::info Annotation>
+        concept AnnotationFn = requires(Fn& fn) { fn.template operator()<Annotation>(); };
+
+        template<std::meta::info Entity, typename Fn>
+        consteval auto for_each_annotation_fn() -> bool
+        {
+            return []<size_t... Is>(std::index_sequence<Is...>) {
+                constexpr auto annotations{ annotation_reflections<Entity>() };
+                return (AnnotationFn<Fn, annotations[Is]> && ...);
+            }(std::make_index_sequence<annotation_reflections<Entity>().size()>{});
+        }
+
+        template<std::meta::info Annotation, typename Fn>
+        constexpr auto invoke_annotation(Fn& fn, bool& proceed) -> void
+        {
+            if (!proceed) {
+                return;
+            }
+            using Ret = decltype(fn.template operator()<Annotation>());
+            if constexpr (std::is_void_v<Ret>) {
+                fn.template operator()<Annotation>();
+            }
+            else if constexpr (std::same_as<Ret, Loop>) {
+                proceed = fn.template operator()<Annotation>() == Loop::Continue;
+            }
+            else {
+                static_assert(false, "for_each_annotation fn must return 'void' or 'Loop' control token.");
+            }
+        }
+
+        template<std::meta::info Entity, Iteration Dir, typename Fn>
+            requires(for_each_annotation_fn<Entity, Fn>())
+        constexpr auto for_each_annotation(Fn&& fn) -> void
+        {
+            auto&& callable{ std::forward<Fn>(fn) };
+            [&callable]<size_t... Is>(std::index_sequence<Is...>) {
+                // GCC's reflection preview incorrectly escalates an && fold to consteval
+                // for class-valued annotations. Keep early stopping in invoke_annotation.
+                [[maybe_unused]] bool proceed{ true };
+                (invoke_annotation<
+                   annotation_reflections<Entity>()[Dir == Iteration::Reverse ? sizeof...(Is) - 1 - Is : Is]>(
+                   callable, proceed),
+                 ...);
+            }(std::make_index_sequence<annotation_reflections<Entity>().size()>{});
+        }
         // NOLINTEND(readability-identifier-naming)
     }
 
@@ -688,6 +740,20 @@ namespace pnm::meta
         concept HasIdentifier = detail::has_identifier<T>();
 
         template<typename T>
+        consteval auto annotations()
+        {
+            return meta::detail::annotation_reflections<std::meta::dealias(^^std::remove_cvref_t<T>)>();
+        }
+
+        template<typename T, Iteration Dir = Iteration::Forward, typename Fn>
+            requires(meta::detail::for_each_annotation_fn<std::meta::dealias(^^std::remove_cvref_t<T>), Fn>())
+        constexpr auto for_each_annotation(Fn&& fn) -> void
+        {
+            meta::detail::for_each_annotation<std::meta::dealias(^^std::remove_cvref_t<T>), Dir>(
+              std::forward<Fn>(fn));
+        }
+
+        template<typename T>
         constexpr auto name() -> std::string_view
         {
             if constexpr (HasIdentifier<T>) {
@@ -1155,6 +1221,35 @@ namespace pnm::meta
         }
 
         template<size_t Index, Class T>
+        consteval auto field_annotations()
+        {
+            constexpr auto fields{ detail::field_reflections<std::remove_cvref_t<T>>() };
+            static_assert(Index < fields.size());
+            return meta::detail::annotation_reflections<fields[Index]>();
+        }
+
+        template<Class T>
+        consteval auto fields_annotations()
+        {
+            return []<size_t... Is>(std::index_sequence<Is...>) {
+                return std::array<std::span<const std::meta::info>, sizeof...(Is)>{
+                    field_annotations<Is, T>()...
+                };
+            }(std::make_index_sequence<field_count<T>()>{});
+        }
+
+        template<size_t Index, Class T, Iteration Dir = Iteration::Forward, typename Fn>
+            requires(Index < field_count<T>()) &&
+                    (meta::detail::for_each_annotation_fn<
+                      detail::field_reflections<std::remove_cvref_t<T>>()[Index],
+                      Fn>())
+        constexpr auto for_each_field_annotation(Fn&& fn) -> void
+        {
+            constexpr auto fields{ detail::field_reflections<std::remove_cvref_t<T>>() };
+            meta::detail::for_each_annotation<fields[Index], Dir>(std::forward<Fn>(fn));
+        }
+
+        template<size_t Index, Class T>
         using field_type_t = typename decltype(detail::field_type<Index, T>())::type;
 
         template<Class T>
@@ -1210,20 +1305,33 @@ namespace pnm::meta
             }(std::make_index_sequence<detail::method_reflections<std::remove_cvref_t<T>>().size()>{});
         }
 
-        template<size_t Index, typename T>
+        template<size_t Index, Class T>
         consteval auto method_annotations()
         {
             constexpr auto methods{ detail::method_reflections<std::remove_cvref_t<T>>() };
             static_assert(Index < methods.size());
-            return std::meta::annotations_of(methods[Index]);
+            return meta::detail::annotation_reflections<methods[Index]>();
         }
 
         template<Class T>
-        constexpr auto methods_annotations()
+        consteval auto methods_annotations()
         {
             return []<size_t... Is>(std::index_sequence<Is...>) -> auto {
-                return std::array{ method_annotations<Is, T>()... };
+                return std::array<std::span<const std::meta::info>, sizeof...(Is)>{
+                    method_annotations<Is, T>()...
+                };
             }(std::make_index_sequence<detail::method_reflections<std::remove_cvref_t<T>>().size()>{});
+        }
+
+        template<size_t Index, Class T, Iteration Dir = Iteration::Forward, typename Fn>
+            requires(Index < method_count<T>()) &&
+                    (meta::detail::for_each_annotation_fn<
+                      detail::method_reflections<std::remove_cvref_t<T>>()[Index],
+                      Fn>())
+        constexpr auto for_each_method_annotation(Fn&& fn) -> void
+        {
+            constexpr auto methods{ detail::method_reflections<std::remove_cvref_t<T>>() };
+            meta::detail::for_each_annotation<methods[Index], Dir>(std::forward<Fn>(fn));
         }
 
         template<size_t Index, Class T>
@@ -1309,14 +1417,18 @@ namespace pnm::meta
         {
             using Type = std::remove_cvref_t<T>;
             static constexpr std::string_view NAME{ type::name<T>() };
+            static constexpr auto ANNOTATIONS{ type::annotations<T>() };
+            static consteval auto numAnnotations() -> size_t { return ANNOTATIONS.size(); }
             using MemberTypes = field_types_t<T>;
             static constexpr std::array MEMBER_NAMES{ field_names<T>() };
+            static constexpr auto FIELD_ANNOTATIONS{ fields_annotations<T>() };
             static consteval auto numMembers() -> size_t { return MEMBER_NAMES.size(); }
             using NestedTypes = nested_types_t<T>;
             static constexpr std::array NESTED_TYPE_NAMES{ nested_type_names<T>() };
             static consteval auto numNestedTypes() -> size_t { return NESTED_TYPE_NAMES.size(); }
             using MethodTypes = method_types_t<T>;
             static constexpr std::array METHOD_NAMES{ method_names<T>() };
+            static constexpr auto METHOD_ANNOTATIONS{ methods_annotations<T>() };
             static consteval auto numMethods() -> size_t { return METHOD_NAMES.size(); }
         };
 

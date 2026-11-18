@@ -45,12 +45,12 @@ struct SampleDispatcher
     static constexpr auto triple(int value) -> int { return value * 3; }
 };
 
-struct SampleStruct
+struct[[= 10]] SampleStruct
 {
-    std::string name;
+    [[= 20]] std::string name;
     int value;
 
-    std::string getName() { return name; }
+    [[ = 30, = 40 ]] std::string getName() { return name; }
     int getValue() { return value; }
 };
 
@@ -275,6 +275,25 @@ auto main() -> int
     }, tuple);
 
     SampleStruct sampleStruct{ .name = "Test", .value = 5 };
+    constexpr auto type_annotations{ pnm::meta::type::annotations<SampleStruct>() };
+    constexpr auto method_annotations{ pnm::meta::structural::methods_annotations<SampleStruct>() };
+    constexpr auto field_annotations{ pnm::meta::structural::fields_annotations<SampleStruct>() };
+    static_assert(type_annotations.size() == 1);
+    static_assert(method_annotations[0].size() == 2);
+    static_assert(field_annotations[0].size() == 1);
+    pnm::meta::type::for_each_annotation<SampleStruct>([]<std::meta::info Annotation>() {
+        constexpr auto value{ std::meta::extract<int>(Annotation) };
+        std::cout << "Type annotation: " << value << '\n';
+    });
+    pnm::meta::structural::for_each_field_annotation<0, SampleStruct>([]<std::meta::info Annotation>() {
+        constexpr auto value{ std::meta::extract<int>(Annotation) };
+        std::cout << "Field annotation (name): " << value << '\n';
+    });
+    pnm::meta::structural::for_each_method_annotation<0, SampleStruct>([]<std::meta::info Annotation>() {
+        constexpr auto value{ std::meta::extract<int>(Annotation) };
+        std::cout << "Method annotation (getName): " << value << '\n';
+        return pnm::meta::Loop::Continue;
+    });
     pnm::meta::structural::for_each_field_element([](auto& val) {
         using Type = std::remove_cvref_t<decltype(val)>;
         constexpr auto type_name{ pnm::meta::type::name<Type>() };

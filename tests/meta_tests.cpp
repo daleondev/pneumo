@@ -89,15 +89,89 @@ class MethodProbe
     double m_ratio;
 };
 
-struct AnnotationProbe
+struct[[ = 5, = 17, = 5 ]] AnnotationProbe
 {
     [[ = 7, = 11 ]] constexpr auto annotated() const -> int { return 1; }
     constexpr auto plain() const -> int { return 2; }
     [[= 13]] static constexpr auto staticAnnotated() -> int { return 3; }
 };
 
+struct AnnotationTag
+{
+    int value;
+};
+
+struct[[ = 23, = AnnotationTag{ 29 }, = pnm::meta::string::FixedString{ "entity" } ]] AnnotationContainer
+{
+    [[ = 31, = 37 ]] int annotated{};
+    int plain{};
+    [[= AnnotationTag{ 41 }]] double tagged{};
+    [[= 43]] static constexpr int STATIC_VALUE{ 1 };
+    [[= 47]] void method() const {}
+
+  private:
+    [[maybe_unused]][[= 53]] int m_hidden{};
+    [[= 59]] void hiddenMethod() {}
+};
+
+struct OverloadedAnnotationProbe
+{
+    [[= 61]] void overloaded(int) {}
+    [[= 67]] void overloaded(double) const {}
+};
+
+struct EmptyAnnotationProbe
+{
+};
+
+struct DerivedAnnotationProbe : AnnotationProbe
+{
+};
+
+enum class[[= 71]] AnnotatedEnum : std::uint8_t
+{
+    Value
+};
+
+using AnnotatedAlias[[= 73]] = AnnotationProbe;
+
 namespace
 {
+    template<typename T, typename Fn>
+    concept CanVisitTypeAnnotations =
+      requires(Fn&& fn) { pnm::meta::type::for_each_annotation<T>(std::forward<Fn>(fn)); };
+
+    template<std::size_t Index, typename T, typename Fn>
+    concept CanVisitFieldAnnotations =
+      requires(Fn&& fn) { pnm::meta::structural::for_each_field_annotation<Index, T>(std::forward<Fn>(fn)); };
+
+    template<std::size_t Index, typename T, typename Fn>
+    concept CanVisitMethodAnnotations = requires(Fn&& fn) {
+        pnm::meta::structural::for_each_method_annotation<Index, T>(std::forward<Fn>(fn));
+    };
+
+    struct AnnotationAccumulator
+    {
+        int& sum;
+
+        explicit AnnotationAccumulator(int& total)
+          : sum{ total }
+        {
+        }
+        AnnotationAccumulator(const AnnotationAccumulator&) = delete;
+        AnnotationAccumulator(AnnotationAccumulator&&) = delete;
+        auto operator=(const AnnotationAccumulator&) -> AnnotationAccumulator& = delete;
+        auto operator=(AnnotationAccumulator&&) -> AnnotationAccumulator& = delete;
+        ~AnnotationAccumulator() = default;
+
+        template<std::meta::info Annotation>
+        constexpr void operator()() &
+        {
+            constexpr auto value{ std::meta::extract<int>(Annotation) };
+            sum += value;
+        }
+    };
+
     using TupleA = std::tuple<int, double>;
     using TupleB = std::tuple<double, float, int>;
 
@@ -662,6 +736,240 @@ TEST(StructMetaTests, AllPublicMethodAnnotations)
     SUCCEED();
 }
 
+TEST(TypeMetaTests, AnnotationsRetainOrderDuplicatesAndUnderlyingType)
+{
+    constexpr auto annotations{ pnm::meta::type::annotations<const AnnotatedAlias&>() };
+    static_assert(annotations.size() == 3);
+    static_assert(std::meta::extract<int>(annotations[0]) == 5);
+    static_assert(std::meta::extract<int>(annotations[1]) == 17);
+    static_assert(std::meta::extract<int>(annotations[2]) == 5);
+    static_assert(annotations[0] != annotations[2]);
+    static_assert(pnm::meta::type::annotations<volatile AnnotationProbe&&>().size() == 3);
+    constexpr auto enum_annotations{ pnm::meta::type::annotations<AnnotatedEnum>() };
+    static_assert(std::meta::extract<int>(enum_annotations[0]) == 71);
+    static_assert(pnm::meta::type::annotations<DerivedAnnotationProbe>().empty());
+    static_assert(pnm::meta::type::annotations<EmptyAnnotationProbe>().empty());
+    static_assert(pnm::meta::type::annotations<int>().empty());
+    static_assert(pnm::meta::type::annotations<void>().empty());
+    SUCCEED();
+}
+
+TEST(StructMetaTests, AnnotationListsCanBeStoredAsConstexprValues)
+{
+    constexpr auto method{ pnm::meta::structural::method_annotations<0, const AnnotationProbe&>() };
+    static_assert(method.size() == 2);
+    static_assert(std::meta::extract<int>(method[0]) == 7);
+    static_assert(std::meta::extract<int>(method[1]) == 11);
+    constexpr auto methods{ pnm::meta::structural::methods_annotations<const AnnotationProbe&>() };
+    static_assert(methods.size() == 3);
+    static_assert(methods[1].empty());
+    static_assert(std::meta::extract<int>(methods[2][0]) == 13);
+    constexpr auto field{ pnm::meta::structural::field_annotations<0, const AnnotationContainer&>() };
+    static_assert(field.size() == 2);
+    static_assert(std::meta::extract<int>(field[0]) == 31);
+    static_assert(std::meta::extract<int>(field[1]) == 37);
+    constexpr auto fields{ pnm::meta::structural::fields_annotations<const AnnotationContainer&>() };
+    static_assert(fields.size() == 3);
+    static_assert(fields[1].empty());
+    static_assert(std::meta::extract<AnnotationTag>(fields[2][0]).value == 41);
+    static_assert(pnm::meta::structural::methods_annotations<EmptyAnnotationProbe>().empty());
+    static_assert(pnm::meta::structural::fields_annotations<EmptyAnnotationProbe>().empty());
+    SUCCEED();
+}
+
+TEST(StructMetaTests, InfoKeepsTypeFieldAndMethodAnnotationsSeparate)
+{
+    using Info = pnm::meta::structural::Info<AnnotationContainer>;
+    static_assert(Info::numAnnotations() == 3);
+    static_assert(std::meta::extract<int>(Info::ANNOTATIONS[0]) == 23);
+    static_assert(std::meta::extract<AnnotationTag>(Info::ANNOTATIONS[1]).value == 29);
+    static_assert(Info::FIELD_ANNOTATIONS.size() == Info::numMembers());
+    static_assert(Info::METHOD_ANNOTATIONS.size() == Info::numMethods());
+    static_assert(Info::FIELD_ANNOTATIONS.size() == 3);
+    static_assert(Info::METHOD_ANNOTATIONS.size() == 1);
+    static_assert(std::meta::extract<int>(Info::FIELD_ANNOTATIONS[0][0]) == 31);
+    static_assert(std::meta::extract<int>(Info::METHOD_ANNOTATIONS[0][0]) == 47);
+    using EmptyInfo = pnm::meta::structural::Info<EmptyAnnotationProbe>;
+    static_assert(EmptyInfo::ANNOTATIONS.empty());
+    static_assert(EmptyInfo::FIELD_ANNOTATIONS.empty());
+    static_assert(EmptyInfo::METHOD_ANNOTATIONS.empty());
+    SUCCEED();
+}
+
+TEST(TypeMetaTests, ForEachAnnotationRunsAtRuntimeAndCompileTime)
+{
+    std::vector<int> visited{};
+    pnm::meta::type::for_each_annotation<const AnnotationProbe&>([&]<std::meta::info Annotation>() {
+        constexpr auto value{ std::meta::extract<int>(Annotation) };
+        visited.push_back(value);
+    });
+    EXPECT_EQ(visited, (std::vector{ 5, 17, 5 }));
+    static_assert([] {
+        int sum{};
+        pnm::meta::type::for_each_annotation<AnnotationProbe>([&]<std::meta::info Annotation>() {
+            constexpr auto value{ std::meta::extract<int>(Annotation) };
+            sum += value;
+        });
+        return sum == 27;
+    }());
+}
+
+TEST(TypeMetaTests, ForEachAnnotationSupportsMixedAnnotationTypes)
+{
+    int number{};
+    int tag{};
+    std::string label{};
+    pnm::meta::type::for_each_annotation<AnnotationContainer>([&]<std::meta::info Annotation>() {
+        using Type = std::remove_cv_t<typename[:std::meta::type_of(Annotation):]>;
+        constexpr auto value{ std::meta::extract<Type>(Annotation) };
+        if constexpr (std::same_as<Type, int>) {
+            number = value;
+        }
+        else if constexpr (std::same_as<Type, AnnotationTag>) {
+            tag = value.value;
+        }
+        else {
+            label = static_cast<std::string_view>(value);
+        }
+    });
+    EXPECT_EQ(number, 23);
+    EXPECT_EQ(tag, 29);
+    EXPECT_EQ(label, "entity");
+}
+
+TEST(StructMetaTests, AnnotationLoopsVisitOnlyTheSelectedMember)
+{
+    std::vector<int> visited{};
+    auto collect{ [&]<std::meta::info Annotation>() {
+        constexpr auto value{ std::meta::extract<int>(Annotation) };
+        visited.push_back(value);
+    } };
+    pnm::meta::structural::for_each_method_annotation<0, const AnnotationProbe&>(collect);
+    EXPECT_EQ(visited, (std::vector{ 7, 11 }));
+    visited.clear();
+    pnm::meta::structural::for_each_method_annotation<2, AnnotationProbe>(collect);
+    EXPECT_EQ(visited, (std::vector{ 13 }));
+    visited.clear();
+    pnm::meta::structural::for_each_field_annotation<0, const AnnotationContainer&>(collect);
+    EXPECT_EQ(visited, (std::vector{ 31, 37 }));
+    visited.clear();
+    pnm::meta::structural::for_each_method_annotation<1, OverloadedAnnotationProbe>(collect);
+    EXPECT_EQ(visited, (std::vector{ 67 }));
+    int tag{};
+    pnm::meta::structural::for_each_field_annotation<2, AnnotationContainer>(
+      [&]<std::meta::info Annotation>() {
+        constexpr auto value{ std::meta::extract<AnnotationTag>(Annotation) };
+        tag = value.value;
+        return pnm::meta::Loop::Break;
+    });
+    EXPECT_EQ(tag, 41);
+}
+
+TEST(StructMetaTests, AnnotationLoopsSupportReverseOrderAndBreak)
+{
+    std::vector<int> visited{};
+    auto collect{ [&]<std::meta::info Annotation>() {
+        constexpr auto value{ std::meta::extract<int>(Annotation) };
+        visited.push_back(value);
+        return visited.size() == 2 ? pnm::meta::Loop::Break : pnm::meta::Loop::Continue;
+    } };
+    pnm::meta::type::for_each_annotation<AnnotationProbe, pnm::meta::Iteration::Reverse>(collect);
+    EXPECT_EQ(visited, (std::vector{ 5, 17 }));
+    visited.clear();
+    pnm::meta::structural::for_each_method_annotation<0, AnnotationProbe, pnm::meta::Iteration::Reverse>(
+      collect);
+    EXPECT_EQ(visited, (std::vector{ 11, 7 }));
+    visited.clear();
+    pnm::meta::structural::for_each_field_annotation<0, AnnotationContainer, pnm::meta::Iteration::Reverse>(
+      collect);
+    EXPECT_EQ(visited, (std::vector{ 37, 31 }));
+    auto stop{ [&]<std::meta::info Annotation>() {
+        constexpr auto value{ std::meta::extract<int>(Annotation) };
+        visited.push_back(value);
+        return pnm::meta::Loop::Break;
+    } };
+    visited.clear();
+    pnm::meta::structural::for_each_method_annotation<0, AnnotationProbe>(stop);
+    EXPECT_EQ(visited, (std::vector{ 7 }));
+    visited.clear();
+    pnm::meta::structural::for_each_field_annotation<0, AnnotationContainer>(stop);
+    EXPECT_EQ(visited, (std::vector{ 31 }));
+
+    int calls{};
+    int tag{};
+    pnm::meta::type::for_each_annotation<AnnotationContainer>([&]<std::meta::info Annotation>() {
+        ++calls;
+        using Type = std::remove_cv_t<typename[:std::meta::type_of(Annotation):]>;
+        if constexpr (std::same_as<Type, AnnotationTag>) {
+            constexpr auto value{ std::meta::extract<Type>(Annotation) };
+            tag = value.value;
+            return pnm::meta::Loop::Break;
+        }
+        else {
+            return pnm::meta::Loop::Continue;
+        }
+    });
+    EXPECT_EQ(calls, 2);
+    EXPECT_EQ(tag, 29);
+}
+
+TEST(StructMetaTests, EmptyAnnotationLoopsDoNotInstantiateTheCallback)
+{
+    auto never{ []<std::meta::info>() { static_assert(false, "Empty annotation callback instantiated"); } };
+    pnm::meta::type::for_each_annotation<EmptyAnnotationProbe>(never);
+    pnm::meta::type::for_each_annotation<int, pnm::meta::Iteration::Reverse>(never);
+    pnm::meta::structural::for_each_method_annotation<1, AnnotationProbe>(never);
+    pnm::meta::structural::for_each_method_annotation<1, AnnotationProbe, pnm::meta::Iteration::Reverse>(
+      never);
+    pnm::meta::structural::for_each_field_annotation<1, AnnotationContainer>(never);
+    pnm::meta::structural::for_each_field_annotation<1, AnnotationContainer, pnm::meta::Iteration::Reverse>(
+      never);
+    SUCCEED();
+}
+
+TEST(StructMetaTests, AnnotationLoopsAcceptNoncopyableLvalueOnlyCallbacks)
+{
+    int sum{};
+    AnnotationAccumulator collector{ sum };
+    pnm::meta::type::for_each_annotation<AnnotationProbe>(collector);
+    pnm::meta::type::for_each_annotation<AnnotationProbe>(AnnotationAccumulator{ sum });
+    pnm::meta::structural::for_each_method_annotation<0, AnnotationProbe>(collector);
+    pnm::meta::structural::for_each_field_annotation<0, AnnotationContainer>(AnnotationAccumulator{ sum });
+    EXPECT_EQ(sum, 27 + 27 + 7 + 11 + 31 + 37);
+}
+
+TEST(StructMetaTests, AnnotationLoopConstraintsRejectInvalidCallbacksAndIndices)
+{
+    auto invalid{ [](int) {} };
+    auto valid{ []<std::meta::info>() {} };
+    static_assert(!CanVisitTypeAnnotations<AnnotationProbe, decltype(invalid)>);
+    static_assert(!CanVisitMethodAnnotations<0, AnnotationProbe, decltype(invalid)>);
+    static_assert(!CanVisitFieldAnnotations<0, AnnotationContainer, decltype(invalid)>);
+    static_assert(CanVisitTypeAnnotations<AnnotationProbe, decltype(valid)>);
+    static_assert(CanVisitMethodAnnotations<0, AnnotationProbe, decltype(valid)>);
+    static_assert(CanVisitFieldAnnotations<0, AnnotationContainer, decltype(valid)>);
+    static_assert(!CanVisitMethodAnnotations<3, AnnotationProbe, decltype(valid)>);
+    static_assert(!CanVisitFieldAnnotations<3, AnnotationContainer, decltype(valid)>);
+    static_assert(!CanVisitMethodAnnotations<0, int, decltype(valid)>);
+    static_assert(!CanVisitFieldAnnotations<0, int, decltype(valid)>);
+    SUCCEED();
+}
+
+TEST(StructMetaTests, AnnotationLoopsPropagateCallbackExceptions)
+{
+    int calls{};
+    auto throwing{ [&]<std::meta::info>() {
+        ++calls;
+        throw std::runtime_error("annotation callback failed");
+    } };
+    EXPECT_THROW(pnm::meta::type::for_each_annotation<AnnotationProbe>(throwing), std::runtime_error);
+    EXPECT_THROW((pnm::meta::structural::for_each_method_annotation<0, AnnotationProbe>(throwing)),
+                 std::runtime_error);
+    EXPECT_THROW((pnm::meta::structural::for_each_field_annotation<0, AnnotationContainer>(throwing)),
+                 std::runtime_error);
+    EXPECT_EQ(calls, 3);
+}
+
 TEST(StructMetaTests, PublicConstGetterSubsetUsesMethods)
 {
     static_assert(pnm::meta::structural::getter_count<MethodProbe>() == 2UZ);
@@ -771,7 +1079,8 @@ TEST(StructMetaTests, ForEachFieldElementCanIterateReverseAndBreak)
     FieldOrderSample aggregate{};
     auto visited_values = std::vector<int>{};
 
-    pnm::meta::structural::for_each_field_element<pnm::meta::Iteration::Reverse>([&visited_values](int value) {
+    pnm::meta::structural::for_each_field_element<pnm::meta::Iteration::Reverse>(
+      [&visited_values](int value) {
         visited_values.push_back(value);
         return value == 2 ? pnm::meta::Loop::Break : pnm::meta::Loop::Continue;
     }, aggregate);

@@ -69,7 +69,35 @@ The meta module provides:
 *   **Type utilities:** Type and namespace name discovery.
 *   **Enum reflection:** Scoped-enum counting, names, enumerators, and underlying values.
 *   **Structural reflection:** Public fields, nested types, methods, getter discovery, indexed invocation, and name-based static dispatch.
+*   **Annotations:** Separate type, field, and method annotation retrieval and iteration, including reverse iteration and early stopping.
 *   **Source access:** Embed translation units, lazily load source files, cache them safely, and render numbered excerpts.
+
+Annotation queries return spans of compile-time reflections with persistent storage. Field and method queries stay separate: `field_annotations<Index, T>()` and `method_annotations<Index, T>()` inspect one member, while `fields_annotations<T>()` and `methods_annotations<T>()` return arrays indexed like `field_names<T>()` and `method_names<T>()`. Empty members produce empty spans; a class without fields or methods produces an empty array. Structural queries cover public non-static fields and the same public method candidates as the existing method API. `type::annotations<T>()` queries the underlying type after removing cv/ref qualifiers and aliases; it does not retrieve annotations attached to an alias declaration or inherited from a base class.
+
+```cpp
+struct [[= 10]] Endpoint
+{
+    [[= 20]] int value{};
+    [[= 30, = 40]] void send() {}
+};
+
+constexpr auto type_annotations{ pnm::meta::type::annotations<Endpoint>() };
+constexpr auto field_annotations{ pnm::meta::structural::field_annotations<0, Endpoint>() };
+constexpr auto method_annotations{ pnm::meta::structural::methods_annotations<Endpoint>() };
+static_assert(std::meta::extract<int>(type_annotations[0]) == 10);
+static_assert(std::meta::extract<int>(field_annotations[0]) == 20);
+static_assert(method_annotations[0].size() == 2);
+
+auto print_annotation{ []<std::meta::info Annotation>() {
+    constexpr auto value{ std::meta::extract<int>(Annotation) };
+    std::cout << value << '\n';
+} };
+pnm::meta::type::for_each_annotation<Endpoint>(print_annotation);                  // 10
+pnm::meta::structural::for_each_field_annotation<0, Endpoint>(print_annotation);  // 20
+pnm::meta::structural::for_each_method_annotation<0, Endpoint>(print_annotation); // 30, 40
+```
+
+Each loop passes an annotation as a `std::meta::info` template argument, allowing the callback to inspect its type and extract heterogeneous values. Bind extracted values to `constexpr` locals before using them in runtime code. Callbacks return `void` or `pnm::meta::Loop::{Continue,Break}`; the optional `Iteration::Reverse` template argument reverses traversal. Empty annotation lists do not invoke or instantiate the callback. Iteration preserves duplicate annotations and the ordering returned by [C++26 annotation reflection](https://eel.is/c++draft/meta.reflection.annotation), and works at runtime or during constant evaluation. `structural::Info<T>` also exposes `ANNOTATIONS`, `FIELD_ANNOTATIONS`, and `METHOD_ANNOTATIONS`, with `numAnnotations()` counting annotations on the type itself.
 
 ### `pneumo::formatting`
 
