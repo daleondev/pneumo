@@ -164,11 +164,29 @@ namespace
         auto operator=(AnnotationAccumulator&&) -> AnnotationAccumulator& = delete;
         ~AnnotationAccumulator() = default;
 
-        template<std::meta::info Annotation>
-        constexpr void operator()() &
+        template<typename Annotation>
+        constexpr void operator()(Annotation annotation) &
         {
-            constexpr auto value{ std::meta::extract<int>(Annotation) };
+            constexpr auto value{ std::meta::extract<int>(annotation) };
             sum += value;
+        }
+    };
+
+    struct OverloadedAnnotationAccumulator
+    {
+        int& mutable_sum;
+        int& const_sum;
+
+        constexpr void operator()(auto annotation) &
+        {
+            constexpr auto value{ std::meta::extract<int>(annotation) };
+            mutable_sum += value;
+        }
+
+        constexpr void operator()(auto annotation) const&
+        {
+            constexpr auto value{ std::meta::extract<int>(annotation) };
+            const_sum += value;
         }
     };
 
@@ -799,15 +817,15 @@ TEST(StructMetaTests, InfoKeepsTypeFieldAndMethodAnnotationsSeparate)
 TEST(TypeMetaTests, ForEachAnnotationRunsAtRuntimeAndCompileTime)
 {
     std::vector<int> visited{};
-    pnm::meta::type::for_each_annotation<const AnnotationProbe&>([&]<std::meta::info Annotation>() {
-        constexpr auto value{ std::meta::extract<int>(Annotation) };
+    pnm::meta::type::for_each_annotation<const AnnotationProbe&>([&](auto annotation) {
+        constexpr auto value{ std::meta::extract<int>(annotation) };
         visited.push_back(value);
     });
     EXPECT_EQ(visited, (std::vector{ 5, 17, 5 }));
     static_assert([] {
         int sum{};
-        pnm::meta::type::for_each_annotation<AnnotationProbe>([&]<std::meta::info Annotation>() {
-            constexpr auto value{ std::meta::extract<int>(Annotation) };
+        pnm::meta::type::for_each_annotation<AnnotationProbe>([&](auto annotation) {
+            constexpr auto value{ std::meta::extract<int>(annotation) };
             sum += value;
         });
         return sum == 27;
@@ -819,9 +837,9 @@ TEST(TypeMetaTests, ForEachAnnotationSupportsMixedAnnotationTypes)
     int number{};
     int tag{};
     std::string label{};
-    pnm::meta::type::for_each_annotation<AnnotationContainer>([&]<std::meta::info Annotation>() {
-        using Type = std::remove_cv_t<typename[:std::meta::type_of(Annotation):]>;
-        constexpr auto value{ std::meta::extract<Type>(Annotation) };
+    pnm::meta::type::for_each_annotation<AnnotationContainer>([&](auto annotation) {
+        using Type = std::remove_cv_t<typename[:std::meta::type_of(annotation):]>;
+        constexpr auto value{ std::meta::extract<Type>(annotation) };
         if constexpr (std::same_as<Type, int>) {
             number = value;
         }
@@ -840,8 +858,8 @@ TEST(TypeMetaTests, ForEachAnnotationSupportsMixedAnnotationTypes)
 TEST(StructMetaTests, AnnotationLoopsVisitOnlyTheSelectedMember)
 {
     std::vector<int> visited{};
-    auto collect{ [&]<std::meta::info Annotation>() {
-        constexpr auto value{ std::meta::extract<int>(Annotation) };
+    auto collect{ [&](auto annotation) {
+        constexpr auto value{ std::meta::extract<int>(annotation) };
         visited.push_back(value);
     } };
     pnm::meta::structural::for_each_method_annotation<0, const AnnotationProbe&>(collect);
@@ -856,9 +874,8 @@ TEST(StructMetaTests, AnnotationLoopsVisitOnlyTheSelectedMember)
     pnm::meta::structural::for_each_method_annotation<1, OverloadedAnnotationProbe>(collect);
     EXPECT_EQ(visited, (std::vector{ 67 }));
     int tag{};
-    pnm::meta::structural::for_each_field_annotation<2, AnnotationContainer>(
-      [&]<std::meta::info Annotation>() {
-        constexpr auto value{ std::meta::extract<AnnotationTag>(Annotation) };
+    pnm::meta::structural::for_each_field_annotation<2, AnnotationContainer>([&](auto annotation) {
+        constexpr auto value{ std::meta::extract<AnnotationTag>(annotation) };
         tag = value.value;
         return pnm::meta::Loop::Break;
     });
@@ -868,8 +885,8 @@ TEST(StructMetaTests, AnnotationLoopsVisitOnlyTheSelectedMember)
 TEST(StructMetaTests, AnnotationLoopsSupportReverseOrderAndBreak)
 {
     std::vector<int> visited{};
-    auto collect{ [&]<std::meta::info Annotation>() {
-        constexpr auto value{ std::meta::extract<int>(Annotation) };
+    auto collect{ [&](auto annotation) {
+        constexpr auto value{ std::meta::extract<int>(annotation) };
         visited.push_back(value);
         return visited.size() == 2 ? pnm::meta::Loop::Break : pnm::meta::Loop::Continue;
     } };
@@ -883,8 +900,8 @@ TEST(StructMetaTests, AnnotationLoopsSupportReverseOrderAndBreak)
     pnm::meta::structural::for_each_field_annotation<0, AnnotationContainer, pnm::meta::Iteration::Reverse>(
       collect);
     EXPECT_EQ(visited, (std::vector{ 37, 31 }));
-    auto stop{ [&]<std::meta::info Annotation>() {
-        constexpr auto value{ std::meta::extract<int>(Annotation) };
+    auto stop{ [&](auto annotation) {
+        constexpr auto value{ std::meta::extract<int>(annotation) };
         visited.push_back(value);
         return pnm::meta::Loop::Break;
     } };
@@ -897,11 +914,11 @@ TEST(StructMetaTests, AnnotationLoopsSupportReverseOrderAndBreak)
 
     int calls{};
     int tag{};
-    pnm::meta::type::for_each_annotation<AnnotationContainer>([&]<std::meta::info Annotation>() {
+    pnm::meta::type::for_each_annotation<AnnotationContainer>([&](auto annotation) {
         ++calls;
-        using Type = std::remove_cv_t<typename[:std::meta::type_of(Annotation):]>;
+        using Type = std::remove_cv_t<typename[:std::meta::type_of(annotation):]>;
         if constexpr (std::same_as<Type, AnnotationTag>) {
-            constexpr auto value{ std::meta::extract<Type>(Annotation) };
+            constexpr auto value{ std::meta::extract<Type>(annotation) };
             tag = value.value;
             return pnm::meta::Loop::Break;
         }
@@ -915,7 +932,7 @@ TEST(StructMetaTests, AnnotationLoopsSupportReverseOrderAndBreak)
 
 TEST(StructMetaTests, EmptyAnnotationLoopsDoNotInstantiateTheCallback)
 {
-    auto never{ []<std::meta::info>() { static_assert(false, "Empty annotation callback instantiated"); } };
+    auto never{ [](auto) { static_assert(false, "Empty annotation callback instantiated"); } };
     pnm::meta::type::for_each_annotation<EmptyAnnotationProbe>(never);
     pnm::meta::type::for_each_annotation<int, pnm::meta::Iteration::Reverse>(never);
     pnm::meta::structural::for_each_method_annotation<1, AnnotationProbe>(never);
@@ -938,10 +955,69 @@ TEST(StructMetaTests, AnnotationLoopsAcceptNoncopyableLvalueOnlyCallbacks)
     EXPECT_EQ(sum, 27 + 27 + 7 + 11 + 31 + 37);
 }
 
+TEST(StructMetaTests, AnnotationCallbacksCanBeReusedAcrossQualifiersAndDirections)
+{
+    int sum{};
+    auto collect{ [&](const auto& annotation) {
+        static_assert(std::meta::is_annotation(annotation));
+        constexpr auto value{ std::meta::extract<int>(annotation) };
+        sum += value;
+    } };
+    pnm::meta::type::for_each_annotation<AnnotationProbe>(collect);
+    pnm::meta::type::for_each_annotation<const AnnotatedAlias&>(std::as_const(collect));
+    pnm::meta::type::for_each_annotation<AnnotationProbe>(std::move(collect));
+    pnm::meta::type::for_each_annotation<AnnotationProbe>(std::move(std::as_const(collect)));
+    pnm::meta::type::for_each_annotation<AnnotationProbe, pnm::meta::Iteration::Reverse>(collect);
+    pnm::meta::structural::for_each_method_annotation<0, AnnotationProbe>(collect);
+    pnm::meta::structural::for_each_method_annotation<0, const AnnotationProbe&>(std::as_const(collect));
+    pnm::meta::structural::for_each_method_annotation<0, AnnotationProbe, pnm::meta::Iteration::Reverse>(
+      std::move(collect));
+    pnm::meta::structural::for_each_field_annotation<0, AnnotationContainer>(collect);
+    pnm::meta::structural::for_each_field_annotation<0, const AnnotationContainer&>(std::as_const(collect));
+    pnm::meta::structural::for_each_field_annotation<0, AnnotationContainer, pnm::meta::Iteration::Reverse>(
+      std::move(collect));
+    EXPECT_EQ(sum, 5 * 27 + 3 * (7 + 11) + 3 * (31 + 37));
+}
+
+TEST(StructMetaTests, AnnotationCallbacksPreserveConstOverloadSelection)
+{
+    auto run{ [] {
+        int mutable_sum{};
+        int const_sum{};
+        OverloadedAnnotationAccumulator collect{ mutable_sum, const_sum };
+        pnm::meta::type::for_each_annotation<AnnotationProbe>(collect);
+        pnm::meta::type::for_each_annotation<AnnotationProbe>(std::as_const(collect));
+        pnm::meta::type::for_each_annotation<AnnotationProbe, pnm::meta::Iteration::Reverse>(collect);
+        pnm::meta::type::for_each_annotation<AnnotationProbe, pnm::meta::Iteration::Reverse>(
+          std::as_const(collect));
+        return std::pair{ mutable_sum, const_sum };
+    } };
+    static_assert(run() == std::pair{ 54, 54 });
+    EXPECT_EQ(run(), (std::pair{ 54, 54 }));
+}
+
+TEST(TypeMetaTests, AnnotationHandlesExposeRawReflections)
+{
+    auto read{ [] {
+        std::array<int, 3> values{};
+        size_t index{};
+        pnm::meta::type::for_each_annotation<AnnotationProbe>([&](auto annotation) {
+            constexpr std::meta::info reflection{ annotation };
+            static_assert(std::meta::is_annotation(reflection));
+            static_assert(std::meta::type_of(reflection) == ^^int);
+            constexpr auto value{ std::meta::extract<int>(reflection) };
+            values[index++] = value;
+        });
+        return values;
+    } };
+    static_assert(read() == std::array{ 5, 17, 5 });
+    EXPECT_EQ(read(), (std::array{ 5, 17, 5 }));
+}
+
 TEST(StructMetaTests, AnnotationLoopConstraintsRejectInvalidCallbacksAndIndices)
 {
     auto invalid{ [](int) {} };
-    auto valid{ []<std::meta::info>() {} };
+    auto valid{ [](auto) {} };
     static_assert(!CanVisitTypeAnnotations<AnnotationProbe, decltype(invalid)>);
     static_assert(!CanVisitMethodAnnotations<0, AnnotationProbe, decltype(invalid)>);
     static_assert(!CanVisitFieldAnnotations<0, AnnotationContainer, decltype(invalid)>);
@@ -958,7 +1034,7 @@ TEST(StructMetaTests, AnnotationLoopConstraintsRejectInvalidCallbacksAndIndices)
 TEST(StructMetaTests, AnnotationLoopsPropagateCallbackExceptions)
 {
     int calls{};
-    auto throwing{ [&]<std::meta::info>() {
+    auto throwing{ [&](auto) {
         ++calls;
         throw std::runtime_error("annotation callback failed");
     } };

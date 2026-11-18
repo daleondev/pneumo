@@ -77,30 +77,34 @@ namespace pnm::meta
             return std::define_static_array(std::meta::annotations_of(Entity));
         }
 
-        template<typename Fn, std::meta::info Annotation>
-        concept AnnotationFn = requires(Fn& fn) { fn.template operator()<Annotation>(); };
+        // Key callback instantiations by declaration and index. GCC 16.2 can emit
+        // duplicate symbols when an annotation reflection itself is a template argument.
+        template<std::meta::info Entity, size_t Index>
+        struct Annotation
+        {
+            consteval operator std::meta::info() const { return annotation_reflections<Entity>()[Index]; }
+        };
 
         template<std::meta::info Entity, typename Fn>
         consteval auto for_each_annotation_fn() -> bool
         {
             return []<size_t... Is>(std::index_sequence<Is...>) {
-                constexpr auto annotations{ annotation_reflections<Entity>() };
-                return (AnnotationFn<Fn, annotations[Is]> && ...);
+                return (std::invocable<Fn&, Annotation<Entity, Is>> && ...);
             }(std::make_index_sequence<annotation_reflections<Entity>().size()>{});
         }
 
-        template<std::meta::info Annotation, typename Fn>
+        template<std::meta::info Entity, size_t Index, typename Fn>
         constexpr auto invoke_annotation(Fn& fn, bool& proceed) -> void
         {
             if (!proceed) {
                 return;
             }
-            using Ret = decltype(fn.template operator()<Annotation>());
+            using Ret = std::invoke_result_t<Fn&, Annotation<Entity, Index>>;
             if constexpr (std::is_void_v<Ret>) {
-                fn.template operator()<Annotation>();
+                std::invoke(fn, Annotation<Entity, Index>{});
             }
             else if constexpr (std::same_as<Ret, Loop>) {
-                proceed = fn.template operator()<Annotation>() == Loop::Continue;
+                proceed = std::invoke(fn, Annotation<Entity, Index>{}) == Loop::Continue;
             }
             else {
                 static_assert(false, "for_each_annotation fn must return 'void' or 'Loop' control token.");
@@ -116,9 +120,8 @@ namespace pnm::meta
                 // GCC's reflection preview incorrectly escalates an && fold to consteval
                 // for class-valued annotations. Keep early stopping in invoke_annotation.
                 [[maybe_unused]] bool proceed{ true };
-                (invoke_annotation<
-                   annotation_reflections<Entity>()[Dir == Iteration::Reverse ? sizeof...(Is) - 1 - Is : Is]>(
-                   callable, proceed),
+                (invoke_annotation<Entity, Dir == Iteration::Reverse ? sizeof...(Is) - 1 - Is : Is>(callable,
+                                                                                                    proceed),
                  ...);
             }(std::make_index_sequence<annotation_reflections<Entity>().size()>{});
         }

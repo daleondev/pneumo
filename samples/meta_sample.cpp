@@ -281,16 +281,16 @@ auto main() -> int
     static_assert(type_annotations.size() == 1);
     static_assert(method_annotations[0].size() == 2);
     static_assert(field_annotations[0].size() == 1);
-    pnm::meta::type::for_each_annotation<SampleStruct>([]<std::meta::info Annotation>() {
-        constexpr auto value{ std::meta::extract<int>(Annotation) };
+    pnm::meta::type::for_each_annotation<SampleStruct>([](auto annotation) {
+        constexpr auto value{ std::meta::extract<int>(annotation) };
         std::cout << "Type annotation: " << value << '\n';
     });
-    pnm::meta::structural::for_each_field_annotation<0, SampleStruct>([]<std::meta::info Annotation>() {
-        constexpr auto value{ std::meta::extract<int>(Annotation) };
+    pnm::meta::structural::for_each_field_annotation<0, SampleStruct>([](auto annotation) {
+        constexpr auto value{ std::meta::extract<int>(annotation) };
         std::cout << "Field annotation (name): " << value << '\n';
     });
-    pnm::meta::structural::for_each_method_annotation<0, SampleStruct>([]<std::meta::info Annotation>() {
-        constexpr auto value{ std::meta::extract<int>(Annotation) };
+    pnm::meta::structural::for_each_method_annotation<0, SampleStruct>([](auto annotation) {
+        constexpr auto value{ std::meta::extract<int>(annotation) };
         std::cout << "Method annotation (getName): " << value << '\n';
         return pnm::meta::Loop::Continue;
     });

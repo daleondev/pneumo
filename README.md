@@ -88,8 +88,8 @@ static_assert(std::meta::extract<int>(type_annotations[0]) == 10);
 static_assert(std::meta::extract<int>(field_annotations[0]) == 20);
 static_assert(method_annotations[0].size() == 2);
 
-auto print_annotation{ []<std::meta::info Annotation>() {
-    constexpr auto value{ std::meta::extract<int>(Annotation) };
+auto print_annotation{ [](auto annotation) {
+    constexpr auto value{ std::meta::extract<int>(annotation) };
     std::cout << value << '\n';
 } };
 pnm::meta::type::for_each_annotation<Endpoint>(print_annotation);                  // 10
@@ -97,7 +97,7 @@ pnm::meta::structural::for_each_field_annotation<0, Endpoint>(print_annotation);
 pnm::meta::structural::for_each_method_annotation<0, Endpoint>(print_annotation); // 30, 40
 ```
 
-Each loop passes an annotation as a `std::meta::info` template argument, allowing the callback to inspect its type and extract heterogeneous values. Bind extracted values to `constexpr` locals before using them in runtime code. Callbacks return `void` or `pnm::meta::Loop::{Continue,Break}`; the optional `Iteration::Reverse` template argument reverses traversal. Empty annotation lists do not invoke or instantiate the callback. Iteration preserves duplicate annotations and the ordering returned by [C++26 annotation reflection](https://eel.is/c++draft/meta.reflection.annotation), and works at runtime or during constant evaluation. `structural::Info<T>` also exposes `ANNOTATIONS`, `FIELD_ANNOTATIONS`, and `METHOD_ANNOTATIONS`, with `numAnnotations()` counting annotations on the type itself.
+Each loop passes an empty compile-time annotation handle to a generic callback (`[](auto annotation)`). The handle implicitly converts to `std::meta::info` during constant evaluation, allowing the callback to inspect the annotation and extract heterogeneous values. Keeping the declaration and annotation index in the handle type avoids GCC 16.2 annotation-template mangling failures when callbacks are reused. Bind extracted values to `constexpr` locals before using them in runtime code. Callbacks return `void` or `pnm::meta::Loop::{Continue,Break}`; the optional `Iteration::Reverse` template argument reverses traversal. Empty annotation lists do not invoke or instantiate the callback. Iteration preserves duplicate annotations and the ordering returned by [C++26 annotation reflection](https://eel.is/c++draft/meta.reflection.annotation), and works at runtime or during constant evaluation. `structural::Info<T>` also exposes `ANNOTATIONS`, `FIELD_ANNOTATIONS`, and `METHOD_ANNOTATIONS`, with `numAnnotations()` counting annotations on the type itself.
 
 ### `pneumo::formatting`
 
