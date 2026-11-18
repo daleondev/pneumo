@@ -45,6 +45,15 @@ struct SampleDispatcher
     static constexpr auto triple(int value) -> int { return value * 3; }
 };
 
+struct[[= 10]] SampleStruct
+{
+    [[= 20]] std::string name;
+    int value;
+
+    [[ = 30, = 40 ]] std::string getName() { return name; }
+    int getValue() { return value; }
+};
+
 namespace sample::detail
 {
     struct Widget
@@ -74,8 +83,8 @@ namespace
     static_assert(std::same_as<Unique, std::tuple<int, double, float>>);
 
     static_assert(pnm::meta::tuple::count<TupleA>() == 2UZ);
-    static_assert(std::same_as<pnm::meta::tuple::at_t<0, TupleA>, int>);
-    static_assert(std::same_as<pnm::meta::tuple::at_t<1, TupleA>, double>);
+    static_assert(std::same_as<pnm::meta::tuple::type_t<0, TupleA>, int>);
+    static_assert(std::same_as<pnm::meta::tuple::type_t<1, TupleA>, double>);
 
     using TupleAsVariant = pnm::meta::tuple::to_variant_t<TupleA>;
     static_assert(std::same_as<TupleAsVariant, std::variant<int, double>>);
@@ -225,7 +234,7 @@ auto main() -> int
 
     std::cout << "Variant reverse iteration with break:\n";
     pnm::meta::variant::for_each<MyVariant, pnm::meta::Iteration::Reverse>([](auto index) {
-        using Type = pnm::meta::variant::at_t<index, MyVariant>;
+        using Type = pnm::meta::variant::type_t<index, MyVariant>;
         constexpr auto type_name{ pnm::meta::type::name<Type>() };
         std::cout << "  index " << index << ": " << type_name << '\n';
         if constexpr (index == 2) {
@@ -264,6 +273,35 @@ auto main() -> int
             return pnm::meta::Loop::Continue;
         }
     }, tuple);
+
+    SampleStruct sampleStruct{ .name = "Test", .value = 5 };
+    constexpr auto type_annotations{ pnm::meta::type::annotations<SampleStruct>() };
+    constexpr auto method_annotations{ pnm::meta::structural::methods_annotations<SampleStruct>() };
+    constexpr auto field_annotations{ pnm::meta::structural::fields_annotations<SampleStruct>() };
+    static_assert(type_annotations.size() == 1);
+    static_assert(method_annotations[0].size() == 2);
+    static_assert(field_annotations[0].size() == 1);
+    pnm::meta::type::for_each_annotation<SampleStruct>([](auto annotation) {
+        constexpr auto value{ std::meta::extract<int>(annotation) };
+        std::cout << "Type annotation: " << value << '\n';
+    });
+    pnm::meta::structural::for_each_field_annotation<0, SampleStruct>([](auto annotation) {
+        constexpr auto value{ std::meta::extract<int>(annotation) };
+        std::cout << "Field annotation (name): " << value << '\n';
+    });
+    pnm::meta::structural::for_each_method_annotation<0, SampleStruct>([](auto annotation) {
+        constexpr auto value{ std::meta::extract<int>(annotation) };
+        std::cout << "Method annotation (getName): " << value << '\n';
+        return pnm::meta::Loop::Continue;
+    });
+    pnm::meta::structural::for_each_field_element([](auto& val) {
+        using Type = std::remove_cvref_t<decltype(val)>;
+        constexpr auto type_name{ pnm::meta::type::name<Type>() };
+        std::cout << "Struct field: type = " << type_name << ", value = " << val << '\n';
+    }, sampleStruct);
+    pnm::meta::structural::for_each_method_element([&sampleStruct]<std::meta::info Method>() {
+        std::cout << "Struct method return: " << sampleStruct.[:Method:]() << '\n';
+    }, sampleStruct);
 
     constexpr auto nested_names = pnm::meta::structural::nested_type_names<SampleNestedTypes>();
     std::cout << "SampleNestedTypes exposes " << nested_names.size() << " public nested types:\n";

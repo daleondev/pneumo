@@ -1,9 +1,15 @@
-#include "pneumo/pneumo.hpp"
+#include "pneumo/units.hpp"
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <array>
 #include <chrono>
+#include <limits>
+#include <optional>
 #include <sstream>
+#include <string_view>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 
@@ -43,6 +49,7 @@ using pnm::units::Time;
 using pnm::units::TimeUnits;
 using pnm::units::Unitless;
 using pnm::units::UnitlessUnits;
+using pnm::units::Units;
 using pnm::units::Velocity;
 using pnm::units::VelocityUnits;
 using pnm::units::Voltage;
@@ -55,7 +62,7 @@ static_assert(std::is_same_v<decltype(9.81_m_s2), Acceleration>);
 static_assert(std::is_same_v<decltype(25.0_m2), Area>);
 static_assert(std::is_same_v<decltype(2.0_A), Current>);
 static_assert(std::is_same_v<decltype(3.5_km), Distance>);
-static_assert(std::is_same_v<decltype(12.5_MB_s), DataRate>);
+static_assert(std::is_same_v<decltype(12.5_MiB_s), DataRate>);
 static_assert(std::is_same_v<decltype(42.0_J), Energy>);
 static_assert(std::is_same_v<decltype(50.0_N), Force>);
 static_assert(std::is_same_v<decltype(60.0_Hz), Frequency>);
@@ -113,9 +120,124 @@ static_assert(std::is_convertible_v<std::chrono::duration<long double, std::mill
 static_assert(std::is_convertible_v<Time, std::chrono::duration<double>>);
 static_assert(std::is_convertible_v<Time, std::chrono::duration<double, std::milli>>);
 static_assert(!std::is_convertible_v<Time, std::chrono::milliseconds>);
+static_assert(std::is_scoped_enum_v<Units>);
+static_assert(!std::is_convertible_v<Units, int>);
+static_assert(Units::m != Units::s);
+static_assert(Units::fraction != Units::unitless);
+static_assert(std::is_same_v<decltype(Distance::create(1.0, Units::m)), std::optional<Distance>>);
+static_assert(Distance::create(2.0, Units::km)->get() == 2000.0);
+static_assert(Time::create(1.5, Units::min)->get() == 90.0);
+static_assert(!Distance::create(1.0, Units::s));
+static_assert(!Unitless::create(1.0, Units::fraction));
+static_assert(pnm::units::ucumCode(Units::m) == "m");
+static_assert(pnm::units::ucumCode(Units::m_s3) == "m/s3");
+static_assert(std::is_same_v<decltype(Distance::create(1.0, "m")), std::optional<Distance>>);
+static_assert(Distance::create(2.5, "km")->get() == 2500.0);
+static_assert(Time::create(1.5, "min")->get() == 90.0);
+static_assert(Unitless::create(2.0, "1")->get() == 2.0);
+static_assert(Ratio::create(2.0, "1")->get() == 2.0);
+static_assert(!Distance::create(1.0, "s"));
+static_assert(!Distance::create(1.0, ""));
+static_assert(std::same_as<decltype((2500_m).get(Units::km)), std::optional<double>>);
+static_assert(std::same_as<decltype((2500_m).get("km")), std::optional<double>>);
+static_assert((2500_m).get(Units::km) == 2.5);
+static_assert((2500_m).get("km") == 2.5);
+static_assert((120_s).get(Units::min) == 2.0);
+static_assert((120_s).get("min") == 2.0);
+static_assert(!(2500_m).get(Units::s));
+static_assert(!(2500_m).get("s"));
+static_assert(!(2500_m).get(""));
+static_assert(DistanceUnits::km::UCUM_CODE == "km");
+static_assert(DistanceUnits::m::UCUM_CODE == "m");
+static_assert(TimeUnits::s::UCUM_CODE == "s");
+static_assert(pnm::units::JerkUnits::m_s3::UCUM_CODE == "m/s3");
+static_assert(!std::same_as<DistanceUnits::m, TimeUnits::s>);
+static_assert(pnm::units::Unit<"mm", std::milli>::UCUM_CODE == "mm");
+static_assert(pnm::units::Unit<"mm", std::milli>::SUFFIX == "mm");
+static_assert(pnm::units::BaseUnit<"m">::UCUM_CODE == "m");
+static_assert(pnm::units::BaseUnit<"m">::SUFFIX == "m");
+static_assert(pnm::units::Unit<"mm", std::milli, 0.0, "">::UCUM_CODE.empty());
+static_assert(pnm::units::BaseUnit<"m", "">::UCUM_CODE.empty());
+static_assert(pnm::units::IsUnit<pnm::units::Unit<"mm", std::milli>>);
+static_assert(pnm::units::IsUnit<pnm::units::BaseUnit<"m">>);
+static_assert(pnm::units::BaseUnit<"m">::IS_BASE);
+static_assert(pnm::units::BaseUnit<"m">::AUTO_FORMAT);
+static_assert(pnm::units::Unit<"mm", std::milli, 0.0, "mm", "millimetres">::SUFFIX == "millimetres");
+static_assert(pnm::units::BaseUnit<"C", "Cel", "°C">::SUFFIX == "°C");
+static_assert(DistanceUnits::um::SUFFIX == "µm");
+static_assert(AreaUnits::mm2::SUFFIX == "mm²");
+static_assert(AccelerationUnits::mm_s2::SUFFIX == "mm/s²");
+static_assert(std::same_as<DistanceUnits::um, pnm::units::Unit<"um", std::micro>>);
 
 namespace
 {
+    template<typename Quantity, typename Unit>
+    concept CanCreateWithUnit = requires { Quantity::template create<Unit>(1.0); };
+
+    template<typename Quantity, typename Unit>
+    concept CanGetWithUnit = requires(Quantity value) { value.template get<Unit>(); };
+
+    static_assert(!CanCreateWithUnit<Distance, TimeUnits::s>);
+    static_assert(!CanGetWithUnit<Distance, TimeUnits::h>);
+    static_assert(!CanCreateWithUnit<Time, DistanceUnits::m>);
+    static_assert(!CanGetWithUnit<Temperature, DistanceUnits::m>);
+    static_assert(!CanCreateWithUnit<Ratio, UnitlessUnits::unitless>);
+    static_assert(!CanGetWithUnit<Unitless, RatioUnits::fraction>);
+    static_assert(CanCreateWithUnit<Distance, const DistanceUnits::km&>);
+    static_assert(CanGetWithUnit<Distance, const DistanceUnits::km&>);
+    static_assert(Distance::create<const DistanceUnits::km&>(2.0).get() == 2000.0);
+    static_assert((2000_m).get<const DistanceUnits::km&>() == 2.0);
+    static_assert((-1.5_s).toChrono<std::chrono::seconds>().count() == -1);
+
+    struct OptionalCodeUnits
+    {
+        using s = pnm::units::BaseUnit<"s">;
+        using ns = pnm::units::Unit<"ns", std::nano>;
+        using microseconds = pnm::units::Unit<"us", std::micro>;
+        using milliseconds = pnm::units::Unit<"milliseconds", std::milli, 0.0, "ms", "milliseconds">;
+        using internal = pnm::units::Unit<"internal", std::kilo, 0.0, "">;
+    };
+
+    class OptionalCodeQuantity : public pnm::units::QuantityBase<OptionalCodeQuantity, OptionalCodeUnits>
+    {
+      public:
+        using QuantityBase::create;
+        using QuantityBase::QuantityBase;
+    };
+
+    static_assert(OptionalCodeQuantity::create(2.0, "s")->get() == 2.0);
+    static_assert(OptionalCodeQuantity::create(2.0, "ms")->get() == 0.002);
+    static_assert(!OptionalCodeQuantity::create(2.0, "n/a"));
+    static_assert(OptionalCodeUnits::microseconds::UCUM_CODE == "us");
+    static_assert(OptionalCodeUnits::microseconds::SUFFIX == "µs");
+
+    using Quantities = std::tuple<pnm::units::FrequencyRate,
+                                  pnm::units::FrequencyAcceleration,
+                                  pnm::units::TransmissionLead,
+                                  Distance,
+                                  Area,
+                                  Time,
+                                  ByteSize,
+                                  Mass,
+                                  Temperature,
+                                  Current,
+                                  Voltage,
+                                  Force,
+                                  Energy,
+                                  Power,
+                                  Pressure,
+                                  Frequency,
+                                  DataRate,
+                                  Velocity,
+                                  Acceleration,
+                                  pnm::units::Jerk,
+                                  Angle,
+                                  AngularVelocity,
+                                  pnm::units::AngularAcceleration,
+                                  pnm::units::AngularJerk,
+                                  Ratio,
+                                  Unitless>;
+
     struct FixedClock
     {
         using rep = std::chrono::milliseconds::rep;
@@ -152,14 +274,687 @@ namespace
     }
 }
 
+TEST(UnitsTests, CombinedEnumContainsEveryRegisteredUnit)
+{
+    constexpr auto names{ pnm::meta::enumeration::enumerator_names<Units>() };
+    std::size_t expected_count{};
+    pnm::meta::tuple::for_each<Quantities>([&](auto index) {
+        using Quantity = pnm::meta::tuple::type_t<index, Quantities>;
+        for (const auto name : Quantity::UnitsMeta::NESTED_TYPE_NAMES) {
+            EXPECT_EQ(std::ranges::count(names, name), 1) << name;
+            ++expected_count;
+        }
+    });
+    EXPECT_EQ(names.size(), expected_count);
+}
+
+TEST(UnitsTests, CombinedEnumPreservesUnitIdentifiers)
+{
+    EXPECT_EQ(pnm::meta::enumeration::enumerator_name(Units::nm), "nm");
+    EXPECT_EQ(pnm::meta::enumeration::enumerator_name(Units::um), "um");
+    EXPECT_EQ(pnm::meta::enumeration::enumerator_name(Units::mm2), "mm2");
+    EXPECT_EQ(pnm::meta::enumeration::enumerator_name(Units::C), "C");
+    EXPECT_EQ(pnm::meta::enumeration::enumerator_name(Units::KiB_s), "KiB_s");
+    EXPECT_EQ(pnm::meta::enumeration::enumerator_name(Units::rpm), "rpm");
+    EXPECT_EQ(pnm::meta::enumeration::enumerator_name(Units::percent), "percent");
+    EXPECT_EQ(pnm::meta::enumeration::enumerator_name(Units::unitless), "unitless");
+    EXPECT_EQ(pnm::meta::enumeration::enumerator_name(Units::s), "s");
+}
+
+TEST(UnitsTests, RuntimeCreateMatchesTypedCreationForEveryRegisteredUnit)
+{
+    pnm::meta::tuple::for_each<Quantities>([](auto quantity_index) {
+        using Quantity = pnm::meta::tuple::type_t<decltype(quantity_index)::value, Quantities>;
+        SCOPED_TRACE(Quantity::UnitsMeta::NAME);
+        pnm::meta::tuple::for_each<typename Quantity::UnitsMeta::NestedTypes>([](auto unit_index) {
+            using Unit = pnm::meta::tuple::type_t<decltype(unit_index)::value,
+                                                  typename Quantity::UnitsMeta::NestedTypes>;
+            constexpr auto name{ Quantity::UnitsMeta::NESTED_TYPE_NAMES[decltype(unit_index)::value] };
+            constexpr auto unit{ pnm::meta::enumeration::from_string<Units>(name) };
+            static_assert(unit.has_value());
+            SCOPED_TRACE(name);
+            for (const auto value : { -2.5, 0.0, 1.25, 42.0 }) {
+                SCOPED_TRACE(value);
+                const auto result{ Quantity::create(value, *unit) };
+                ASSERT_TRUE(result.has_value());
+                EXPECT_DOUBLE_EQ(result->get(), Quantity::template create<Unit>(value).get());
+            }
+        });
+    });
+}
+
+TEST(UnitsTests, RuntimeCreateRejectsEveryUnitFromOtherQuantities)
+{
+    pnm::meta::tuple::for_each<Quantities>([](auto index) {
+        using Quantity = pnm::meta::tuple::type_t<index, Quantities>;
+        SCOPED_TRACE(Quantity::UnitsMeta::NAME);
+        for (const auto unit : pnm::meta::enumeration::enumerators<Units>()) {
+            const auto name{ pnm::meta::enumeration::enumerator_name(unit) };
+            if (!std::ranges::contains(Quantity::UnitsMeta::NESTED_TYPE_NAMES, name)) {
+                SCOPED_TRACE(name);
+                EXPECT_FALSE(Quantity::create(1.0, unit).has_value());
+            }
+        }
+    });
+}
+
+TEST(UnitsTests, RuntimeCreateRejectsUnnamedEnumValues)
+{
+    constexpr std::array invalid_units{ static_cast<Units>(pnm::meta::enumeration::count<Units>()),
+                                        static_cast<Units>(
+                                          std::numeric_limits<std::underlying_type_t<Units>>::max()) };
+    for (const auto unit : invalid_units) {
+        ASSERT_TRUE(pnm::meta::enumeration::enumerator_name(unit).empty());
+        pnm::meta::tuple::for_each<Quantities>([unit](auto index) {
+            using Quantity = pnm::meta::tuple::type_t<index, Quantities>;
+            SCOPED_TRACE(Quantity::UnitsMeta::NAME);
+            EXPECT_FALSE(Quantity::create(1.0, unit).has_value());
+        });
+    }
+    // Invalid lookups must not affect a subsequent valid construction.
+    const auto valid{ Distance::create(2.0, Units::km) };
+    ASSERT_TRUE(valid.has_value());
+    EXPECT_DOUBLE_EQ(valid->get(), 2000.0);
+}
+
+TEST(UnitsTests, RuntimeCreateAppliesTemperatureOffsetsBeforeScaling)
+{
+    struct Case
+    {
+        double input;
+        Units unit;
+        double celsius;
+    };
+    constexpr std::array cases{ Case{ 30.0, Units::C, 30.0 },   Case{ 273.15, Units::K, 0.0 },
+                                Case{ 0.0, Units::K, -273.15 }, Case{ 32.0, Units::F, 0.0 },
+                                Case{ 212.0, Units::F, 100.0 }, Case{ -40.0, Units::F, -40.0 } };
+    for (const auto& item : cases) {
+        SCOPED_TRACE(item.input);
+        SCOPED_TRACE(pnm::meta::enumeration::enumerator_name(item.unit));
+        const auto result{ Temperature::create(item.input, item.unit) };
+        ASSERT_TRUE(result.has_value());
+        EXPECT_NEAR(result->get(), item.celsius, 1e-12);
+    }
+}
+
+TEST(UnitsTests, RuntimeCreateHandlesPercentRotationAndCustomTime)
+{
+    const auto percent{ Ratio::create(50.0, Units::percent) };
+    ASSERT_TRUE(percent.has_value());
+    EXPECT_DOUBLE_EQ(percent->get(), 0.5);
+
+    const auto rotation{ AngularVelocity::create(60.0, Units::rpm) };
+    ASSERT_TRUE(rotation.has_value());
+    EXPECT_DOUBLE_EQ(rotation->get(), 2.0 * std::numbers::pi);
+
+    const auto time{ Time::create(1.5, Units::min) };
+    ASSERT_TRUE(time.has_value());
+    EXPECT_EQ(time->toChrono<std::chrono::milliseconds>(), std::chrono::milliseconds{ 90000 });
+
+    const auto unitless{ Unitless::create(-2.5, Units::unitless) };
+    ASSERT_TRUE(unitless.has_value());
+    EXPECT_DOUBLE_EQ(unitless->get(), -2.5);
+}
+
+TEST(UnitsTests, RuntimeCreatePreservesNonFiniteValuesForValidUnits)
+{
+    const auto nan{ Distance::create(std::numeric_limits<double>::quiet_NaN(), Units::km) };
+    ASSERT_TRUE(nan.has_value());
+    EXPECT_TRUE(nan->isNaN());
+    for (const auto value :
+         { std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity() }) {
+        const auto result{ Distance::create(value, Units::km) };
+        ASSERT_TRUE(result.has_value());
+        EXPECT_TRUE(result->isInf());
+        EXPECT_EQ(result->get(), value);
+    }
+}
+
+TEST(UnitsTests, RuntimeGetMatchesTypedAccessForEveryRegisteredUnit)
+{
+    pnm::meta::tuple::for_each<Quantities>([](auto quantity_index) {
+        using Quantity = pnm::meta::tuple::type_t<decltype(quantity_index)::value, Quantities>;
+        SCOPED_TRACE(Quantity::UnitsMeta::NAME);
+        pnm::meta::tuple::for_each<typename Quantity::UnitsMeta::NestedTypes>([](auto unit_index) {
+            using Unit = pnm::meta::tuple::type_t<decltype(unit_index)::value,
+                                                  typename Quantity::UnitsMeta::NestedTypes>;
+            constexpr auto unit{ pnm::meta::enumeration::from_string<Units>(
+              Quantity::UnitsMeta::NESTED_TYPE_NAMES[decltype(unit_index)::value]) };
+            static_assert(unit.has_value());
+            SCOPED_TRACE(Unit::UCUM_CODE);
+            for (const auto value : { -273.15, -2.5, 0.0, 1.25, 42.0, 1e6 }) {
+                const auto quantity{ Quantity::create(value) };
+                const auto by_enum{ quantity.get(*unit) };
+                const auto by_code{ quantity.get(Unit::UCUM_CODE) };
+                ASSERT_TRUE(by_enum);
+                ASSERT_TRUE(by_code);
+                EXPECT_DOUBLE_EQ(*by_enum, quantity.template get<Unit>());
+                EXPECT_DOUBLE_EQ(*by_code, quantity.template get<Unit>());
+                EXPECT_DOUBLE_EQ(quantity.get(), value);
+            }
+        });
+    });
+}
+
+TEST(UnitsTests, RuntimeGetRejectsUnitsAndCodesFromOtherQuantities)
+{
+    pnm::meta::tuple::for_each<Quantities>([](auto quantity_index) {
+        using Quantity = pnm::meta::tuple::type_t<quantity_index, Quantities>;
+        const auto quantity{ Quantity::create(1.0) };
+        SCOPED_TRACE(Quantity::UnitsMeta::NAME);
+        for (const auto unit : pnm::meta::enumeration::enumerators<Units>()) {
+            const auto name{ pnm::meta::enumeration::enumerator_name(unit) };
+            const auto code{ pnm::units::ucumCode(unit) };
+            ASSERT_TRUE(code);
+            SCOPED_TRACE(name);
+            const auto owns_enum{ std::ranges::contains(Quantity::UnitsMeta::NESTED_TYPE_NAMES, name) };
+            const auto owns_code{ std::ranges::any_of(Quantity::UnitsMeta::NESTED_TYPE_NAMES,
+                                                      [&code](std::string_view unit_name) {
+                return pnm::units::ucumCode(*pnm::meta::enumeration::from_string<Units>(unit_name)) == code;
+            }) };
+            EXPECT_EQ(quantity.get(unit).has_value(), owns_enum);
+            EXPECT_EQ(quantity.get(*code).has_value(), owns_code);
+        }
+    });
+}
+
+TEST(UnitsTests, RuntimeGetRejectsInvalidEnumValues)
+{
+    constexpr std::array invalid_units{ static_cast<Units>(pnm::meta::enumeration::count<Units>()),
+                                        static_cast<Units>(
+                                          std::numeric_limits<std::underlying_type_t<Units>>::max()) };
+    pnm::meta::tuple::for_each<Quantities>([&](auto quantity_index) {
+        using Quantity = pnm::meta::tuple::type_t<quantity_index, Quantities>;
+        const auto quantity{ Quantity::create(1.0) };
+        SCOPED_TRACE(Quantity::UnitsMeta::NAME);
+        for (const auto unit : invalid_units) {
+            EXPECT_FALSE(quantity.get(unit));
+        }
+    });
+    EXPECT_EQ((2500_m).get(Units::km), 2.5);
+}
+
+TEST(UnitsTests, RuntimeGetAppliesInverseOffsetsAndSupportsDisabledFormattingUnits)
+{
+    EXPECT_EQ((30_C).get(Units::F), 86.0);
+    EXPECT_EQ((30_C).get("[degF]"), 86.0);
+    EXPECT_EQ((0_C).get(Units::K), 273.15);
+    EXPECT_EQ((0_C).get("K"), 273.15);
+    EXPECT_EQ((-40_C).get(Units::F), -40.0);
+    EXPECT_EQ((-40_C).get("[degF]"), -40.0);
+    EXPECT_EQ((0.5_fraction).get(Units::percent), 50.0);
+    EXPECT_EQ((0.5_fraction).get("%"), 50.0);
+    EXPECT_EQ((1_GiB).get(Units::MiB), 1024.0);
+    EXPECT_EQ((1_GiB).get("MiBy"), 1024.0);
+    EXPECT_EQ((3600_J).get(Units::Wh), 1.0);
+    EXPECT_EQ((3600_J).get("W.h"), 1.0);
+    EXPECT_EQ((2_rev / 1_s).get(Units::rpm), 120.0);
+    EXPECT_EQ((2_rev / 1_s).get("circ/min"), 120.0);
+}
+
+TEST(UnitsTests, RuntimeGetRequiresExactUcumCodes)
+{
+    using namespace std::string_view_literals;
+    constexpr auto distance{ 2500_m };
+    for (const auto code : { ""sv, "???"sv, "KM"sv, "Km"sv, " km"sv, "km "sv, "kmx"sv, "km\0"sv, "µm"sv }) {
+        SCOPED_TRACE(code);
+        EXPECT_FALSE(distance.get(code));
+    }
+    EXPECT_FALSE((1_KiB).get("KiB"));
+    EXPECT_FALSE((1_C).get("°C"));
+    EXPECT_FALSE((1_m_s2).get("m.s-2"));
+    EXPECT_FALSE(distance.get("KMT"));
+    const std::array input{ 'k', 'm', 'x' };
+    EXPECT_EQ(distance.get(std::string_view{ input.data(), 2 }), 2.5);
+}
+
+TEST(UnitsTests, RuntimeGetResolvesSharedAndCustomUcumCodes)
+{
+    EXPECT_EQ((0.5_fraction).get("1"), 0.5);
+    EXPECT_EQ((2_unitless).get("1"), 2.0);
+    EXPECT_FALSE((2_unitless).get(Units::fraction));
+    EXPECT_FALSE((2_unitless).get("%"));
+    const auto quantity{ OptionalCodeQuantity::create(1.0) };
+    EXPECT_EQ(quantity.get("s"), 1.0);
+    EXPECT_EQ(quantity.get("ms"), 1000.0);
+    EXPECT_EQ(quantity.get("us"), 1000000.0);
+    EXPECT_FALSE(quantity.get("microseconds"));
+    EXPECT_FALSE(quantity.get("internal"));
+    EXPECT_FALSE(quantity.get(""));
+}
+
+TEST(UnitsTests, RuntimeGetPreservesNonFiniteValuesForValidUnits)
+{
+    const auto nan{ Distance::create(std::numeric_limits<double>::quiet_NaN()) };
+    const auto nan_enum{ nan.get(Units::km) };
+    const auto nan_code{ nan.get("km") };
+    ASSERT_TRUE(nan_enum);
+    ASSERT_TRUE(nan_code);
+    EXPECT_TRUE(std::isnan(*nan_enum));
+    EXPECT_TRUE(std::isnan(*nan_code));
+    EXPECT_FALSE(nan.get(Units::s));
+    EXPECT_FALSE(nan.get("s"));
+    for (const auto value :
+         { std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity() }) {
+        const auto temperature{ Temperature::create(value) };
+        EXPECT_EQ(temperature.get(Units::F), value);
+        EXPECT_EQ(temperature.get("[degF]"), value);
+    }
+    const auto negative_zero{ Distance::create(-0.0) };
+    ASSERT_TRUE(negative_zero.get(Units::km));
+    ASSERT_TRUE(negative_zero.get("km"));
+    EXPECT_TRUE(std::signbit(*negative_zero.get(Units::km)));
+    EXPECT_TRUE(std::signbit(*negative_zero.get("km")));
+}
+
+TEST(UnitsTests, UcumCodesMatchRegisteredExpressions)
+{
+    using namespace std::string_view_literals;
+    constexpr std::array cases{ std::pair{ Units::unitless, "1"sv },
+                                std::pair{ Units::nm, "nm"sv },
+                                std::pair{ Units::um, "um"sv },
+                                std::pair{ Units::mm, "mm"sv },
+                                std::pair{ Units::cm, "cm"sv },
+                                std::pair{ Units::dm, "dm"sv },
+                                std::pair{ Units::m, "m"sv },
+                                std::pair{ Units::km, "km"sv },
+                                std::pair{ Units::mm2, "mm2"sv },
+                                std::pair{ Units::cm2, "cm2"sv },
+                                std::pair{ Units::dm2, "dm2"sv },
+                                std::pair{ Units::m2, "m2"sv },
+                                std::pair{ Units::km2, "km2"sv },
+                                std::pair{ Units::ns, "ns"sv },
+                                std::pair{ Units::us, "us"sv },
+                                std::pair{ Units::ms, "ms"sv },
+                                std::pair{ Units::s, "s"sv },
+                                std::pair{ Units::min, "min"sv },
+                                std::pair{ Units::h, "h"sv },
+                                std::pair{ Units::bytes, "By"sv },
+                                std::pair{ Units::KiB, "KiBy"sv },
+                                std::pair{ Units::MiB, "MiBy"sv },
+                                std::pair{ Units::GiB, "GiBy"sv },
+                                std::pair{ Units::KB, "kBy"sv },
+                                std::pair{ Units::MB, "MBy"sv },
+                                std::pair{ Units::GB, "GBy"sv },
+                                std::pair{ Units::mg, "mg"sv },
+                                std::pair{ Units::g, "g"sv },
+                                std::pair{ Units::kg, "kg"sv },
+                                std::pair{ Units::t, "t"sv },
+                                std::pair{ Units::C, "Cel"sv },
+                                std::pair{ Units::K, "K"sv },
+                                std::pair{ Units::F, "[degF]"sv },
+                                std::pair{ Units::uA, "uA"sv },
+                                std::pair{ Units::mA, "mA"sv },
+                                std::pair{ Units::A, "A"sv },
+                                std::pair{ Units::kA, "kA"sv },
+                                std::pair{ Units::mV, "mV"sv },
+                                std::pair{ Units::V, "V"sv },
+                                std::pair{ Units::kV, "kV"sv },
+                                std::pair{ Units::MV, "MV"sv },
+                                std::pair{ Units::mN, "mN"sv },
+                                std::pair{ Units::N, "N"sv },
+                                std::pair{ Units::kN, "kN"sv },
+                                std::pair{ Units::MN, "MN"sv },
+                                std::pair{ Units::mJ, "mJ"sv },
+                                std::pair{ Units::J, "J"sv },
+                                std::pair{ Units::kJ, "kJ"sv },
+                                std::pair{ Units::MJ, "MJ"sv },
+                                std::pair{ Units::Wh, "W.h"sv },
+                                std::pair{ Units::kWh, "kW.h"sv },
+                                std::pair{ Units::mW, "mW"sv },
+                                std::pair{ Units::W, "W"sv },
+                                std::pair{ Units::kW, "kW"sv },
+                                std::pair{ Units::MW, "MW"sv },
+                                std::pair{ Units::Pa, "Pa"sv },
+                                std::pair{ Units::hPa, "hPa"sv },
+                                std::pair{ Units::mbar, "mbar"sv },
+                                std::pair{ Units::kPa, "kPa"sv },
+                                std::pair{ Units::bar, "bar"sv },
+                                std::pair{ Units::atm, "atm"sv },
+                                std::pair{ Units::MPa, "MPa"sv },
+                                std::pair{ Units::kbar, "kbar"sv },
+                                std::pair{ Units::mHz, "mHz"sv },
+                                std::pair{ Units::Hz, "Hz"sv },
+                                std::pair{ Units::kHz, "kHz"sv },
+                                std::pair{ Units::MHz, "MHz"sv },
+                                std::pair{ Units::GHz, "GHz"sv },
+                                std::pair{ Units::bytes_s, "By/s"sv },
+                                std::pair{ Units::KB_s, "kBy/s"sv },
+                                std::pair{ Units::MB_s, "MBy/s"sv },
+                                std::pair{ Units::GB_s, "GBy/s"sv },
+                                std::pair{ Units::KiB_s, "KiBy/s"sv },
+                                std::pair{ Units::MiB_s, "MiBy/s"sv },
+                                std::pair{ Units::GiB_s, "GiBy/s"sv },
+                                std::pair{ Units::mm_s, "mm/s"sv },
+                                std::pair{ Units::m_s, "m/s"sv },
+                                std::pair{ Units::km_h, "km/h"sv },
+                                std::pair{ Units::mm_s2, "mm/s2"sv },
+                                std::pair{ Units::m_s2, "m/s2"sv },
+                                std::pair{ Units::km_h2, "km/h2"sv },
+                                std::pair{ Units::mm_s3, "mm/s3"sv },
+                                std::pair{ Units::m_s3, "m/s3"sv },
+                                std::pair{ Units::rad, "rad"sv },
+                                std::pair{ Units::deg, "deg"sv },
+                                std::pair{ Units::rev, "circ"sv },
+                                std::pair{ Units::rad_s, "rad/s"sv },
+                                std::pair{ Units::rpm, "circ/min"sv },
+                                std::pair{ Units::deg_s, "deg/s"sv },
+                                std::pair{ Units::rad_s2, "rad/s2"sv },
+                                std::pair{ Units::deg_s2, "deg/s2"sv },
+                                std::pair{ Units::rpm_s, "circ/(min.s)"sv },
+                                std::pair{ Units::rad_s3, "rad/s3"sv },
+                                std::pair{ Units::deg_s3, "deg/s3"sv },
+                                std::pair{ Units::rpm_s2, "circ/(min.s2)"sv },
+                                std::pair{ Units::fraction, "1"sv },
+                                std::pair{ Units::percent, "%"sv },
+                                std::pair{ Units::Hz_s, "Hz/s"sv },
+                                std::pair{ Units::Hz_s2, "Hz/s2"sv },
+                                std::pair{ Units::m_rad, "m/rad"sv },
+                                std::pair{ Units::mm_rev, "mm/circ"sv } };
+    static_assert(cases.size() == pnm::meta::enumeration::count<Units>());
+    for (const auto& [unit, expected] : cases) {
+        SCOPED_TRACE(pnm::meta::enumeration::enumerator_name(unit));
+        EXPECT_EQ(pnm::units::ucumCode(unit), expected);
+    }
+}
+
+TEST(UnitsTests, OptionalUcumCodesPreserveIdentifiersAndOverrides)
+{
+    EXPECT_EQ(TimeUnits::ns::UCUM_CODE, "ns");
+    EXPECT_EQ(TimeUnits::s::UCUM_CODE, "s");
+    EXPECT_EQ(DistanceUnits::um::UCUM_CODE, "um");
+    EXPECT_EQ(Distance::suffix<DistanceUnits::um>(), "µm");
+    EXPECT_EQ(ByteSizeUnits::GB::UCUM_CODE, "GBy");
+    EXPECT_EQ(ByteSize::suffix<ByteSizeUnits::GB>(), "GB");
+    EXPECT_FALSE(ByteSizeUnits::GB::AUTO_FORMAT);
+    EXPECT_EQ(TemperatureUnits::C::UCUM_CODE, "Cel");
+    EXPECT_EQ(Temperature::suffix<TemperatureUnits::C>(), "°C");
+    EXPECT_FALSE(Time::create(1.0, "n/a"));
+}
+
+TEST(UnitsTests, CustomUnitsResolveMetadataWithoutQuantityReflection)
+{
+    const auto seconds{ OptionalCodeQuantity::create(2.0, "s") };
+    const auto nanoseconds{ OptionalCodeQuantity::create(2.0, "ns") };
+    const auto microseconds{ OptionalCodeQuantity::create(2.0, "us") };
+    const auto milliseconds{ OptionalCodeQuantity::create(2.0, "ms") };
+    ASSERT_TRUE(seconds);
+    ASSERT_TRUE(nanoseconds);
+    ASSERT_TRUE(microseconds);
+    ASSERT_TRUE(milliseconds);
+    EXPECT_DOUBLE_EQ(seconds->get(), 2.0);
+    EXPECT_DOUBLE_EQ(nanoseconds->get(), 2e-9);
+    EXPECT_DOUBLE_EQ(microseconds->get(), 2e-6);
+    EXPECT_DOUBLE_EQ(milliseconds->get(), 0.002);
+    EXPECT_EQ(OptionalCodeQuantity::suffix<OptionalCodeUnits::microseconds>(), "µs");
+    EXPECT_FALSE(OptionalCodeQuantity::create(1.0, "microseconds"));
+    EXPECT_FALSE(OptionalCodeQuantity::create(1.0, "µs"));
+    EXPECT_FALSE(OptionalCodeQuantity::create(1.0, "milliseconds"));
+    EXPECT_FALSE(OptionalCodeQuantity::create(1.0, "internal"));
+    EXPECT_FALSE(OptionalCodeQuantity::create(1.0, ""));
+    EXPECT_FALSE(OptionalCodeQuantity::create(1.0, "n/a"));
+    EXPECT_DOUBLE_EQ(OptionalCodeQuantity::create<OptionalCodeUnits::internal>(2.0).get(), 2000.0);
+}
+
+TEST(UnitsTests, UnitMetadataKeepsCodeAndDisplaySuffixIndependent)
+{
+    using SquaredMicroUnit = pnm::units::Unit<"um2", std::pico>;
+    using CompoundUnit = pnm::units::BaseUnit<"m_s2", "m/s2">;
+    using ExplicitSuffix = pnm::units::Unit<"um", std::micro, 0.0, "um", "um">;
+    using EmptySuffix = pnm::units::BaseUnit<"fraction", "1", "">;
+    using EmptyCode = pnm::units::BaseUnit<"internal", "">;
+
+    static_assert(SquaredMicroUnit::UCUM_CODE == "um2");
+    static_assert(SquaredMicroUnit::SUFFIX == "µm²");
+    static_assert(CompoundUnit::UCUM_CODE == "m/s2");
+    static_assert(CompoundUnit::SUFFIX == "m/s²");
+    static_assert(ExplicitSuffix::SUFFIX == "um");
+    static_assert(EmptySuffix::SUFFIX.empty());
+    static_assert(EmptyCode::UCUM_CODE.empty());
+    static_assert(EmptyCode::SUFFIX == "internal");
+
+    EXPECT_EQ(std::string{ SquaredMicroUnit::SUFFIX }, "µm²");
+    EXPECT_EQ(std::string{ CompoundUnit::SUFFIX }, "m/s²");
+    EXPECT_EQ(std::string{ ExplicitSuffix::SUFFIX }, "um");
+    EXPECT_TRUE(EmptySuffix::SUFFIX.empty());
+    EXPECT_EQ(std::string{ EmptyCode::SUFFIX }, "internal");
+}
+
+TEST(UnitsTests, UcumCodesCoverEveryUnitAndRejectInvalidEnumerators)
+{
+    for (const auto unit : pnm::meta::enumeration::enumerators<Units>()) {
+        SCOPED_TRACE(pnm::meta::enumeration::enumerator_name(unit));
+        const auto code{ pnm::units::ucumCode(unit) };
+        ASSERT_TRUE(code);
+        EXPECT_FALSE(code->empty());
+        EXPECT_TRUE(std::ranges::all_of(*code, [](unsigned char c) { return c > ' ' && c < 127; }));
+    }
+    EXPECT_FALSE(pnm::units::ucumCode(static_cast<Units>(pnm::meta::enumeration::count<Units>())));
+    EXPECT_FALSE(
+      pnm::units::ucumCode(static_cast<Units>(std::numeric_limits<std::underlying_type_t<Units>>::max())));
+}
+
+TEST(UnitsTests, DecimalAndBinaryByteUnitsRemainDistinct)
+{
+    EXPECT_DOUBLE_EQ((1_KB).get(), 1000);
+    EXPECT_DOUBLE_EQ((1_MB).get(), 1000000);
+    EXPECT_DOUBLE_EQ((1_GB).get(), 1000000000);
+    EXPECT_DOUBLE_EQ((1_KiB).get(), 1024);
+    EXPECT_DOUBLE_EQ((1_MiB).get(), 1048576);
+    EXPECT_DOUBLE_EQ((1_GiB).get(), 1073741824);
+    EXPECT_DOUBLE_EQ((1_KiB).get<ByteSizeUnits::KB>(), 1.024);
+    EXPECT_DOUBLE_EQ((1_MB).get<ByteSizeUnits::MiB>(), 0.95367431640625);
+    EXPECT_DOUBLE_EQ((1_GB).get<ByteSizeUnits::GiB>(), 0.9313225746154785);
+    EXPECT_DOUBLE_EQ(ByteSize::create(1, "kBy")->get(), 1000);
+    EXPECT_DOUBLE_EQ(ByteSize::create(1, "MBy")->get(), 1000000);
+    EXPECT_DOUBLE_EQ(ByteSize::create(1, "GBy")->get(), 1000000000);
+    EXPECT_DOUBLE_EQ(ByteSize::create(1, "KiBy")->get(), 1024);
+    EXPECT_EQ(ByteSize::suffix<ByteSizeUnits::KB>(), "kB");
+    EXPECT_EQ(ByteSize::suffix<ByteSizeUnits::KiB>(), "KiB");
+}
+
+TEST(UnitsTests, DecimalAndBinaryRatesPreserveDimensionalConversions)
+{
+    EXPECT_DOUBLE_EQ((1_KB_s).get(), 1000);
+    EXPECT_DOUBLE_EQ((1_MB_s).get(), 1000000);
+    EXPECT_DOUBLE_EQ((1_GB_s).get(), 1000000000);
+    EXPECT_DOUBLE_EQ((1_KiB_s).get(), 1024);
+    EXPECT_DOUBLE_EQ((1_MiB_s).get(), 1048576);
+    EXPECT_DOUBLE_EQ((1_GiB_s).get(), 1073741824);
+    EXPECT_DOUBLE_EQ((1_MiB_s).get<DataRateUnits::MB_s>(), 1.048576);
+    EXPECT_DOUBLE_EQ(DataRate::create(1, "kBy/s")->get(), 1000);
+    EXPECT_DOUBLE_EQ(DataRate::create(1, "MBy/s")->get(), 1000000);
+    EXPECT_DOUBLE_EQ(DataRate::create(1, "GBy/s")->get(), 1000000000);
+    EXPECT_DOUBLE_EQ((10_MB / 2_s).get<DataRateUnits::MB_s>(), 5);
+    EXPECT_DOUBLE_EQ((10_MiB / 2_s).get<DataRateUnits::MiB_s>(), 5);
+    EXPECT_DOUBLE_EQ((2_KB_s * 2_s).get<ByteSizeUnits::bytes>(), 4000);
+    EXPECT_DOUBLE_EQ((2_KiB_s * 2_s).get<ByteSizeUnits::bytes>(), 4096);
+}
+
+TEST(UnitsTests, AutomaticByteFormattingKeepsOnePrefixFamily)
+{
+    EXPECT_EQ(stream_to_string(1000_bytes), "1000 bytes");
+    EXPECT_EQ(stream_to_string(1024_bytes), "1 KiB");
+    EXPECT_EQ(stream_to_string(1_MiB), "1 MiB");
+    EXPECT_EQ(stream_to_string(1_GiB), "1 GiB");
+    EXPECT_EQ(stream_to_string(1000_bytes_s), "1 kB/s");
+    EXPECT_EQ(stream_to_string(1_KiB_s), "1.024 kB/s");
+    EXPECT_EQ(stream_to_string(1_MB_s), "1 MB/s");
+    EXPECT_EQ(stream_to_string(1_GB_s), "1 GB/s");
+    EXPECT_EQ(stream_to_string(-1000_bytes_s), "-1 kB/s");
+    EXPECT_EQ(stream_to_string(0_bytes_s), "0 bytes/s");
+}
+
+TEST(UnitsTests, UcumCodeCreateMatchesTypedCreationForEveryRegisteredUnit)
+{
+    pnm::meta::tuple::for_each<Quantities>([](auto quantity_index) {
+        using Quantity = pnm::meta::tuple::type_t<decltype(quantity_index)::value, Quantities>;
+        SCOPED_TRACE(Quantity::UnitsMeta::NAME);
+        pnm::meta::tuple::for_each<typename Quantity::UnitsMeta::NestedTypes>([](auto unit_index) {
+            using Unit = pnm::meta::tuple::type_t<decltype(unit_index)::value,
+                                                  typename Quantity::UnitsMeta::NestedTypes>;
+            constexpr auto name{ Quantity::UnitsMeta::NESTED_TYPE_NAMES[decltype(unit_index)::value] };
+            constexpr auto unit{ pnm::meta::enumeration::from_string<Units>(name) };
+            constexpr auto code{ pnm::units::ucumCode(*unit) };
+            static_assert(code.has_value());
+            static_assert(Unit::UCUM_CODE == *code);
+            static_assert(Unit::UCUM_CODE != "n/a");
+            static_assert(Unit::SUFFIX != "n/a");
+            SCOPED_TRACE(name);
+            SCOPED_TRACE(*code);
+            for (const auto value : { -2.5, 0.0, 1.25, 42.0 }) {
+                const auto result{ Quantity::create(value, *code) };
+                ASSERT_TRUE(result.has_value());
+                EXPECT_DOUBLE_EQ(result->get(), Quantity::template create<Unit>(value).get());
+            }
+        });
+    });
+}
+
+TEST(UnitsTests, UcumCodeCreateRejectsEveryCodeFromOtherQuantities)
+{
+    pnm::meta::tuple::for_each<Quantities>([](auto quantity_index) {
+        using Quantity = pnm::meta::tuple::type_t<decltype(quantity_index)::value, Quantities>;
+        SCOPED_TRACE(Quantity::UnitsMeta::NAME);
+        for (const auto unit : pnm::meta::enumeration::enumerators<Units>()) {
+            const auto code{ pnm::units::ucumCode(unit) };
+            ASSERT_TRUE(code);
+            const auto belongs{ std::ranges::any_of(Quantity::UnitsMeta::NESTED_TYPE_NAMES,
+                                                    [&code](std::string_view name) {
+                return pnm::units::ucumCode(*pnm::meta::enumeration::from_string<Units>(name)) == code;
+            }) };
+            SCOPED_TRACE(*code);
+            EXPECT_EQ(Quantity::create(1.0, *code).has_value(), belongs);
+        }
+    });
+}
+
+TEST(UnitsTests, UcumCodeCreateResolvesSharedCodesWithinQuantity)
+{
+    const auto unitless{ Unitless::create(2.5, "1") };
+    const auto ratio{ Ratio::create(2.5, "1") };
+    ASSERT_TRUE(unitless);
+    ASSERT_TRUE(ratio);
+    EXPECT_DOUBLE_EQ(unitless->get(), 2.5);
+    EXPECT_DOUBLE_EQ(ratio->get(), 2.5);
+    EXPECT_FALSE(Distance::create(2.5, "1"));
+    EXPECT_FALSE(Unitless::create(50.0, "%"));
+}
+
+TEST(UnitsTests, UcumCodeCreateRequiresAnExactRegisteredCode)
+{
+    using namespace std::string_view_literals;
+    for (const auto code : { ""sv, "???"sv, "KM"sv, "Km"sv, " km"sv, "km "sv, "kmx"sv, "km\0"sv, "µm"sv }) {
+        SCOPED_TRACE(code);
+        EXPECT_FALSE(Distance::create(1.0, code));
+    }
+    pnm::meta::tuple::for_each<Quantities>([](auto index) {
+        using Quantity = pnm::meta::tuple::type_t<index, Quantities>;
+        SCOPED_TRACE(Quantity::UnitsMeta::NAME);
+        EXPECT_FALSE(Quantity::create(1.0, ""));
+    });
+    // Readable symbols are distinct from the registered UCUM expressions.
+    EXPECT_FALSE(ByteSize::create(1.0, "B"));
+    EXPECT_FALSE(ByteSize::create(1.0, "KiB"));
+    EXPECT_FALSE(Temperature::create(1.0, "C"));
+    EXPECT_FALSE(Temperature::create(1.0, "°C"));
+    // This lookup does not normalize equivalent expressions or parse annotations.
+    EXPECT_FALSE(Acceleration::create(1.0, "m.s-2"));
+    EXPECT_FALSE(AngularVelocity::create(1.0, "circ.min-1"));
+    EXPECT_FALSE(Unitless::create(1.0, "{count}"));
+
+    const std::array input{ 'k', 'm', 'x' };
+    const auto distance{ Distance::create(2.5, std::string_view{ input.data(), 2 }) };
+    ASSERT_TRUE(distance);
+    EXPECT_DOUBLE_EQ(distance->get(), 2500.0);
+}
+
+TEST(UnitsTests, UcumCodeCreateRejectsLegacyCodes)
+{
+    EXPECT_FALSE(Distance::create(1.0, "KMT"));
+    EXPECT_FALSE(Temperature::create(1.0, "FAH"));
+    EXPECT_FALSE(ByteSize::create(1.0, "E64"));
+    EXPECT_FALSE(Ratio::create(1.0, "C62"));
+    EXPECT_FALSE(pnm::units::Jerk::create(1.0, "P03D03443"));
+    EXPECT_FALSE(DataRate::create(1.0, "P6588AC2B"));
+}
+
+TEST(UnitsTests, UcumCodeCreateSupportsCompoundUnits)
+{
+    using namespace pnm::units;
+    const auto jerk{ Jerk::create(2.5, "mm/s3") };
+    ASSERT_TRUE(jerk);
+    EXPECT_DOUBLE_EQ(jerk->get(), 0.0025);
+
+    const auto acceleration{ AngularAcceleration::create(60.0, "circ/(min.s)") };
+    ASSERT_TRUE(acceleration);
+    EXPECT_DOUBLE_EQ(acceleration->get(), 2.0 * std::numbers::pi);
+
+    const auto angular_jerk{ AngularJerk::create(60.0, "circ/(min.s2)") };
+    ASSERT_TRUE(angular_jerk);
+    EXPECT_DOUBLE_EQ(angular_jerk->get(), 2.0 * std::numbers::pi);
+
+    const auto lead{ TransmissionLead::create(1.0, "mm/circ") };
+    ASSERT_TRUE(lead);
+    EXPECT_DOUBLE_EQ(lead->get(), 0.001 / (2.0 * std::numbers::pi));
+
+    const auto rate{ DataRate::create(1.0, "KiBy/s") };
+    ASSERT_TRUE(rate);
+    EXPECT_DOUBLE_EQ(rate->get(), 1024.0);
+
+    const auto frequency{ Frequency::create(2.0, "mHz") };
+    ASSERT_TRUE(frequency);
+    EXPECT_DOUBLE_EQ(frequency->get(), 0.002);
+
+    const auto frequency_rate{ FrequencyRate::create(2.0, "Hz/s") };
+    ASSERT_TRUE(frequency_rate);
+    EXPECT_DOUBLE_EQ(frequency_rate->get(), 2.0);
+
+    const auto frequency_acceleration{ FrequencyAcceleration::create(3.0, "Hz/s2") };
+    ASSERT_TRUE(frequency_acceleration);
+    EXPECT_DOUBLE_EQ(frequency_acceleration->get(), 3.0);
+}
+
+TEST(UnitsTests, UcumCodeCreateAppliesOffsetsAndBinaryAndAngularScales)
+{
+    const auto temperature{ Temperature::create(212.0, "[degF]") };
+    ASSERT_TRUE(temperature);
+    EXPECT_NEAR(temperature->get(), 100.0, 1e-12);
+
+    const auto storage{ ByteSize::create(1.0, "GiBy") };
+    ASSERT_TRUE(storage);
+    EXPECT_DOUBLE_EQ(storage->get(), 1073741824.0);
+
+    const auto rotation{ AngularVelocity::create(60.0, "circ/min") };
+    ASSERT_TRUE(rotation);
+    EXPECT_DOUBLE_EQ(rotation->get(), 2.0 * std::numbers::pi);
+
+    const auto percent{ Ratio::create(50.0, "%") };
+    ASSERT_TRUE(percent);
+    EXPECT_DOUBLE_EQ(percent->get(), 0.5);
+}
+
+TEST(UnitsTests, UcumCodeCreatePreservesNonFiniteValuesForValidCodes)
+{
+    const auto nan{ Distance::create(std::numeric_limits<double>::quiet_NaN(), "km") };
+    ASSERT_TRUE(nan);
+    EXPECT_TRUE(nan->isNaN());
+    for (const auto value :
+         { std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity() }) {
+        const auto result{ Distance::create(value, "km") };
+        ASSERT_TRUE(result);
+        EXPECT_EQ(result->get(), value);
+    }
+}
+
 TEST(UnitsTests, ByteSizeConvertsAcrossRegisteredUnits)
 {
-    const auto size = 2.0_KB;
+    const auto size = 2.0_KiB;
 
     EXPECT_EQ(size.get(), static_cast<size_t>(2048));
     EXPECT_EQ(size.get<ByteSizeUnits::bytes>(), static_cast<size_t>(2048));
-    EXPECT_DOUBLE_EQ(size.get<ByteSizeUnits::KB>(), 2.0);
-    EXPECT_DOUBLE_EQ(size.get<ByteSizeUnits::MB>(), 2.0 / 1024.0);
+    EXPECT_DOUBLE_EQ(size.get<ByteSizeUnits::KiB>(), 2.0);
+    EXPECT_DOUBLE_EQ(size.get<ByteSizeUnits::MiB>(), 2.0 / 1024.0);
 }
 
 TEST(UnitsTests, DistanceCreateAndGetUseBaseMeters)
@@ -236,6 +1031,68 @@ TEST(UnitsTests, TimeConvertsToChronoDurations)
     EXPECT_DOUBLE_EQ(default_duration.count(), 1.5);
 }
 
+TEST(UnitsTests, IntegerChronoConversionsRejectNonFiniteAndOverflowingValues)
+{
+    for (const auto value : { std::numeric_limits<double>::quiet_NaN(),
+                              std::numeric_limits<double>::infinity(),
+                              -std::numeric_limits<double>::infinity(),
+                              std::numeric_limits<double>::max(),
+                              -std::numeric_limits<double>::max() }) {
+        const auto time{ Time::create(value) };
+        EXPECT_THROW(time.toChrono<std::chrono::seconds>(), std::out_of_range);
+        EXPECT_THROW(static_cast<void>(static_cast<std::chrono::seconds>(time)), std::out_of_range);
+    }
+    EXPECT_THROW((1e10_s).toChrono<std::chrono::nanoseconds>(), std::out_of_range);
+}
+
+TEST(UnitsTests, IntegerChronoConversionsPreserveTruncationAtSmallTypeBounds)
+{
+    using SignedSeconds = std::chrono::duration<std::int8_t>;
+    using UnsignedSeconds = std::chrono::duration<std::uint8_t>;
+    EXPECT_EQ((127.9_s).toChrono<SignedSeconds>().count(), 127);
+    EXPECT_EQ((-128.9_s).toChrono<SignedSeconds>().count(), -128);
+    EXPECT_THROW((128_s).toChrono<SignedSeconds>(), std::out_of_range);
+    EXPECT_THROW((-129_s).toChrono<SignedSeconds>(), std::out_of_range);
+    EXPECT_EQ((-0.9_s).toChrono<UnsignedSeconds>().count(), 0);
+    EXPECT_EQ((255.9_s).toChrono<UnsignedSeconds>().count(), 255);
+    EXPECT_THROW((-1_s).toChrono<UnsignedSeconds>(), std::out_of_range);
+    EXPECT_THROW((256_s).toChrono<UnsignedSeconds>(), std::out_of_range);
+}
+
+TEST(UnitsTests, IntegerChronoConversionsHandleRounded64BitBounds)
+{
+    using SignedSeconds = std::chrono::duration<std::int64_t>;
+    using UnsignedSeconds = std::chrono::duration<std::uint64_t>;
+    const auto signed_limit{ std::ldexp(1.0, 63) };
+    const auto unsigned_limit{ std::ldexp(1.0, 64) };
+    const auto signed_below{ std::nextafter(signed_limit, 0.0) };
+    const auto unsigned_below{ std::nextafter(unsigned_limit, 0.0) };
+    EXPECT_EQ(Time::create(signed_below).toChrono<SignedSeconds>().count(),
+              static_cast<std::int64_t>(signed_below));
+    EXPECT_EQ(Time::create(unsigned_below).toChrono<UnsignedSeconds>().count(),
+              static_cast<std::uint64_t>(unsigned_below));
+    EXPECT_EQ(Time::create(-signed_limit).toChrono<SignedSeconds>().count(),
+              std::numeric_limits<std::int64_t>::lowest());
+    EXPECT_THROW(Time::create(signed_limit).toChrono<SignedSeconds>(), std::out_of_range);
+    EXPECT_THROW(Time::create(unsigned_limit).toChrono<UnsignedSeconds>(), std::out_of_range);
+    EXPECT_THROW(Time::create(std::nextafter(-signed_limit, -unsigned_limit)).toChrono<SignedSeconds>(),
+                 std::out_of_range);
+}
+
+TEST(UnitsTests, FloatingChronoConversionsPreserveNonFiniteValues)
+{
+    using FloatingNanoseconds = std::chrono::duration<double, std::nano>;
+    const auto nan{ Time::create(std::numeric_limits<double>::quiet_NaN()) };
+    EXPECT_TRUE(std::isnan(nan.toChrono<FloatingNanoseconds>().count()));
+    for (const auto sign : { -1.0, 1.0 }) {
+        const auto time{ Time::create(sign * std::numeric_limits<double>::infinity()) };
+        const auto result{ time.toChrono<FloatingNanoseconds>().count() };
+        EXPECT_TRUE(std::isinf(result));
+        EXPECT_EQ(std::signbit(result), std::signbit(sign));
+    }
+    EXPECT_DOUBLE_EQ((1e10_s).toChrono<FloatingNanoseconds>().count(), 1e19);
+}
+
 TEST(UnitsTests, TimeAndChronoDurationsSupportMixedArithmeticAndComparison)
 {
     auto duration = 1.25_s;
@@ -263,12 +1120,12 @@ TEST(UnitsTests, TimeAndChronoDurationsSupportMixedArithmeticAndComparison)
 
 TEST(UnitsTests, DataRateConversionsUseBytesPerSecondAsBase)
 {
-    const auto rate = 12.5_MB_s;
+    const auto rate = 12.5_MiB_s;
 
     EXPECT_DOUBLE_EQ(rate.get(), 13107200.0);
     EXPECT_DOUBLE_EQ(rate.get<DataRateUnits::bytes_s>(), 13107200.0);
-    EXPECT_DOUBLE_EQ(rate.get<DataRateUnits::KB_s>(), 12800.0);
-    EXPECT_DOUBLE_EQ(rate.get<DataRateUnits::GB_s>(), 12.5 / 1024.0);
+    EXPECT_DOUBLE_EQ(rate.get<DataRateUnits::KiB_s>(), 12800.0);
+    EXPECT_DOUBLE_EQ(rate.get<DataRateUnits::GiB_s>(), 12.5 / 1024.0);
 }
 
 TEST(UnitsTests, MassConversionsUseGramsAsBase)
@@ -403,6 +1260,13 @@ TEST(UnitsTests, AccelerationConversionsUseMetersPerSecondSquaredAsBase)
 
 TEST(UnitsTests, SuffixReturnsTheRequestedUnitsName)
 {
+    static_assert(Distance::suffix<DistanceUnits::mm>() == "mm");
+    static_assert(Distance::suffix<DistanceUnits::um>() == "µm");
+    static_assert(Acceleration::suffix<AccelerationUnits::m_s2>() == "m/s²");
+    static_assert(AngularVelocity::suffix<AngularVelocityUnits::deg_s>() == "deg/s");
+    static_assert(Temperature::suffix<TemperatureUnits::C>() == "°C");
+    static_assert(Ratio::suffix<RatioUnits::fraction>().empty());
+    static_assert(Unitless::suffix<UnitlessUnits::unitless>().empty());
     EXPECT_EQ(Distance::suffix<DistanceUnits::m>(), "m");
     EXPECT_EQ(Time::suffix<TimeUnits::s>(), "s");
     EXPECT_EQ(Distance::suffix<const DistanceUnits::mm&>(), "mm");
@@ -412,7 +1276,7 @@ TEST(UnitsTests, SuffixReturnsTheRequestedUnitsName)
     EXPECT_EQ((1500_m).suffix<DistanceUnits::km>(), "km");
     EXPECT_EQ(Velocity::suffix<VelocityUnits::m_s>(), "m/s");
     EXPECT_EQ(Velocity::suffix<VelocityUnits::km_h>(), "km/h");
-    EXPECT_EQ(DataRate::suffix<DataRateUnits::MB_s>(), "MB/s");
+    EXPECT_EQ(DataRate::suffix<DataRateUnits::MiB_s>(), "MiB/s");
 }
 
 TEST(UnitsTests, SuffixPreservesCustomSymbolsAndEmptySuffixes)
@@ -432,23 +1296,56 @@ TEST(UnitsTests, SuffixPreservesCustomSymbolsAndEmptySuffixes)
 TEST(UnitsTests, StreamInsertionPrintsSelectedUnits)
 {
     EXPECT_EQ(stream_to_string(2.0_h), "2 h");
-    EXPECT_EQ(stream_to_string(1536.0_bytes), "1.5 KB");
+    EXPECT_EQ(stream_to_string(1536.0_bytes), "1.5 KiB");
     EXPECT_EQ(stream_to_string(1500.0_m), "1.5 km");
     EXPECT_EQ(stream_to_string(-1500.0_m), "-1.5 km");
     EXPECT_EQ(stream_to_string(0.0_m), "0 m");
     EXPECT_EQ(stream_to_string(1500.0_kg), "1.5 t");
-    EXPECT_EQ(stream_to_string(2.0_kWh), "2 kWh");
-    EXPECT_EQ(stream_to_string(101325.0_Pa), "1 atm");
-    EXPECT_EQ(stream_to_string(1.0_mbar), "1 mbar");
+    EXPECT_EQ(stream_to_string(2.0_kWh), "7.2 MJ");
+    EXPECT_EQ(stream_to_string(101325.0_Pa), "101.325 kPa");
+    EXPECT_EQ(stream_to_string(1.0_mbar), "1 hPa");
     EXPECT_EQ(stream_to_string(30.0_C), "30 °C");
     EXPECT_EQ(stream_to_string(295.5_K), "22.35 °C");
     EXPECT_EQ(stream_to_string(86.0_F), "30 °C");
     EXPECT_EQ(stream_to_string(2000.0_Hz), "2 kHz");
 }
 
+TEST(UnitsTests, AutomaticFormattingUsesConsistentUnitFamilies)
+{
+    EXPECT_EQ(stream_to_string(3600_J), "3.6 kJ");
+    EXPECT_EQ(stream_to_string(-2_kWh), "-7.2 MJ");
+    EXPECT_EQ(stream_to_string(1_bar), "100 kPa");
+    EXPECT_EQ(stream_to_string(1_kbar), "100 MPa");
+    EXPECT_EQ(stream_to_string(36_km_h), "10 m/s");
+    EXPECT_EQ(stream_to_string(1_km_h2), "0.0771605 mm/s²");
+    EXPECT_EQ(stream_to_string(1_rev), "360 °");
+    EXPECT_EQ(stream_to_string(0.5_deg), "0.5 °");
+    EXPECT_EQ(stream_to_string(-60_rpm), "-360 deg/s");
+    EXPECT_EQ(stream_to_string(60_rpm_s), "360 deg/s²");
+    EXPECT_EQ(stream_to_string(60_rpm_s2), "360 deg/s3");
+    EXPECT_DOUBLE_EQ((1_bar).get<PressureUnits::bar>(), 1.0);
+    EXPECT_DOUBLE_EQ((2_kWh).get<EnergyUnits::kWh>(), 2.0);
+    EXPECT_DOUBLE_EQ((60_rpm).get<AngularVelocityUnits::rpm>(), 60.0);
+}
+
+TEST(UnitsTests, AutomaticFormattingHonorsDisabledBaseUnitsForZeroAndNonFiniteValues)
+{
+    EXPECT_EQ(stream_to_string(0_bar), "0 Pa");
+    EXPECT_EQ(stream_to_string(0_rad), "0 °");
+    EXPECT_EQ(stream_to_string(0_rad_s), "0 deg/s");
+    EXPECT_EQ(stream_to_string(0_rad_s2), "0 deg/s²");
+    EXPECT_EQ(stream_to_string(0_rad_s3), "0 deg/s3");
+    const auto infinity{ std::numeric_limits<double>::infinity() };
+    const auto nan{ std::numeric_limits<double>::quiet_NaN() };
+    EXPECT_EQ(stream_to_string(Angle::create(infinity)), "inf °");
+    EXPECT_EQ(stream_to_string(AngularVelocity::create(-infinity)), "-inf deg/s");
+    EXPECT_TRUE(stream_to_string(Pressure::create(nan)).ends_with(" Pa"));
+    EXPECT_TRUE(stream_to_string(Angle::create(nan)).ends_with(" °"));
+}
+
 TEST(UnitsTests, StreamInsertionUsesCorrectSuffixWhenUnitOrderDiffersFromScaleOrder)
 {
-    EXPECT_EQ(stream_to_string(0.5_m_s), "1.8 km/h");
+    EXPECT_EQ(stream_to_string(0.5_m_s), "500 mm/s");
     EXPECT_EQ(stream_to_string(0.5_m_s2), "500 mm/s²");
 }
 
@@ -498,8 +1395,8 @@ TEST(UnitsTests, DistanceLiteralsSubtraction)
 
 TEST(UnitsTests, ByteSizeLiteralsAdditionAssignment)
 {
-    auto size = 50.0_KB;
-    size += 10.0_KB;
+    auto size = 50.0_KiB;
+    size += 10.0_KiB;
 
     EXPECT_DOUBLE_EQ(size.get(), 61440.0);
 }
@@ -930,41 +1827,41 @@ TEST(UnitsTests, FrequencyTimesTimeProducesScalar)
 
 TEST(UnitsTests, ByteSizeDividedByTimeProducesDataRate)
 {
-    const auto size = 90.0_MB;
+    const auto size = 90.0_MiB;
     const auto duration = 30.0_s;
     const auto rate = size / duration;
 
     static_assert(std::is_same_v<std::remove_cvref_t<decltype(rate)>, DataRate>);
-    EXPECT_DOUBLE_EQ(rate.get<DataRateUnits::MB_s>(), 3.0);
+    EXPECT_DOUBLE_EQ(rate.get<DataRateUnits::MiB_s>(), 3.0);
     EXPECT_DOUBLE_EQ(rate.get<DataRateUnits::bytes_s>(), 3145728.0);
 }
 
 TEST(UnitsTests, DataRateTimesTimeProducesByteSize)
 {
-    const auto rate = 25.0_MB_s;
+    const auto rate = 25.0_MiB_s;
     const auto duration = 4.0_s;
     const auto size = rate * duration;
 
     static_assert(std::is_same_v<std::remove_cvref_t<decltype(size)>, ByteSize>);
     EXPECT_EQ(size.get<ByteSizeUnits::bytes>(), static_cast<size_t>(104857600));
-    EXPECT_DOUBLE_EQ(size.get<ByteSizeUnits::MB>(), 100.0);
+    EXPECT_DOUBLE_EQ(size.get<ByteSizeUnits::MiB>(), 100.0);
 }
 
 TEST(UnitsTests, TimeTimesDataRateProducesByteSize)
 {
     const auto duration = 2.0_s;
-    const auto rate = 8.0_MB_s;
+    const auto rate = 8.0_MiB_s;
     const auto size = duration * rate;
 
     static_assert(std::is_same_v<std::remove_cvref_t<decltype(size)>, ByteSize>);
     EXPECT_EQ(size.get<ByteSizeUnits::bytes>(), static_cast<size_t>(16777216));
-    EXPECT_DOUBLE_EQ(size.get<ByteSizeUnits::MB>(), 16.0);
+    EXPECT_DOUBLE_EQ(size.get<ByteSizeUnits::MiB>(), 16.0);
 }
 
 TEST(UnitsTests, ByteSizeDividedByDataRateProducesTime)
 {
-    const auto size = 300.0_MB;
-    const auto rate = 50.0_MB_s;
+    const auto size = 300.0_MiB;
+    const auto rate = 50.0_MiB_s;
     const auto duration = size / rate;
 
     static_assert(std::is_same_v<std::remove_cvref_t<decltype(duration)>, Time>);
@@ -976,24 +1873,24 @@ TEST(UnitsTests, ChronoDurationsParticipateInTimeBasedQuantityRelations)
     const auto speed = 100.0_m / 4s;
     const auto acceleration = 20.0_m_s / 4s;
     const auto power = 100.0_J / 2s;
-    const auto rate = 8.0_MB / 2s;
+    const auto rate = 8.0_MiB / 2s;
     const auto distance_from_right = 10.0_m_s * 2500ms;
     const auto distance_from_left = 2500ms * 10.0_m_s;
     const auto velocity = 2.0_m_s2 * 1500ms;
     const auto energy = 250ms * 100.0_W;
-    const auto size = 1.5s * 2.0_MB_s;
+    const auto size = 1.5s * 2.0_MiB_s;
     const auto cycles_from_right = 2s * 0.5_Hz;
     const auto cycles_from_left = 0.5_Hz * 2s;
 
     EXPECT_DOUBLE_EQ(speed.get<VelocityUnits::m_s>(), 25.0);
     EXPECT_DOUBLE_EQ(acceleration.get<AccelerationUnits::m_s2>(), 5.0);
     EXPECT_DOUBLE_EQ(power.get<PowerUnits::W>(), 50.0);
-    EXPECT_DOUBLE_EQ(rate.get<DataRateUnits::MB_s>(), 4.0);
+    EXPECT_DOUBLE_EQ(rate.get<DataRateUnits::MiB_s>(), 4.0);
     EXPECT_DOUBLE_EQ(distance_from_right.get<DistanceUnits::m>(), 25.0);
     EXPECT_DOUBLE_EQ(distance_from_left.get<DistanceUnits::m>(), 25.0);
     EXPECT_DOUBLE_EQ(velocity.get<VelocityUnits::m_s>(), 3.0);
     EXPECT_DOUBLE_EQ(energy.get<EnergyUnits::J>(), 25.0);
-    EXPECT_DOUBLE_EQ(size.get<ByteSizeUnits::MB>(), 3.0);
+    EXPECT_DOUBLE_EQ(size.get<ByteSizeUnits::MiB>(), 3.0);
     EXPECT_DOUBLE_EQ(cycles_from_right, 1.0);
     EXPECT_DOUBLE_EQ(cycles_from_left, 1.0);
 }
@@ -1196,6 +2093,16 @@ TEST(UnitsTests, RpmConversionsUseRadiansPerSecondAsBase)
     EXPECT_DOUBLE_EQ(60_rpm / 30_rpm, 2.0);
 }
 
+TEST(UnitsTests, DegreesPerSecondSupportsLiteralAndEnumCreation)
+{
+    EXPECT_DOUBLE_EQ((180_deg_s).get(), std::numbers::pi);
+    EXPECT_NEAR((6_deg_s).get<AngularVelocityUnits::rpm>(), 1.0, 1e-12);
+    const auto velocity{ AngularVelocity::create(90.0, Units::deg_s) };
+    ASSERT_TRUE(velocity.has_value());
+    EXPECT_NEAR(velocity->get(), std::numbers::pi / 2.0, 1e-12);
+    EXPECT_DOUBLE_EQ((1_deg_s * 2_s).get<AngleUnits::deg>(), 2.0);
+}
+
 TEST(UnitsTests, AngleDividedByTimeProducesAngularVelocity)
 {
     static_assert(std::is_same_v<decltype(1_rev / 2_s), AngularVelocity>);
@@ -1233,10 +2140,10 @@ TEST(UnitsTests, RatioAndRotationalUnitsUseAutomaticStreamUnitSelection)
     EXPECT_EQ(stream_to_string(50_percent), "50 %");
     EXPECT_EQ(stream_to_string(100_percent), "1");
     EXPECT_EQ(stream_to_string(0_percent), "0");
-    EXPECT_EQ(stream_to_string(360_deg), "1 rev");
-    EXPECT_EQ(stream_to_string(1_rpm), "1 rpm");
-    EXPECT_EQ(stream_to_string(1_rad_s), "1 rad/s");
-    EXPECT_EQ(stream_to_string(0_rpm), "0 rad/s");
+    EXPECT_EQ(stream_to_string(360_deg), "360 °");
+    EXPECT_EQ(stream_to_string(1_rpm), "6 deg/s");
+    EXPECT_EQ(stream_to_string(1_rad_s), "57.2958 deg/s");
+    EXPECT_EQ(stream_to_string(0_rpm), "0 deg/s");
 }
 
 TEST(UnitsTests, MotionDynamics)
@@ -1251,4 +2158,18 @@ TEST(UnitsTests, MotionDynamics)
     EXPECT_NEAR((180_deg_s3).get<AngularJerkUnits::rad_s3>(), std::numbers::pi, 1e-12);
     EXPECT_NEAR((1000_mm_s3).get<JerkUnits::m_s3>(), 1.0, 1e-12);
     EXPECT_NEAR((90_deg_s2 * 2_s).get<AngularVelocityUnits::rpm>(), 30.0, 1e-12);
+}
+
+TEST(UnitsTests, MotorDerivativesAndTransmissionLead)
+{
+    using namespace pnm::units;
+    EXPECT_DOUBLE_EQ((60_rpm_s).get<AngularAccelerationUnits::rad_s2>(), 2 * std::numbers::pi);
+    EXPECT_DOUBLE_EQ((60_rpm_s2).get<AngularJerkUnits::rad_s3>(), 2 * std::numbers::pi);
+    EXPECT_DOUBLE_EQ((1_mm_rev).get<TransmissionLeadUnits::m_rad>(), .001 / (2 * std::numbers::pi));
+    static_assert(std::is_same_v<decltype(1_Hz / 1_s), FrequencyRate>);
+    static_assert(std::is_same_v<decltype(1_Hz_s / 1_s), FrequencyAcceleration>);
+    static_assert(std::is_same_v<UnitTraits<Units::rpm_s>::Quantity, AngularAcceleration>);
+    static_assert(std::is_same_v<UnitTraits<Units::mm_rev>::Quantity, TransmissionLead>);
+    EXPECT_EQ(AngularAcceleration::suffix<AngularAccelerationUnits::rpm_s>(), "rpm/s");
+    EXPECT_EQ(AngularJerk::suffix<AngularJerkUnits::rpm_s2>(), "rpm/s²");
 }

@@ -318,7 +318,9 @@ TEST(CoroutinesChannelTests, DirectWaitDrainsAndCancelsWithoutConsumingBufferedV
         EXPECT_FALSE(co_await channel.wait(stop.get_token()));
         auto value = co_await channel.wait();
         EXPECT_TRUE(value && *value);
-        if (value && *value) { EXPECT_EQ(**value, 42); }
+        if (value && *value) {
+            EXPECT_EQ(**value, 42);
+        }
         EXPECT_FALSE(co_await channel.wait());
     });
 }
@@ -361,7 +363,10 @@ TEST(CoroutinesChannelTests, DirectWaitSchedulesCrossThreadDeliveryOnItsContext)
         resumed = std::this_thread::get_id();
         context.stop();
     });
-    std::jthread producer([&] { waiting.wait(); channel.push(23); });
+    std::jthread producer([&] {
+        waiting.wait();
+        channel.push(23);
+    });
     context.run();
     EXPECT_EQ(resumed, std::this_thread::get_id());
 }
@@ -581,6 +586,60 @@ TEST(CoroutinesContextTests, AbandonedAndRejectedSpawnsReleaseTheirCaptures)
     }),
                  std::runtime_error);
     EXPECT_EQ(token.use_count(), 1);
+}
+
+TEST(CoroutinesContextTests, DestructionAllowsReentryWithoutDispatchingAbandonedWork)
+{
+    struct PollOnDestruction
+    {
+        pnm::coro::Context* context;
+        int* destroyed;
+        ~PollOnDestruction()
+        {
+            EXPECT_EQ(context->poll(), 0);
+            context->stop(); // This also checks that destruction is outside the queue lock.
+            ++*destroyed;
+        }
+    };
+    auto context{ std::make_unique<pnm::coro::Context>() };
+    int destroyed{};
+    int ran{};
+    for (int index{}; index < 2; ++index) {
+        pnm::coro::co_spawn(*context,
+                            [guard{ std::make_unique<PollOnDestruction>(context.get(), &destroyed) },
+                             &ran](auto&) -> pnm::coro::Task<void> {
+            static_cast<void>(guard);
+            ++ran;
+            co_return;
+        });
+    }
+    context.reset();
+    EXPECT_EQ(destroyed, 2);
+    EXPECT_EQ(ran, 0);
+}
+
+TEST(CoroutinesContextTests, AbandonedQueuedContinuationReportsAnError)
+{
+    auto context{ std::make_unique<pnm::coro::Context>() };
+    pnm::coro::Channel<int> channel;
+    bool failed{};
+    auto body{ [&]() -> pnm::coro::Task<void> {
+        try {
+            co_await channel.next();
+            ADD_FAILURE();
+        } catch (const std::runtime_error&) {
+            failed = true;
+        }
+    } };
+    auto task{ body() };
+    task.getHandle().promise().scheduler = context->getScheduler();
+    task.resume();
+    channel.push(1);
+    EXPECT_FALSE(task.await_ready());
+    context.reset();
+    EXPECT_TRUE(task.await_ready());
+    EXPECT_NO_THROW(task.await_resume());
+    EXPECT_TRUE(failed);
 }
 
 TEST(CoroutinesContextTests, DetachedFramesAreOwnedUntilScheduled)
@@ -898,6 +957,28 @@ TEST(CoroutinesContextTests, TimerCancellationReleasesQueuedCallback)
     context.stop();
     EXPECT_THROW(static_cast<void>(context.scheduleAt(std::chrono::steady_clock::now(), [] {})),
                  std::runtime_error);
+}
+
+TEST(CoroutinesContextTests, TimerCaptureDestructionCanReenterTheContext)
+{
+    struct Capture
+    {
+        pnm::coro::Context* context;
+        bool* destroyed;
+        ~Capture()
+        {
+            EXPECT_EQ(context->poll(), 0);
+            context->stop();
+            *destroyed = true;
+        }
+    };
+    bool destroyed{};
+    auto context{ std::make_unique<pnm::coro::Context>() };
+    auto capture{ std::make_shared<Capture>(context.get(), &destroyed) };
+    auto timer{ context->scheduleAt(std::chrono::steady_clock::now() + 1h, [capture] {}) };
+    capture.reset();
+    context.reset();
+    EXPECT_TRUE(destroyed);
 }
 
 TEST(CoroutinesChannelTests, CancellationRemovesOnlyItsOwnWaiter)

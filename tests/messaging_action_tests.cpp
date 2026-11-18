@@ -1286,32 +1286,49 @@ TEST(MessagingActionTests, MoveOnlyPayloadsCanBeDecodedAndTheResultTransferred)
 TEST(MessagingAction, TypedRejectionIsTerminalWithoutAcceptance)
 {
     pnm::msg::Bus bus;
-    auto action=bus.action<int,int,int>("typed-rejection");
-    auto server=action.serveDeferred([](int,auto execution){
+    auto action = bus.action<int, int, int>("typed-rejection");
+    auto server = action.serveDeferred([](int, auto execution) {
         EXPECT_TRUE(execution.reject(42));
         EXPECT_FALSE(execution.accept());
         EXPECT_FALSE(execution.cancelled(9));
     });
-    bool accepted{},completed{};
-    auto goal=action.sendGoal(1,{std::chrono::seconds(1)},{
-        .on_accepted=[&]{accepted=true;},
-        .on_result=[&](auto result){ASSERT_TRUE(result);EXPECT_EQ(result->status,pnm::msg::ActionStatus::Rejected);EXPECT_EQ(result->value,42);completed=true;}
-    });
-    server.poll();goal.poll();EXPECT_FALSE(accepted);EXPECT_TRUE(completed);
+    bool accepted{}, completed{};
+    auto goal = action.sendGoal(1, { std::chrono::seconds(1) }, { .on_accepted = [&] {
+        accepted = true;
+    }, .on_result = [&](auto result) {
+        ASSERT_TRUE(result);
+        EXPECT_EQ(result->status, pnm::msg::ActionStatus::Rejected);
+        EXPECT_EQ(result->value, 42);
+        completed = true;
+    } });
+    server.poll();
+    goal.poll();
+    EXPECT_FALSE(accepted);
+    EXPECT_TRUE(completed);
 }
 
 TEST(MessagingAction, TypedRejectionCannotReplaceAcceptedWork)
 {
-    pnm::msg::Bus bus;auto action=bus.action<int,int,int>("accepted-rejection");
-    auto server=action.serveDeferred([](int,auto execution){
-        EXPECT_TRUE(execution.accept());EXPECT_FALSE(execution.reject(42));EXPECT_TRUE(execution.succeed(7));
+    pnm::msg::Bus bus;
+    auto action = bus.action<int, int, int>("accepted-rejection");
+    auto server = action.serveDeferred([](int, auto execution) {
+        EXPECT_TRUE(execution.accept());
+        EXPECT_FALSE(execution.reject(42));
+        EXPECT_TRUE(execution.succeed(7));
     });
-    bool accepted{},completed{};
-    auto goal=action.sendGoal(1,{std::chrono::seconds(1)},{
-        .on_accepted=[&]{accepted=true;},
-        .on_result=[&](auto result){ASSERT_TRUE(result);EXPECT_EQ(result->status,pnm::msg::ActionStatus::Succeeded);EXPECT_EQ(result->value,7);completed=true;}
-    });
-    server.poll();goal.poll();EXPECT_TRUE(accepted);EXPECT_TRUE(completed);
+    bool accepted{}, completed{};
+    auto goal = action.sendGoal(1, { std::chrono::seconds(1) }, { .on_accepted = [&] {
+        accepted = true;
+    }, .on_result = [&](auto result) {
+        ASSERT_TRUE(result);
+        EXPECT_EQ(result->status, pnm::msg::ActionStatus::Succeeded);
+        EXPECT_EQ(result->value, 7);
+        completed = true;
+    } });
+    server.poll();
+    goal.poll();
+    EXPECT_TRUE(accepted);
+    EXPECT_TRUE(completed);
 }
 
 TEST(MessagingActionTests, ReflectedCatalogResolvesTypesAndOptionalNames)
@@ -1326,16 +1343,16 @@ TEST(MessagingActionTests, ReflectedCatalogResolvesTypesAndOptionalNames)
     pnm::msg::Bus bus;
     auto provider = bus.action<^^Actions::motor_move>().serveDeferred(
       [](int value, pnm::msg::ActionExecution<std::string, double> execution) {
-          execution.accept();
-          execution.feedback("progress");
-          execution.succeed(value / 2.0);
-      });
+        execution.accept();
+        execution.feedback("progress");
+        execution.succeed(value / 2.0);
+    });
     std::string feedback;
     std::optional<pnm::msg::ActionResult<double>> result;
-    auto goal = bus.action<^^Actions::alias>().sendGoal(7, OPTIONS, {
-      .on_feedback = [&](const std::string& value) { feedback = value; },
-      .on_result = [&](pnm::msg::ActionResult<double> value) { result.emplace(std::move(value)); }
-    });
+    auto goal =
+      bus.action<^^Actions::alias>().sendGoal(7, OPTIONS, { .on_feedback = [&](const std::string& value) {
+        feedback = value;
+    }, .on_result = [&](pnm::msg::ActionResult<double> value) { result.emplace(std::move(value)); } });
     EXPECT_EQ(provider.poll(), 1UZ);
     ASSERT_TRUE(goal.poll());
     EXPECT_EQ(feedback, "progress");

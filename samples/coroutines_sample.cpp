@@ -32,9 +32,7 @@ int main()
     pnm::coro::Channel<int> channel;
 
     // Spawned callables stay alive until their coroutine finishes.
-    pnm::coro::co_spawn(context, [&](pnm::coro::Context& executor) {
-        return consume(executor, channel);
-    });
+    pnm::coro::co_spawn(context, [&](pnm::coro::Context& executor) { return consume(executor, channel); });
     pnm::coro::co_spawn(context, [&](pnm::coro::Context&) { return produce(channel); });
 
     // The consumer stops the event loop after the producer closes the channel.
