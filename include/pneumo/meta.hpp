@@ -41,6 +41,12 @@
 
 namespace pnm::meta
 {
+    // The default argument captures the caller rather than this helper.
+    consteval auto function_name(std::meta::info function = std::meta::current_function()) -> std::string_view
+    {
+        return std::meta::identifier_of(function);
+    }
+
     enum class Loop : uint8_t
     {
         Continue,
@@ -1503,7 +1509,7 @@ namespace pnm::meta
         }
 
         template<Class T, Iteration Dir = Iteration::Forward, typename Fn>
-            requires ForEachFieldFn<Fn, T>
+            requires ForEachMethodFn<Fn, T>
         constexpr auto for_each_method(Fn&& fn) -> void
         {
             auto&& callable = std::forward<Fn>(fn);
