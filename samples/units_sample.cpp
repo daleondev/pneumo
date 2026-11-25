@@ -7,23 +7,49 @@
 
 namespace
 {
+    auto print_ucum_code_example() -> void
+    {
+        using namespace pnm::units;
+
+        std::cout << "UCUM expressions\n";
+        std::cout << "  kilometre: " << DistanceUnits::km::UCUM_CODE << '\n';
+        std::cout << "  micrometre: " << DistanceUnits::um::UCUM_CODE
+                  << " (display: " << DistanceUnits::um::SUFFIX << ")\n";
+        if (const auto code{ ucumCode(Units::KiB) }) {
+            std::cout << "  kibibyte: " << *code << '\n';
+        }
+        if (const auto distance{ Distance::create(2.5, "km") }) {
+            std::cout << "  2.5 km in metres: " << distance->get() << '\n';
+            std::cout << "  in kilometres (enum): " << distance->get(Units::km).value() << '\n';
+            std::cout << "  in centimetres (UCUM): " << distance->get("cm").value() << '\n';
+        }
+        std::cout << "  distance accepts s: " << Distance::create(1.0, "s").has_value() << '\n';
+        std::cout << "  jerk code: " << ucumCode(Units::m_s3).value() << '\n';
+        if (const auto acceleration{ AngularAcceleration::create(60.0, "circ/(min.s)") }) {
+            std::cout << "  60 rpm/s in rad/s2: " << acceleration->get() << "\n\n";
+        }
+    }
+
     auto print_storage_example() -> void
     {
         using namespace pnm::units::literals;
 
-        const auto footage_size = 3.5_GB;
+        const auto footage_size = 3.5_GiB;
 
         std::cout << "4K drone footage\n";
-        std::cout << "  size: " << footage_size.get<pnm::units::ByteSizeUnits::GB>() << " GB\n";
-        std::cout << "  size: " << footage_size.get<pnm::units::ByteSizeUnits::MB>() << " MB\n";
-        std::cout << "  size: " << footage_size.get<pnm::units::ByteSizeUnits::bytes>() << " bytes\n\n";
+        std::cout << "  size: " << footage_size.get<pnm::units::ByteSizeUnits::GiB>() << " GiB\n";
+        std::cout << "  size: " << footage_size.get<pnm::units::ByteSizeUnits::MiB>() << " MiB\n";
+        std::cout << "  size: " << footage_size.get<pnm::units::ByteSizeUnits::bytes>() << " bytes\n";
+        std::cout << "  size (decimal): " << footage_size.get<pnm::units::ByteSizeUnits::GB>() << " GB\n";
+        const auto transfer_rate = 100_MB_s;
+        std::cout << "  transfer: " << transfer_rate << "; time: " << footage_size / transfer_rate << "\n\n";
     }
 
     auto print_trip_example() -> void
     {
         using namespace pnm::units::literals;
 
-        const auto trip_distance = 42.0_km;
+        const auto trip_distance = *pnm::units::Distance::create(42.0, pnm::units::Units::km);
         const auto trip_time = 35min;
         const auto average_speed = trip_distance / trip_time;
         const auto remaining_distance = 18.0_km;
@@ -119,7 +145,7 @@ namespace
         using namespace pnm::units::literals;
 
         const auto temperature = 50.2_C;
-        const auto distance = 24.43_us;
+        const auto distance{ 24.43_um };
         const auto acceleration = 5_mm_s2;
 
         std::cout << "Variety\n";
@@ -131,6 +157,7 @@ namespace
 
 auto main() -> int
 {
+    print_ucum_code_example();
     print_storage_example();
     print_trip_example();
     print_acceleration_example();

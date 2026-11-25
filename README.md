@@ -69,7 +69,35 @@ The meta module provides:
 *   **Type utilities:** Type and namespace name discovery.
 *   **Enum reflection:** Scoped-enum counting, names, enumerators, and underlying values.
 *   **Structural reflection:** Public fields, nested types, methods, getter discovery, indexed invocation, and name-based static dispatch.
+*   **Annotations:** Separate type, field, and method annotation retrieval and iteration, including reverse iteration and early stopping.
 *   **Source access:** Embed translation units, lazily load source files, cache them safely, and render numbered excerpts.
+
+Annotation queries return spans of compile-time reflections with persistent storage. Field and method queries stay separate: `field_annotations<Index, T>()` and `method_annotations<Index, T>()` inspect one member, while `fields_annotations<T>()` and `methods_annotations<T>()` return arrays indexed like `field_names<T>()` and `method_names<T>()`. Empty members produce empty spans; a class without fields or methods produces an empty array. Structural queries cover public non-static fields and the same public method candidates as the existing method API. `type::annotations<T>()` queries the underlying type after removing cv/ref qualifiers and aliases; it does not retrieve annotations attached to an alias declaration or inherited from a base class.
+
+```cpp
+struct [[= 10]] Endpoint
+{
+    [[= 20]] int value{};
+    [[= 30, = 40]] void send() {}
+};
+
+constexpr auto type_annotations{ pnm::meta::type::annotations<Endpoint>() };
+constexpr auto field_annotations{ pnm::meta::structural::field_annotations<0, Endpoint>() };
+constexpr auto method_annotations{ pnm::meta::structural::methods_annotations<Endpoint>() };
+static_assert(std::meta::extract<int>(type_annotations[0]) == 10);
+static_assert(std::meta::extract<int>(field_annotations[0]) == 20);
+static_assert(method_annotations[0].size() == 2);
+
+auto print_annotation{ [](auto annotation) {
+    constexpr auto value{ std::meta::extract<int>(annotation) };
+    std::cout << value << '\n';
+} };
+pnm::meta::type::for_each_annotation<Endpoint>(print_annotation);                  // 10
+pnm::meta::structural::for_each_field_annotation<0, Endpoint>(print_annotation);  // 20
+pnm::meta::structural::for_each_method_annotation<0, Endpoint>(print_annotation); // 30, 40
+```
+
+Each loop passes an empty compile-time annotation handle to a generic callback (`[](auto annotation)`). The handle implicitly converts to `std::meta::info` during constant evaluation, allowing the callback to inspect the annotation and extract heterogeneous values. Keeping the declaration and annotation index in the handle type avoids GCC 16.2 annotation-template mangling failures when callbacks are reused. Bind extracted values to `constexpr` locals before using them in runtime code. Callbacks return `void` or `pnm::meta::Loop::{Continue,Break}`; the optional `Iteration::Reverse` template argument reverses traversal. Empty annotation lists do not invoke or instantiate the callback. Iteration preserves duplicate annotations and the ordering returned by [C++26 annotation reflection](https://eel.is/c++draft/meta.reflection.annotation), and works at runtime or during constant evaluation. `structural::Info<T>` also exposes `ANNOTATIONS`, `FIELD_ANNOTATIONS`, and `METHOD_ANNOTATIONS`, with `numAnnotations()` counting annotations on the type itself.
 
 ### `pneumo::formatting`
 
@@ -113,6 +141,83 @@ The current built-in quantity types are:
 *   `AngularJerk`
 *   `Ratio`
 *   `Unitless`
+
+`pnm::units::Units` is a scoped enum of all built-in unit identifiers, such as `Units::nm`, `Units::m2`, `Units::rpm`, and `Units::s`. It is generated from the same unit lists as the quantity types and literals.
+
+Every built-in unit has a case-sensitive [UCUM 2.2](https://ucum.org/ucum) expression, exposed through `Unit::UCUM_CODE` and `ucumCode(Units)`. Quantities accept the same expressions when constructing values:
+
+```cpp
+using namespace pnm::units;
+
+static_assert(DistanceUnits::km::UCUM_CODE == "km");
+constexpr auto code{ ucumCode(Units::km) };             // optional<string_view>{"km"}
+constexpr auto distance{ Distance::create(2.5, "km") }; // optional<Distance>, 2500 m
+constexpr auto kilometres{ distance->get(Units::km) }; // optional<double>{2.5}
+constexpr auto centimetres{ distance->get("cm") };    // optional<double>{250000.0}
+constexpr auto invalid{ Distance::create(2.5, "s") };   // nullopt: wrong quantity
+constexpr auto jerk{ Jerk::create(2.0, "m/s3") };
+constexpr auto speed{ AngularVelocity::create(60.0, "circ/min") }; // 60 rpm
+```
+
+All 101 registered units have UCUM expressions, including compound units. `ucumCode()` returns `std::nullopt` only for invalid enum values; successful lookups return views into static storage. There are no generated identifiers, hashes, or code-system wrappers. When exchanging these strings, identify the coding system as UCUM in the surrounding schema or protocol; do not use enum ordinals as stable wire identifiers.
+
+The string constructor performs exact, case-sensitive lookup within the quantity. Empty strings, unregistered expressions, and codes belonging to other quantities return `std::nullopt`. Both `Ratio::create(1.0, "1")` and `Unitless::create(1.0, "1")` are valid. Other registered strings such as `"%"` still respect the quantity boundary.
+
+`quantity.get(Units::km)` and `quantity.get("km")` return `std::optional<double>` containing the value converted to the selected unit. They use the same quantity checks and exact UCUM lookup as runtime `create()`, returning `std::nullopt` for invalid or foreign units. Both work on const quantities and in constant expressions, support units with `AUTO_FORMAT=false`, and leave the quantity unchanged. Temperature conversions divide by the factor before subtracting the offset, matching `get<Unit>()`.
+
+This follows UCUM's limited-conformance approach: it recognizes a fixed set of expressions and does not parse or normalize arbitrary expressions. For example, `Acceleration::create(1.0, "m/s2")` succeeds, while the equivalent but unregistered `"m.s-2"` returns `nullopt`. The selected expressions were verified against UCUM 2.2 (2024-06-17) on 2026-11-17. Display suffixes retain their existing typography and are independent of the ASCII UCUM strings.
+
+| Unit | UCUM expression | Display suffix |
+|---|---|---|
+| `C` | `Cel` | °C |
+| `F` | `[degF]` | °F |
+| `um` | `um` | µm |
+| `m_s2` | `m/s2` | m/s² |
+| `rev` | `circ` | rev |
+| `rpm` | `circ/min` | rpm |
+| `rpm_s` | `circ/(min.s)` | rpm/s |
+| `rpm_s2` | `circ/(min.s2)` | rpm/s² |
+| `mm_rev` | `mm/circ` | mm/rev |
+| `Hz_s2` | `Hz/s2` | Hz/s² |
+
+**Code migration:** `COMMON_CODE` and `commonCode()` are replaced by `UCUM_CODE` and `ucumCode()`. `UnitCode`, `UnitCodeSystem`, `unitCode()`, and `internalCode()` are removed. Previously stored UNECE or generated internal strings must be migrated to UCUM; they are no longer accepted by `create(value, code)`. Typed construction, enum construction, factors, offsets, and formatting keep their existing behavior.
+
+**Byte-size migration:** former `KB`, `MB`, `GB` and their `_s` variants used powers of 1024. Replace existing binary usages and literals with `KiB`, `MiB`, `GiB`, `KiB_s`, `MiB_s`, `GiB_s` to preserve values. The reused `KB`, `MB`, `GB` names now mean powers of 1000. This is a source-level semantic change; there are no misleading compatibility aliases.
+
+| C++ identifier / literal | Scale in bytes (or bytes/s) | Symbol | UCUM expression |
+|---|---:|---|---|
+| `KB`, `_KB` | 1,000 | kB | `kBy` |
+| `MB`, `_MB` | 1,000,000 | MB | `MBy` |
+| `GB`, `_GB` | 1,000,000,000 | GB | `GBy` |
+| `KiB`, `_KiB` | 1,024 | KiB | `KiBy` |
+| `MiB`, `_MiB` | 1,048,576 | MiB | `MiBy` |
+| `GiB`, `_GiB` | 1,073,741,824 | GiB | `GiBy` |
+| `KB_s`, `_KB_s` | 1,000 | kB/s | `kBy/s` |
+| `MB_s`, `_MB_s` | 1,000,000 | MB/s | `MBy/s` |
+| `GB_s`, `_GB_s` | 1,000,000,000 | GB/s | `GBy/s` |
+| `KiB_s`, `_KiB_s` | 1,024 | KiB/s | `KiBy/s` |
+| `MiB_s`, `_MiB_s` | 1,048,576 | MiB/s | `MiBy/s` |
+| `GiB_s`, `_GiB_s` | 1,073,741,824 | GiB/s | `GiBy/s` |
+
+Automatic byte-size formatting uses IEC prefixes; data-rate formatting uses decimal SI prefixes. Energy uses joules and their prefixes, pressure uses pascals and their prefixes, and linear motion uses metres/second and millimetres/second (including derivatives). Angles use degrees, and angular velocity, acceleration, and jerk use degrees per second, second squared, and second cubed. For example, `2_kWh` prints `7.2 MJ`, `1_bar` prints `100 kPa`, and `60_rpm` prints `360 deg/s`. Transmission lead retains its existing `m/rad` and `mm/rev` units.
+
+Explicit `get<Unit>()`, `create<Unit>()` and `suffix<Unit>()` support every registered unit regardless of its formatting flag and reject units belonging to other quantities at compile time. For example, `1_KiB_s` formats as `1.024 kB/s` without changing its value. `Unit::AUTO_FORMAT` controls eligibility for automatic selection independently of conversions. Zero and non-finite values use the base unit when enabled, otherwise the smallest enabled zero-offset unit.
+
+Unit types remain aliases. The declaration order is `Unit<Name, Factor, Offset, UcumCode, Suffix, AutoFormat>`; everything after `Factor` is optional. Base units use `BaseUnit<Name, UcumCode, Suffix, AutoFormat>`, with everything after `Name` optional. The registry supplies `Name` automatically, so its declarations stay concise:
+
+```cpp
+X(ctx, ns, std::nano)
+XX(ctx, s)
+X(ctx, GB, std::giga, 0.0, "GBy", "GB", false)
+```
+
+`Unit` resolves both fields at compile time: `DistanceUnits::um::UCUM_CODE` is `"um"` and `DistanceUnits::um::SUFFIX` is `"µm"`. Both are `std::string_view`s into static storage, ready to use without a quantity. Explicit overrides take precedence, including empty suffixes; an explicit empty code disables string construction for that unit.
+
+Custom declarations pass the name explicitly: `using ns = Unit<"ns", std::nano>;` or `using s = BaseUnit<"s">;`. A unit cannot recover the name of an alias referring to it, so the supplied `Name` determines its defaults even if the alias has another name. The name also keeps otherwise identical units such as metres and seconds distinct.
+
+Inferred codes use `Name` verbatim. Inferred suffixes replace an initial `u` with `µ`, underscores with `/`, and a trailing `2` with `²`. Specify a code whenever the name is not the intended UCUM expression, for example `Unit<"KB", std::kilo, 0.0, "kBy", "kB">`. Custom expressions are the caller's responsibility and are not validated against the full UCUM grammar.
+
+Converting `Time` to an integer `std::chrono::duration` truncates fractional ticks toward zero and throws `std::out_of_range` if the result is not representable, including NaN and infinity. Floating-point chrono durations retain non-finite values. Quantities store `double`, so exact integer byte counts beyond its precision are not guaranteed. `Temperature` stores Celsius values and uses the same scalar arithmetic as other quantities; it does not distinguish absolute temperatures from temperature differences.
 
 The current built-in cross-quantity operations include:
 
@@ -616,8 +721,8 @@ Link `pneumo::coroutines` and include `<pneumo/coroutines.hpp>` to use the `pnm:
 *   `Task<T>` and `Task<void>` are lazy, move-only coroutine results with exception propagation.
 *   `Context` runs scheduled coroutine handles; `co_spawn(context, callable)` starts a task whose callable accepts the executor by reference.
 *   `co_spawn(context, std::move(task))` schedules an already-created, unstarted `Task<void>` and transfers ownership of its coroutine frame. A temporary task can be passed directly.
-*   `runAsync<T>(callable)` runs work on a detached thread and delivers its result or exception to the awaiting task.
-*   `sleep(duration)` uses a worker thread for positive durations; nonpositive durations complete immediately. Both sleep overloads round positive fractional clock ticks up, saturate oversized deadlines, and reject NaN durations.
+*   `runAsync<T>(callable)` runs work on stdexec’s shared parallel scheduler and delivers its result or exception to the awaiting task. `runAsync<T>(scheduler, callable)` selects an explicit execution resource.
+*   `sleep(duration)` occupies a worker of the shared parallel scheduler for positive durations; nonpositive durations complete immediately. Both sleep overloads round positive fractional clock ticks up, saturate oversized deadlines, and reject NaN durations.
 *   `sleep(context, duration, stop_token)` uses a context timer and returns `false` when cancelled. Oversized positive durations saturate to the clock's maximum deadline; NaN durations throw `std::invalid_argument`.
 *   `Context::poll(limit)` processes ready work without waiting, with a default limit of 64 callbacks or resumptions. Due timers and queued tasks alternate when both are ready, preserving deadline order and queue order respectively. `scheduleAt(deadline, callback)` returns a timer whose destruction cancels its queued callback.
 *   `Channel<T>` queues values for individual consumers. Closing a channel wakes waiting consumers and allows buffered values to drain before `next()` returns `std::nullopt`.
@@ -631,7 +736,7 @@ cmake --build --preset gcc-debug --target coroutines_sample coroutines_tests
 ctest --preset gcc-debug -R Coroutines --output-on-failure
 ```
 
-The larger [`samples/coroutines_pipeline_sample.cpp`](samples/coroutines_pipeline_sample.cpp) processes nine jobs with three workers. It demonstrates move-only jobs, application-level backpressure with channel permits, nested async calculations, timed retries, per-job error handling, and broadcast results consumed by independent dashboard and metrics observers. Acknowledgements ensure both observers receive every broadcast; a completion channel joins all seven pipeline tasks before stopping the context.
+The larger [`samples/coroutines_pipeline_sample.cpp`](samples/coroutines_pipeline_sample.cpp) processes nine jobs with three workers. It demonstrates move-only jobs, application-level backpressure with channel permits, nested async calculations, timed retries, per-job error handling, and broadcast results consumed by independent dashboard and metrics observers. Acknowledgements ensure both observers receive every broadcast. A fixed worker pool performs calculations, context timers handle delays, and `when_all` joins the tasks.
 
 ```bash
 cmake --build --preset gcc-debug --target coroutines_pipeline_sample
@@ -642,13 +747,156 @@ Job 3 deliberately fails once and retries; job 6 is rejected permanently. Comple
 
 Tasks have one consumer and one result: await an unstarted task, or start it with `Task::resume()` and retrieve its result after completion. Invalid operations on empty, running, or already-consumed tasks throw `std::logic_error`. Raw handles from `getHandle()` are borrowed; callers must manage their lifetime and synchronization. A separately owned task awaited by reference must outlive the await.
 
-`co_spawn` transfers ownership to the context, which releases queued, unstarted frames if destroyed. Nested tasks inherit the executor, so async work, timers, and channel waits resume on a thread running that context. Unbound tasks can resume on the worker or channel producer thread. Keep the context alive until spawned work finishes. `Context::stop()` rejects new scheduling and drains already queued work; it does not cancel outstanding operations. A rejected continuation resumes inline to propagate the scheduling exception to its awaiting task.
+`co_spawn` transfers ownership to the context, which releases queued, unstarted frames if destroyed. Nested tasks inherit the executor, so async work, timers, and channel waits resume on a thread running that context. Unbound tasks can resume on the worker or channel producer thread. Keep the context alive until spawned work finishes. `Context::stop()` rejects new scheduling and drains already queued work; it does not cancel outstanding operations. A rejected or abandoned continuation resumes inline to propagate the scheduling exception to its awaiting task.
 
 `co_spawn` is detached: an uncaught exception in its top-level coroutine terminates the process.
-Catch errors there when the application needs to report or recover from them. `runAsync` starts one
-worker thread per call; it does not provide a bounded worker pool.
+Catch errors there when the application needs to report or recover from them. Both `runAsync` overloads
+use stdexec; the default overload uses its shared parallel scheduler, and an explicit `ThreadPool`
+provides control over the worker count.
 
-For the built-in async, timer, and channel waits, destroying a suspended `Task` disconnects its continuation safely. Detached workers and thread-based sleeps still run to completion; destroying a context-backed sleep cancels its queued timer. Any objects borrowed by worker callables must remain alive until the workers finish. Channel reads retain their shared state even when the original channel wrapper is moved or destroyed. Custom executors must outlive scheduling calls; the default `scheduleOwned` transfers frames to `schedule`, whose accepted work must eventually run. Executors that can abandon queued work should override `scheduleOwned` to retain and release that ownership.
+For the built-in async, timer, and channel waits, destroying a suspended `Task` disconnects its continuation safely. Already-running blocking callables and worker-based sleeps still run to completion; destroying a context-backed sleep cancels its queued timer. Any objects borrowed by worker callables must remain alive until the workers finish. Channel reads retain their shared state even when the original channel wrapper is moved or destroyed. Custom executors must outlive scheduling calls; the default `scheduleOwned` transfers frames to `schedule`, whose accepted work must eventually run. Executors that can abandon queued work should override `scheduleOwned` to retain and release that ownership.
+
+#### Execution integration
+
+`pneumo::coroutines` requires the pinned
+[stdexec implementation](https://github.com/NVIDIA/stdexec/tree/00648922a30caa7872c6dae372018ee13a2b545f)
+of the C++26 execution library. CMake supplies this dependency automatically. It is header-only, including
+its parallel scheduler backend. `pnm::coro::execution` aliases `stdexec`; the C++26 algorithms used
+below are the portable subset. stdexec is the sole execution backend.
+
+Direct header consumers must supply the pinned stdexec include directory and define
+`STDEXEC_PARALLEL_SCHEDULER_HEADER_ONLY` consistently before including stdexec headers in every
+translation unit. Worker threads are created when an application constructs a `ThreadPool` or first
+uses the parallel scheduler, including starting a default `runAsync` task. Contexts and native
+messaging remain application-driven.
+
+Pneumo tasks can directly await senders. They retain their existing executor affinity:
+
+```cpp
+namespace ex = pnm::coro::execution;
+pnm::coro::Context context;
+pnm::coro::ThreadPool workers{ 2 }; // Keep alive until all pool operations finish.
+
+pnm::coro::co_spawn(context, [&](auto&) -> pnm::coro::Task<void> {
+    auto value{ co_await pnm::coro::runAsync<int>(workers.getExecutionScheduler(), [] { return 42; }) };
+    // This continuation runs on context's thread.
+    auto [first, second]{ co_await ex::when_all(ex::just(value), ex::just(7)) };
+    context.stop();
+});
+context.run();
+```
+
+The scheduler overload preserves the callable's ownership and exception behavior. Cancellation can
+prevent queued work from starting; a running blocking callable must cooperate through a captured
+stop token. `ThreadPool` requires a positive worker count and joins its workers on destruction.
+Its scheduler handles must not outlive it, and the pool must not be destroyed on one of its own workers.
+The default `runAsync(callable)` delegates to the same scheduler-based implementation using
+`ex::get_parallel_scheduler()`. It initializes that shared resource lazily when the task starts.
+Prefer `sleep(context, duration)` for delays that should not occupy a worker.
+
+`Context::getExecutionScheduler()` schedules sender work on the existing context queue, with the
+same polling limits and timer fairness. `IExecutor` provides a default adapter, so existing custom
+executors need no additional override. Scheduling failure is an error completion; cancellation is
+a stopped completion. Queued cancellation is checked during dispatch. Destroying a context reports
+errors for abandoned queued sender operations and task continuations. Keep a context alive and driven
+until its active work finishes; `stop()` still rejects new work and drains its queue without cancelling
+active operations.
+
+Awaiting a scheduling sender does not permanently switch a context-bound task to another thread.
+Put work inside `ex::on(scheduler, sender)` or use the scheduler-taking `runAsync` overload. This
+context scheduler can report errors, so it is not an [infallible scheduler](https://eel.is/c++draft/exec.sched) for the default standard
+`task_scheduler`. Run a foreign `ex::task` with an explicitly compatible scheduler, for example
+`co_await ex::starts_on(workers.getExecutionScheduler(), foreign_task())`.
+
+Sender values become `void`, a single owned value, or a tuple of owned values. Use `ex::into_variant`
+for alternative value signatures. Native coroutine awaitables use their own await protocol directly,
+including member/ADL `operator co_await`; their frame identity and reference results are preserved,
+without allocating a sender adapter. Error completions throw at `co_await`: exception pointers preserve
+their exception, error codes become `std::system_error`, and other error types retain their type.
+Stopped completion throws `pnm::coro::OperationStopped`, which can be caught. Perform asynchronous
+cleanup after leaving the catch block; C++ does not allow `co_await` inside a catch handler.
+`ex::unstoppable(sender)` permits sender-based cleanup after a stop request.
+
+Use `asSender(context, std::move(task))` to transfer an unstarted task into a lazy sender. Empty,
+started, or consumed tasks are rejected. Alternatively, provide a factory that receives a
+`std::stop_token` and returns a task. The adapter owns the factory and keeps its captures alive until
+the task finishes. Factories run on the selected context only after the sender starts:
+
+```cpp
+auto [first, second]{ co_await ex::when_all(
+    pnm::coro::asSender(context, [service](std::stop_token stop) {
+        return service.request(20, 1s, stop);
+    }),
+    pnm::coro::asSender(context, [service](std::stop_token stop) {
+        return service.request(21, 1s, stop);
+    })) };
+```
+
+Forward the factory's token to existing timer, channel, and messaging waits to make them cooperative.
+Inside nested tasks, `co_await ex::read_env(ex::get_stop_token)` retrieves the task's execution token.
+Existing waits keep their explicit-token behavior, so a cleanup timer with an empty token remains
+usable after cancellation. An uncaught `OperationStopped` becomes a stopped completion when crossing
+back through `asSender`; other exceptions become error completions. Detached `co_spawn` retains its
+termination policy for any uncaught exception, including `OperationStopped`.
+
+`ServiceResult` and `ActionResult` remain value completions, including domain failures and partial
+results. Action cancellation remains a request followed by provider cleanup and acknowledgment.
+`when_all` requests sibling cancellation after an execution error or stopped completion and waits
+for all children. A domain error stored in an expected result does not trigger that cancellation.
+
+For dynamic work, use the standard scope primitives directly:
+
+```cpp
+ex::counting_scope scope;
+std::exception_ptr child_error;
+ex::spawn(pnm::coro::asSender(context, factory)
+    | ex::upon_error([&](std::exception_ptr error) noexcept { child_error = error; }),
+    scope.get_token());
+scope.request_stop(); // Optional cooperative cancellation.
+scope.close();
+co_await scope.join();
+```
+
+`spawn` requires a sender with no remaining error completion: its error handler must also be
+`noexcept`. Use `spawn_future` when the caller needs the result. A [counting scope](https://eel.is/c++draft/exec.counting.scopes) must be joined
+before destruction; its destructor does not asynchronously join. Catch launch failures, then close
+and join any already-started work before propagating the failure.
+
+Destroying a suspended pneumo task disconnects its sender continuation and requests cancellation.
+Started operation states remain alive until terminal completion. This does not extend the lifetime
+of borrowed objects or scopes; their owners must keep them alive. In particular, a task containing
+an active counting scope must finish joining that scope before the task itself is destroyed.
+Receiver notification happens after adapted coroutine frames and factory captures have been released.
+
+Shut down by stopping admission, requesting cancellation where needed, joining operations and
+providers, then stopping the context and destroying execution resources. Do not call blocking
+`ex::sync_wait(asSender(context, ...))` on the only thread that could drive that context.
+
+[`samples/coroutines_execution_sample.cpp`](samples/coroutines_execution_sample.cpp) demonstrates
+concurrent service calls, a counting scope, cancellation cleanup, and explicit child error handling:
+
+```bash
+cmake --build --preset gcc-debug --target coroutines_execution_sample coroutines_execution_tests
+./build/gcc-debug/samples/coroutines_execution_sample
+ctest --preset gcc-debug -R CoroutinesExecution --output-on-failure
+```
+
+An optional `coroutines_execution_benchmark` target compares shared parallel-scheduler calls, fixed-pool
+calls, and composed pool operations. It reports elapsed time and ordinary `operator new` calls
+(aligned allocations are excluded), including the ownership overhead needed for safe task destruction.
+Build it in Release mode for useful comparisons; no speedup is assumed.
+
+```bash
+cmake --build --preset gcc-release --target coroutines_execution_benchmark
+./build/gcc-release/tests/coroutines_execution_benchmark
+```
+
+The shared parallel scheduler chooses its worker count; an explicit `ThreadPool` fixes the count.
+Composition and operation ownership add allocations. Scheduling cost depends on the workload and
+contention, so measure on the target system rather than assuming a speedup.
+
+The `gcc-asan` preset enables ASan/UBSan and `gcc-tsan` enables TSan separately. CI runs coroutine and
+messaging tests under both sanitizer presets, including destruction/completion races and cancellation cleanup.
 
 #### Coroutine messaging
 
@@ -1363,13 +1611,13 @@ int main()
 ```cpp
 int main()
 {
-    const auto size = 90.0_MB;
+    const auto size = 90.0_MiB;
     const auto duration = 30.0_s;
     const auto rate = size / duration;
 
     static_assert(std::same_as<std::remove_cvref_t<decltype(rate)>, pnm::units::DataRate>);
 
-    std::cout << rate.get<pnm::units::DataRateUnits::MB_s>() << " MB/s\n";
+    std::cout << rate.get<pnm::units::DataRateUnits::MiB_s>() << " MiB/s\n";
 }
 ```
 

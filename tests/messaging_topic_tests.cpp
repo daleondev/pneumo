@@ -127,8 +127,8 @@ namespace
     using namespace pnm::meta::string::literals;
     struct TopicCatalog
     {
-        [[= 42, = "sensors/temperature"_fs]] pnm::msg::Topic<int> temperature;
-        [[= "sensors/humidity"_fs, = true]] pnm::msg::Topic<int> humidity;
+        [[ = 42, = "sensors/temperature"_fs ]] pnm::msg::Topic<int> temperature;
+        [[ = "sensors/humidity"_fs, = true ]] pnm::msg::Topic<int> humidity;
         [[= "sensors/temperature"_fs]] pnm::msg::Topic<float> incompatible;
         [[= 42]] pnm::msg::Topic<int> demo_io_state;
         pnm::msg::Topic<int> plain;
@@ -147,9 +147,15 @@ TEST(MessagingTopicTests, GeneratedNameAndExplicitOverrideResolveOrdinaryNamedTo
 {
     pnm::msg::Bus bus;
     int generated{}, explicitName{};
-    auto generatedSubscription{ bus.topic<int>("demo/io/state").subscribe([&](int value) { generated = value; }) };
-    auto explicitSubscription{ bus.topic<int>("custom_name/kept").subscribe([&](int value) { explicitName = value; }) };
-    auto unusedName{ bus.topic<int>("overridden/name").subscribe([](int) { FAIL() << "Override was ignored"; }) };
+    auto generatedSubscription{ bus.topic<int>("demo/io/state").subscribe([&](int value) {
+        generated = value;
+    }) };
+    auto explicitSubscription{ bus.topic<int>("custom_name/kept").subscribe([&](int value) {
+        explicitName = value;
+    }) };
+    auto unusedName{ bus.topic<int>("overridden/name").subscribe([](int) {
+        FAIL() << "Override was ignored";
+    }) };
     bus.topic<^^TopicCatalog::demo_io_state>().publish(42);
     bus.topic<^^TopicCatalog::overridden_name>().publish(43);
     EXPECT_EQ(generatedSubscription.poll(), 1UZ);
@@ -164,7 +170,9 @@ TEST(MessagingTopicTests, ReflectedFieldResolvesNamedTopicWithoutCatalogInstance
     pnm::msg::Bus bus;
     auto publisher{ bus.topic<^^TopicCatalog::temperature>() };
     int received{};
-    auto subscription{ bus.topic<int>("sensors/temperature").subscribe([&](int value) { received = value; }) };
+    auto subscription{ bus.topic<int>("sensors/temperature").subscribe([&](int value) {
+        received = value;
+    }) };
 
     publisher.publish(23);
     EXPECT_EQ(subscription.poll(), 1UZ);
@@ -919,9 +927,13 @@ TEST(MessagingTopicTests, LimitedDispatchPreservesFifoAndBoundsReentrantPublicat
     std::vector<int> received;
     auto subscription = topic.subscribe([&](int value) {
         received.push_back(value);
-        if (value == 1) { topic.publish(4); }
+        if (value == 1) {
+            topic.publish(4);
+        }
     }, { .capacity = 4 });
-    for (int value : { 1, 2, 3 }) { topic.publish(value); }
+    for (int value : { 1, 2, 3 }) {
+        topic.publish(value);
+    }
     EXPECT_EQ(subscription.pollSome(0), 0UZ);
     EXPECT_EQ(subscription.statistics().queued, 3UZ);
     EXPECT_EQ(subscription.pollSome(1), 1UZ);

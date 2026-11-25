@@ -78,8 +78,8 @@ namespace
     using namespace pnm::meta::string::literals;
     struct Services
     {
-        [[= 42, = "format"_fs]] pnm::msg::Service<int, std::string> format;
-        [[= "other"_fs, = true]] pnm::msg::Service<int, std::string> other;
+        [[ = 42, = "format"_fs ]] pnm::msg::Service<int, std::string> format;
+        [[ = "other"_fs, = true ]] pnm::msg::Service<int, std::string> other;
         [[= "format"_fs]] pnm::msg::Service<float, std::string> wrongRequest;
         [[= "format"_fs]] pnm::msg::Service<int, int> wrongResponse;
         [[= 42]] pnm::msg::Service<int, std::string> demo_io_format;
@@ -115,7 +115,8 @@ TEST(MessagingServiceTests, GeneratedNameAndExplicitOverrideResolveOrdinaryNamed
     EXPECT_EQ(explicitServer.poll(), 1UZ);
     EXPECT_EQ(generatedCall.get(), "42");
     EXPECT_EQ(explicitCall.get(), "43");
-    EXPECT_EQ((bus.service<int, std::string>("overridden/name").call(1, 1s).error()), ServiceError::Unavailable);
+    EXPECT_EQ((bus.service<int, std::string>("overridden/name").call(1, 1s).error()),
+              ServiceError::Unavailable);
 }
 
 TEST(MessagingServiceTests, ReflectedFieldResolvesNamedServiceWithoutCatalogInstance)

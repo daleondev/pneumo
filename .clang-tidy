@@ -6,6 +6,7 @@ Checks: >
   performance-*,
   clang-analyzer-*,
   cppcoreguidelines-*,
+  readability-braces-around-statements,
   -readability-identifier-length,
   -readability-braces-around-statements,
   -readability-implicit-bool-conversion,
@@ -37,9 +38,9 @@ CheckOptions:
     value: lower_case
   - key: readability-identifier-naming.MethodCase
     value: camelBack
-  # Coroutine protocol member names are prescribed by the C++ language.
+  # Coroutine and sender/receiver protocol names are prescribed by their specifications.
   - key: readability-identifier-naming.MethodIgnoredRegexp
-    value: '^(await_(ready|suspend|resume|transform)|initial_suspend|final_suspend|get_return_object|return_(value|void)|unhandled_exception)$'
+    value: "^(await_(ready|suspend|resume|transform)|initial_suspend|final_suspend|get_return_object|return_(value|void)|unhandled_exception|get_env|set_value|set_error|set_stopped)$"
 
   - key: readability-identifier-naming.ClassCase
     value: CamelCase
@@ -49,7 +50,7 @@ CheckOptions:
     value: ""
   # clang-tidy classifies non-const static data members as ClassMember.
   - key: readability-identifier-naming.ClassMemberIgnoredRegexp
-    value: '^s_[a-z][a-zA-Z0-9]*$'
+    value: "^s_[a-z][a-zA-Z0-9]*$"
   - key: readability-identifier-naming.ProtectedMemberCase
     value: camelBack
   - key: readability-identifier-naming.ProtectedMemberPrefix

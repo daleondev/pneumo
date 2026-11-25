@@ -38,7 +38,8 @@ namespace pnm::msg
     template<utils::memory::Serializable Request, utils::memory::Serializable Response>
     class Service;
 
-    template<utils::memory::Serializable Goal, utils::memory::Serializable Feedback,
+    template<utils::memory::Serializable Goal,
+             utils::memory::Serializable Feedback,
              utils::memory::Serializable Result>
     class Action;
 
@@ -77,7 +78,8 @@ namespace pnm::msg
                     meta::string::FixedString<identifier.size()> generated{ identifier.data() };
                     std::ranges::replace(generated.data, '_', '/');
                     return generated;
-                } else {
+                }
+                else {
                     return std::meta::extract<typename[:std::meta::type_of(NAME_ANNOTATIONS[0]):]>(
                       NAME_ANNOTATIONS[0]);
                 }
@@ -110,8 +112,10 @@ namespace pnm::msg
         using Endpoint = std::remove_cvref_t<typename[:std::meta::type_of(Member):]>;
 
       public:
-        static_assert(requires { typename Endpoint::Request; typename Endpoint::Response; },
-                      "A service field must have type pnm::msg::Service<Request, Response>");
+        static_assert(requires {
+            typename Endpoint::Request;
+            typename Endpoint::Response;
+        }, "A service field must have type pnm::msg::Service<Request, Response>");
         using Request = typename Endpoint::Request;
         using Response = typename Endpoint::Response;
         static_assert(std::same_as<Endpoint, Service<Request, Response>>,
@@ -125,8 +129,11 @@ namespace pnm::msg
         using Endpoint = std::remove_cvref_t<typename[:std::meta::type_of(Member):]>;
 
       public:
-        static_assert(requires { typename Endpoint::Goal; typename Endpoint::Feedback; typename Endpoint::Result; },
-                      "An action field must have type pnm::msg::Action<Goal, Feedback, Result>");
+        static_assert(requires {
+            typename Endpoint::Goal;
+            typename Endpoint::Feedback;
+            typename Endpoint::Result;
+        }, "An action field must have type pnm::msg::Action<Goal, Feedback, Result>");
         using Goal = typename Endpoint::Goal;
         using Feedback = typename Endpoint::Feedback;
         using Result = typename Endpoint::Result;
@@ -487,7 +494,8 @@ namespace pnm::msg
 
         auto statistics() const -> SubscriptionStatistics
         {
-            if (!m_state) return {};
+            if (!m_state)
+                return {};
             std::scoped_lock lock{ m_state->mutex };
             return { m_state->messages.size(), m_state->dropped };
         }
@@ -656,7 +664,8 @@ namespace pnm::msg
             }
         }
 
-        [[nodiscard]] auto subscribe(std::function<void(const T&)> callback, SubscriptionOptions options = {}) const -> Subscription<T>
+        [[nodiscard]] auto subscribe(std::function<void(const T&)> callback,
+                                     SubscriptionOptions options = {}) const -> Subscription<T>
             requires std::default_initializable<T>
         {
             if (!m_state) {
@@ -908,12 +917,10 @@ namespace pnm::msg
             auto close() -> void
             {
                 NotificationBatch notifications{};
-                std::deque<QueuedRequest> discarded;
                 std::vector<std::weak_ptr<CallState>> outstanding;
                 {
                     std::scoped_lock lock{ mutex };
                     closed = true;
-                    discarded.swap(requests);
                     outstanding.swap(calls);
                     changed.notify_all();
                     activity.notify();
@@ -921,6 +928,18 @@ namespace pnm::msg
                 for (const auto& weak : outstanding) {
                     if (auto call{ weak.lock() }) {
                         call->fail(ServiceError::Unavailable);
+                    }
+                }
+                // No replacement deque: close() also runs from noexcept destructors.
+                // Destroy callback-owning states after releasing the provider lock.
+                for (;;) {
+                    QueuedRequest discarded;
+                    {
+                        std::scoped_lock lock{ mutex };
+                        if (requests.empty())
+                            break;
+                        discarded = std::move(requests.front());
+                        requests.pop_front();
                     }
                 }
             }
@@ -1113,8 +1132,8 @@ namespace pnm::msg
 
         auto close() -> void
         {
-            if (m_provider) {
-                m_provider->close();
+            if (auto provider{ m_provider }) {
+                provider->close();
             }
         }
 
@@ -1851,6 +1870,11 @@ namespace pnm::msg
                 Execution execution;
                 Step step;
             };
+            struct Registration
+            {
+                std::weak_ptr<State> state;
+                bool stop_sent{};
+            };
 
             ActionProvider(Factory make_step, Handler handler, ActionOptions options)
               : factory{ std::move(make_step) }
@@ -1870,13 +1894,16 @@ namespace pnm::msg
             {
                 NotificationBatch notifications{};
                 std::vector<std::shared_ptr<State>> retained{};
-                std::deque<QueuedGoal> discarded{};
+                std::vector<QueuedGoal> discarded{};
                 std::scoped_lock lock{ mutex };
                 if (stopping) {
                     state->fail(ActionError::Unavailable);
                     return;
                 }
                 pruneLocked(retained);
+                // Reserve before moving entries: an allocation failure inside erase_if
+                // would leave moved-from goals in the provider's live queue.
+                discarded.reserve(queue.size());
                 std::erase_if(queue, [&](auto& queued) {
                     if (queued.state->pending()) {
                         return false;
@@ -1899,19 +1926,26 @@ namespace pnm::msg
             auto requestStop() -> void
             {
                 NotificationBatch notifications{};
-                std::deque<QueuedGoal> discarded{};
-                std::vector<std::shared_ptr<State>> retained{};
-                std::scoped_lock lock{ mutex };
-                stopping = true;
-                activity.notify();
-                discarded.swap(queue);
-                for (const auto& queued : discarded) {
-                    queued.state->fail(ActionError::Unavailable);
+                {
+                    std::scoped_lock lock{ mutex };
+                    stopping = true;
+                    activity.notify();
                 }
-                for (const auto& weak : goals) {
-                    if (auto state{ weak.lock() }) {
-                        state->requestCancel();
-                        retained.push_back(std::move(state));
+                rejectQueued();
+                // Retain one goal at a time, without allocating a shutdown snapshot.
+                // A concurrent idle()/close() may prune or remove registrations.
+                for (;;) {
+                    std::shared_ptr<State> state;
+                    {
+                        std::scoped_lock lock{ mutex };
+                        auto found{ std::ranges::find_if(goals,
+                                                         [](const auto& goal) { return !goal.stop_sent; }) };
+                        if (found == goals.end())
+                            break;
+                        state = found->state.lock();
+                        if (state)
+                            state->requestCancel();
+                        found->stop_sent = true;
                     }
                 }
             }
@@ -1928,28 +1962,27 @@ namespace pnm::msg
             auto close() -> void
             {
                 NotificationBatch notifications{};
-                std::deque<QueuedGoal> discarded{};
                 std::vector<std::shared_ptr<Job>> removed{};
-                std::vector<std::weak_ptr<State>> outstanding{};
+                std::vector<Registration> outstanding{};
                 {
                     std::scoped_lock lock{ mutex };
                     closed = true;
                     stopping = true;
                     activity.notify();
-                    discarded.swap(queue);
                     removed.swap(jobs);
                     outstanding.swap(goals);
                 }
-                for (const auto& weak : outstanding) {
-                    if (auto state{ weak.lock() }) {
+                for (const auto& goal : outstanding) {
+                    if (auto state{ goal.state.lock() }) {
                         state->fail(ActionError::Unavailable);
                     }
                 }
+                rejectQueued();
             }
 
             std::mutex mutex;
             std::deque<QueuedGoal> queue;
-            std::vector<std::weak_ptr<State>> goals;
+            std::vector<Registration> goals;
             std::vector<std::shared_ptr<Job>> jobs;
             std::atomic_flag dispatching;
             Factory factory;
@@ -1959,13 +1992,28 @@ namespace pnm::msg
             bool closed{};
 
           private:
+            auto rejectQueued() -> void
+            {
+                for (;;) {
+                    QueuedGoal discarded;
+                    {
+                        std::scoped_lock lock{ mutex };
+                        if (queue.empty())
+                            break;
+                        discarded = std::move(queue.front());
+                        queue.pop_front();
+                    }
+                    discarded.state->fail(ActionError::Unavailable);
+                }
+            }
+
             // Strong references keep user callback destructors outside the provider lock.
             auto pruneLocked(std::vector<std::shared_ptr<State>>& retained) -> void
             {
                 NotificationBatch notifications{};
                 retained.reserve(goals.size());
-                std::erase_if(goals, [&](const auto& weak) {
-                    auto state{ weak.lock() };
+                std::erase_if(goals, [&](const auto& goal) {
+                    auto state{ goal.state.lock() };
                     if (!state) {
                         return true;
                     }
@@ -2023,16 +2071,16 @@ namespace pnm::msg
         // Graceful shutdown: stop admission and ask active work to clean up. Keep polling to idle().
         auto requestStop() -> void
         {
-            if (m_provider) {
-                m_provider->requestStop();
+            if (auto provider{ m_provider }) {
+                provider->requestStop();
             }
         }
         auto idle() const -> bool { return !m_provider || m_provider->idle(); }
         // Immediate unregistration. This reports Unavailable, not confirmed cancellation.
         auto close() -> void
         {
-            if (m_provider) {
-                m_provider->close();
+            if (auto provider{ m_provider }) {
+                provider->close();
             }
         }
 
@@ -2048,10 +2096,14 @@ namespace pnm::msg
                 return 0;
             }
             detail::DispatchGuard dispatching{ provider->dispatching };
-            std::deque<typename Provider::QueuedGoal> incoming{};
+            std::vector<typename Provider::QueuedGoal> incoming{};
             {
                 std::scoped_lock lock{ provider->mutex };
-                for (size_t i{}; i < limit && !provider->queue.empty(); ++i) {
+                const auto pending{ std::min(limit, provider->queue.size()) };
+                // Allocate before removing goals, preserving the queue on failure
+                // and deferring submissions made by handlers to a subsequent poll.
+                incoming.reserve(pending);
+                for (size_t i{}; i < pending; ++i) {
                     incoming.push_back(std::move(provider->queue.front()));
                     provider->queue.pop_front();
                 }
@@ -2140,9 +2192,7 @@ namespace pnm::msg
         std::shared_ptr<Provider> m_provider;
     };
 
-    template<utils::memory::Serializable G,
-             utils::memory::Serializable F,
-             utils::memory::Serializable R>
+    template<utils::memory::Serializable G, utils::memory::Serializable F, utils::memory::Serializable R>
     class Action
     {
       public:
@@ -2276,13 +2326,16 @@ namespace pnm::msg
             template<typename Handle>
             static auto watch(Handle& handle, std::function<void()> callback) -> WakeupRegistration
             {
-                if (!callback) throw std::invalid_argument{ "A readiness callback is required" };
+                if (!callback)
+                    throw std::invalid_argument{ "A readiness callback is required" };
                 if constexpr (requires { handle.m_provider; }) {
-                    if (!handle.m_provider) throw std::logic_error{ "Cannot watch a moved-from handle" };
+                    if (!handle.m_provider)
+                        throw std::logic_error{ "Cannot watch a moved-from handle" };
                     return handle.m_provider->activity.watch(std::move(callback));
                 }
                 else {
-                    if (!handle.m_state) throw std::logic_error{ "Cannot watch a moved-from handle" };
+                    if (!handle.m_state)
+                        throw std::logic_error{ "Cannot watch a moved-from handle" };
                     if constexpr (requires { handle.m_state->readiness(); }) {
                         return handle.m_state->readiness().watch(std::move(callback));
                     }
@@ -2404,8 +2457,8 @@ namespace pnm::msg
         }
 
         template<std::meta::info Member>
-        auto service() -> Service<typename ServiceMetadata<Member>::Request,
-                                  typename ServiceMetadata<Member>::Response>
+        auto service()
+          -> Service<typename ServiceMetadata<Member>::Request, typename ServiceMetadata<Member>::Response>
         {
             using Metadata = ServiceMetadata<Member>;
             return service<typename Metadata::Request, typename Metadata::Response>(Metadata::name);
@@ -2417,7 +2470,8 @@ namespace pnm::msg
                                 typename ActionMetadata<Member>::Result>
         {
             using Metadata = ActionMetadata<Member>;
-            return action<typename Metadata::Goal, typename Metadata::Feedback, typename Metadata::Result>(Metadata::name);
+            return action<typename Metadata::Goal, typename Metadata::Feedback, typename Metadata::Result>(
+              Metadata::name);
         }
 
         template<utils::memory::Serializable Request, utils::memory::Serializable Response>

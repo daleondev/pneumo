@@ -86,6 +86,26 @@
                 "PNM_BUILD_TESTS": "OFF",
                 "CMAKE_CXX_CLANG_TIDY": "/opt/clang-p2996/bin/clang-tidy"
             }
+        },
+        {
+            "name": "gcc-asan",
+            "displayName": "GCC ASan and UBSan",
+            "inherits": "gcc-debug",
+            "cacheVariables": {
+                "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+                "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined",
+                "PNM_BUILD_SAMPLES": "OFF"
+            }
+        },
+        {
+            "name": "gcc-tsan",
+            "displayName": "GCC ThreadSanitizer",
+            "inherits": "gcc-debug",
+            "cacheVariables": {
+                "CMAKE_CXX_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer",
+                "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=thread",
+                "PNM_BUILD_SAMPLES": "OFF"
+            }
         }
     ],
     "buildPresets": [
@@ -108,6 +128,14 @@
         {
             "name": "clang-tidy",
             "configurePreset": "clang-tidy"
+        },
+        {
+            "name": "gcc-asan",
+            "configurePreset": "gcc-asan"
+        },
+        {
+            "name": "gcc-tsan",
+            "configurePreset": "gcc-tsan"
         }
     ],
     "testPresets": [
@@ -126,6 +154,14 @@
         {
             "name": "clang-release",
             "configurePreset": "clang-release"
+        },
+        {
+            "name": "gcc-asan",
+            "configurePreset": "gcc-asan"
+        },
+        {
+            "name": "gcc-tsan",
+            "configurePreset": "gcc-tsan"
         }
     ]
 }
